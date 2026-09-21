@@ -603,32 +603,24 @@ class NodeDashboardApp(App):
 
                     for pos in matches:
                         try:
-                            side = OrderSide.SELL if pos.is_long else OrderSide.BUY
-                            client_order_id = ClientOrderId(f"AI-CLOSE-{int(time.time())}")
-                            strat_id = pos.strategy_id or (self.runner.continuation_strat.id if self.runner.continuation_strat else StrategyId("AI-TRADE-MANAGER"))
+                            target_strat = None
+                            for strat in [
+                                self.runner.funding_strat,
+                                self.runner.continuation_strat,
+                                self.runner.scalp_strat,
+                                self.runner.vwap_strat,
+                            ]:
+                                if strat and strat.id == pos.strategy_id:
+                                    target_strat = strat
+                                    break
+                            if target_strat is None:
+                                target_strat = self.runner.funding_strat or self.runner.continuation_strat
 
-                            order = MarketOrder(
-                                trader_id=self.runner.node.trader_id,
-                                strategy_id=strat_id,
-                                instrument_id=instr_id,
-                                client_order_id=client_order_id,
-                                order_side=side,
-                                quantity=pos.quantity,
-                                init_id=UUID4(),
-                                ts_init=int(time.time_ns()),
-                                time_in_force=TimeInForce.FOK,
-                                reduce_only=True,
-                            )
-                            close_cmd = SubmitOrder(
-                                trader_id=self.runner.node.trader_id,
-                                strategy_id=strat_id,
-                                order=order,
-                                command_id=UUID4(),
-                                ts_init=int(time.time_ns()),
-                                position_id=pos.id,
-                            )
-                            self.runner.node.trader.execute(close_cmd)
-                            self.log_view.write_line(f"[bold green]✅ Market close order submitted for {coin_target}[/bold green]")
+                            if target_strat:
+                                target_strat.close_position(pos)
+                                self.log_view.write_line(f"[bold green]✅ Market close submitted for {coin_target} via {target_strat.id}[/bold green]")
+                            else:
+                                self.log_view.write_line(f"[red]No active strategy found to close {coin_target}[/red]")
                         except Exception as close_err:
                             self.log_view.write_line(f"[red]Failed to execute AI close on {coin_target}: {close_err}[/red]")
 
