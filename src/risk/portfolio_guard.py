@@ -119,6 +119,13 @@ class PortfolioGuard:
             if effective_count >= self.max_total_open_positions:
                 return False, f"Max node positions ({self.max_total_open_positions}) reached."
 
+            # Enforce Hyperliquid official exchange max leverage per coin
+            from src.utils.instruments import get_coin_max_leverage
+            max_lev = get_coin_max_leverage(coin)
+            max_coin_notional = self.current_equity * max_lev
+            if proposed_notional_usd > (max_coin_notional * 1.01):
+                return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
+
             max_allowed_margin = self.current_equity * self.max_strategy_equity_pct
             current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, 0.0)
             if (current_strategy_margin + proposed_notional_usd) > max_allowed_margin:

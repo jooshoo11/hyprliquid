@@ -4,6 +4,8 @@ Configures CurrencyPair instruments with Hyperliquid perpetual specifications,
 tick sizes, lot sizes, and maker/taker fee tiers (-0.01% maker / 0.035% taker).
 """
 
+import os
+import json
 from decimal import Decimal
 from typing import Dict, Any, Optional
 
@@ -12,6 +14,53 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.objects import Price, Quantity
+
+_LEVERAGE_CACHE: Dict[str, float] = {}
+
+
+def get_coin_max_leverage(coin: str) -> float:
+    """
+    Get the official Hyperliquid maximum leverage for a given coin.
+    Loads dynamically from catalog/mcp_meta_cache.json if available,
+    falling back to known defaults (BTC: 40, ETH: 25, SOL: 20, etc.) or 10.0.
+    """
+    coin = coin.upper().split("-")[0].split(".")[0]
+    global _LEVERAGE_CACHE
+    if not _LEVERAGE_CACHE:
+        cache_path = os.path.join(os.path.dirname(__file__), "..", "..", "catalog", "mcp_meta_cache.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r") as f:
+                    data = json.load(f)
+                    resp = data.get("response", [])
+                    universe = resp[0].get("universe", []) if isinstance(resp, list) and len(resp) > 0 else []
+                    for u in universe:
+                        name = u.get("name")
+                        lev = u.get("maxLeverage")
+                        if name and lev is not None:
+                            _LEVERAGE_CACHE[name.upper()] = float(lev)
+            except Exception:
+                pass
+
+    if coin in _LEVERAGE_CACHE:
+        return _LEVERAGE_CACHE[coin]
+
+    defaults = {
+        "BTC": 40.0,
+        "ETH": 25.0,
+        "SOL": 20.0,
+        "DOGE": 10.0,
+        "NEAR": 10.0,
+        "SUI": 10.0,
+        "FARTCOIN": 10.0,
+        "kPEPE": 10.0,
+        "TAO": 5.0,
+        "USELESS": 3.0,
+        "PROVE": 3.0,
+        "NIL": 3.0,
+    }
+    return defaults.get(coin, 10.0)
+
 
 # Default precision mapping for common perpetuals
 DEFAULT_SZ_DECIMALS: Dict[str, int] = {

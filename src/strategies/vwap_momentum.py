@@ -22,6 +22,9 @@ from nautilus_trader.model.identifiers import InstrumentId, Venue
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.trading.strategy import Strategy
 
+from src.utils.instruments import get_coin_max_leverage
+
+
 
 @dataclass
 class SessionVwapState:
@@ -195,8 +198,10 @@ class VwapOiMomentum(Strategy):
 
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce max 20x leverage for $100 small account challenge
-        max_notional = equity * 20.0
+        # Enforce official Hyperliquid exchange max leverage for this coin
+        coin = str(instrument.id).split("-")[0].split(".")[0].upper()
+        max_lev = get_coin_max_leverage(coin)
+        max_notional = equity * max_lev
         if (qty_val * price) > max_notional:
             qty_val = max_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
