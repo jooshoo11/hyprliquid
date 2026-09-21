@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "generated_at": "2026-09-19T15:51:20.640713+00:00",
+    "strategy_target": "all",
+    "best_trial_number": 4,
+    "best_score": 365.15237455289275,
+    "instruments": [
+      "BTC-USD-PERP.HYPERLIQUID",
+      "ETH-USD-PERP.HYPERLIQUID",
+      "SOL-USD-PERP.HYPERLIQUID",
+      "SUI-USD-PERP.HYPERLIQUID"
+    ]
+  },
+  "parameters": {
+    "continuation_ema_fast": 100,
+    "continuation_ema_slow": 250,
+    "continuation_displacement": 1.7000000000000002,
+    "continuation_rr_ratio": 2.0,
+    "continuation_risk_pct": 0.02,
+    "funding_apr_threshold": 1.3,
+    "funding_trailing_stop": 0.02,
+    "funding_risk_pct": 0.015
+  }
+}

@@ -1,0 +1,143 @@
+--- src/backtest/run_backtest.py
++++ src/backtest/run_backtest.py
+@@ -150,21 +150,23 @@
+ 
+     # Sharpe Ratio
++    ANNUALISATION_FACTOR = math.sqrt(365 * 24 * 60 / 5)  # 5-minute bars, crypto
+     if daily_returns and len(daily_returns) > 1:
+         mean_r = sum(daily_returns) / len(daily_returns)
+-        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in daily_returns) / len(daily_returns))
+-        sharpe_ratio = (mean_r / std_r) * math.sqrt(365) if std_r > 0 else 0.0
++        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1))
++        sharpe_ratio = (mean_r / std_r) * ANNUALISATION_FACTOR if std_r > 0 else 0.0
+ 
+         # Sortino Ratio (downside deviation)
+         neg_returns = [r for r in daily_returns if r < 0]
+-        if neg_returns:
+-            downside_std = math.sqrt(sum(r ** 2 for r in neg_returns) / len(daily_returns))
+-            sortino_ratio = (mean_r / downside_std) * math.sqrt(365) if downside_std > 0 else 0.0
++        if len(neg_returns) > 1:
++            downside_std = math.sqrt(sum(r ** 2 for r in neg_returns) / (len(neg_returns) - 1))
++            sortino_ratio = (mean_r / downside_std) * ANNUALISATION_FACTOR if downside_std > 0 else 0.0
+         else:
+             sortino_ratio = sharpe_ratio
+     else:
+         sharpe_ratio = 0.0
+         sortino_ratio = 0.0
+         if total_trades > 0 and (gross_profit > 0 or gross_loss > 0):
+             avg_return = net_profit / total_trades
+             std_approx = (gross_profit + gross_loss) / total_trades
+-            sharpe_ratio = (avg_return / std_approx) * math.sqrt(252) if std_approx > 0 else 0.0
+-            sortino_ratio = (avg_return / (gross_loss / total_trades)) * math.sqrt(252) if gross_loss > 0 else sharpe_ratio
++            sharpe_ratio = (avg_return / std_approx) * ANNUALISATION_FACTOR if std_approx > 0 else 0.0
++            sortino_ratio = (avg_return / (gross_loss / total_trades)) * ANNUALISATION_FACTOR if gross_loss > 0 else sharpe_ratio
+@@ -363,2 +365,2 @@
+     raw_bars = catalog.bars(instrument_ids=instrument_ids)
+-    sorted_bars = sorted(raw_bars, key=lambda b: b.ts_event)
++    sorted_bars = sorted(raw_bars, key=lambda b: (b.ts_event, str(b.bar_type)))
+--- src/risk/portfolio_guard.py
++++ src/risk/portfolio_guard.py
+@@ -61,4 +61,4 @@
+         # 24h Drawdown tracking
+-        self.daily_high_water_mark: float = 10_000.0
+-        self.current_equity: float = 10_000.0
++        self.daily_high_water_mark: Optional[float] = None
++        self.current_equity: float = 0.0
+         self.is_circuit_breaker_triggered: bool = False
+@@ -76,2 +76,5 @@
+         self.current_equity = equity
++        
++        if self.daily_high_water_mark is None:
++            self.daily_high_water_mark = equity
++
+         if equity > self.daily_high_water_mark:
+--- tests/test_portfolio_guard.py
++++ tests/test_portfolio_guard.py
+@@ -38,2 +38,12 @@
+ 
++def test_portfolio_guard_hwm_initialized_to_first_equity_update():
++    """HWM must be set from first update_equity call, not hardcoded to 10_000."""
++    guard = PortfolioGuard(max_daily_drawdown_pct=0.02)
++    guard.update_equity(5_000.0)  # First call should set HWM to 5_000
++    guard.update_equity(4_900.0)  # 2% drawdown from 5_000
++    assert guard.is_circuit_breaker_triggered  # Should trigger
++
++
+ def test_portfolio_guard_strategy_margin_limit():
+--- tests/test_multi_strategies.py
++++ tests/test_multi_strategies.py
+@@ -52,27 +52,70 @@
+ 
+ def test_trend_continuation_bracket_trigger():
+     """Verify TrendContinuationSMC bracket order generates STOP_MARKET with isTrigger=True behavior."""
++    from src.strategies.continuation import SMCInstrumentState, Zone
++    from nautilus_trader.indicators import ExponentialMovingAverage
++
++    engine, inst = _setup_engine("TC-TEST-001")
+     guard = PortfolioGuard()
++    guard.update_equity(10_000.0)
+     strat = TrendContinuationSMC(
+         config=TrendContinuationConfig(venue="HYPERLIQUID", risk_per_trade_pct=0.01),
+         portfolio_guard=guard,
+     )
+-    assert strat.trend_config.risk_per_trade_pct == 0.01
+-    assert strat.portfolio_guard is guard
++    engine.add_strategy(strat)
++    strat.on_start()
++
++    state = SMCInstrumentState(
++        instrument_id=inst.id,
++        ema_50_4h=ExponentialMovingAverage(50),
++        ema_200_4h=ExponentialMovingAverage(200),
++    )
++    state.recent_swing_wick_low = 95.0
++    zone = Zone("DEMAND", 90.0, 95.0, 1_700_000_000)
++
++    bar_type = get_bar_type("SOL", "5m")
++    bar = Bar(
++        bar_type=bar_type,
++        open=inst.make_price(Decimal("100.0")),
++        high=inst.make_price(Decimal("101.0")),
++        low=inst.make_price(Decimal("99.0")),
++        close=inst.make_price(Decimal("100.5")),
++        volume=inst.make_qty(Decimal("50.0")),
++        ts_event=1_700_004_600_000_000_000,
++        ts_init=1_700_004_600_000_000_000
++    )
++
++    strat._execute_long_entry(bar, state, zone)
++    assert len(guard.pending_orders) > 0
++    order_entry = list(guard.pending_orders.values())[0]
++    assert order_entry.side == OrderSide.BUY
++    assert order_entry.strategy_id == "TrendContinuationSMC"
+ 
+ 
+ def test_hourly_funding_fade_lifecycle():
+     """Verify HourlyFundingFade timing logic, funding APR triggers, and position management."""
++    engine, inst = _setup_engine("FF-TEST-001")
+     guard = PortfolioGuard()
++    guard.update_equity(10_000.0)
+     config = HourlyFundingFadeConfig(
+         venue="HYPERLIQUID",
+         min_funding_apr_threshold=0.80,
+         trailing_stop_pct=0.012,
+     )
+     strat = HourlyFundingFade(config=config, portfolio_guard=guard)
++    engine.add_strategy(strat)
++    strat.on_start()
+ 
+-    # Check update_funding_rate
+-    strat.update_funding_rate("SOL-USD-PERP.HYPERLIQUID", 1.20)  # +120% APR (crowded longs)
+-    assert strat.current_funding_rates["SOL-USD-PERP.HYPERLIQUID"] == 1.20
++    base_ts = 1_700_004_600_000_000_000  # XX:50:00 UTC
++    bar_type = get_bar_type("SOL", "5m")
++    
++    def make_bar(ts):
++        return Bar(bar_type=bar_type, open=inst.make_price(Decimal("100.0")), high=inst.make_price(Decimal("101.0")), low=inst.make_price(Decimal("99.0")), close=inst.make_price(Decimal("100.5")), volume=inst.make_qty(Decimal("50.0")), ts_event=ts, ts_init=ts)
++
++    strat.update_funding_rate(str(inst.id), 1.20)
++    engine.add_data([make_bar(base_ts), make_bar(base_ts + 300_000_000_000)])
++    engine.run()
++    
++    fills = engine.trader.generate_order_fills_report()
++    assert len(fills) > 0

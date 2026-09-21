@@ -1,0 +1,14 @@
+{
+  "timestamp": 1789843949.033798,
+  "equity": 100.0,
+  "positions": [
+    {
+      "coin": "AVAX",
+      "instrument_id": "AVAX-USD-PERP.HYPERLIQUID",
+      "side": "SHORT",
+      "size": 205.5,
+      "entry_price": 9.7323,
+      "unrealized_pnl": 1.44
+    }
+  ]
+}

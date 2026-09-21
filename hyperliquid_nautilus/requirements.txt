@@ -1,0 +1,8 @@
+nautilus_trader>=1.200.0
+hyperliquid-python-sdk>=0.6.0
+pydantic>=2.5.0
+pytest>=8.0.0
+pytest-asyncio
+
+optuna
+pandas

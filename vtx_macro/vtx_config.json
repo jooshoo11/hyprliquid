@@ -1,0 +1,13 @@
+{
+  "arena_name": "VTX Macro Hyperliquid Execution Arena",
+  "version": "1.0.0",
+  "max_leverage": 5,
+  "max_position_size_usd": 1000.0,
+  "max_slippage_pct": 0.01,
+  "stop_loss_required": true,
+  "max_daily_drawdown_usd": 200.0,
+  "allowed_symbols": ["BTC", "ETH", "SOL", "HYPE", "AVAX", "ARBER", "OP"],
+  "decision_interval_seconds": 60,
+  "foreground_agent": "Antigravity",
+  "routing_protocol": "Hyperliquid EIP-712 Agent Key"
+}

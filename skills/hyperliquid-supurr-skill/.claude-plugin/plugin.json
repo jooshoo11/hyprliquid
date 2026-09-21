@@ -1,0 +1,5 @@
+{
+  "name": "hyperliquid-supurr",
+  "version": "0.3.0",
+  "description": "Hyperliquid Supurr Skill — Build custom strategies in Rust, backtest, deploy, and monitor trading bots on Hyperliquid"
+}
