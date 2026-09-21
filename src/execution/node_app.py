@@ -19,7 +19,8 @@ from textual.widgets import DataTable, Header, Footer, Static, Log
 from textual.containers import Vertical, Horizontal
 
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, StrategyId, AccountId
+from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, StrategyId, AccountId, Venue
+from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.orders.market import MarketOrder
 from nautilus_trader.execution.messages import SubmitOrder, CancelOrder
@@ -168,29 +169,37 @@ class NodeDashboardApp(App):
         try:
             # Persist final paper state before exit
             if self.runner.paper:
-                final_equity = self._get_account_equity()
+                cash_balance = self._get_account_cash()
                 final_positions = self._get_open_positions()
+                ctx_map = self._fetch_asset_contexts()
+                total_unrealized = 0.0
                 positions_data = []
                 for pos in final_positions:
                     try:
                         coin = pos.instrument_id.symbol.value.split("-")[0]
                         entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") else 0.0
+                        ctx = ctx_map.get(coin, {})
+                        cur_px = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+                        qty = pos.quantity.as_double()
+                        unrealized = round((cur_px - entry_px) * qty * (1.0 if pos.is_long else -1.0), 2) if (cur_px > 0 and entry_px > 0) else 0.0
+                        total_unrealized += unrealized
                         positions_data.append({
                             "coin": coin,
                             "instrument_id": str(pos.instrument_id),
                             "side": "LONG" if pos.is_long else "SHORT",
-                            "size": pos.quantity.as_double(),
+                            "size": qty,
                             "entry_price": entry_px,
-                            "unrealized_pnl": 0.0,
+                            "unrealized_pnl": unrealized,
                         })
                     except Exception:
                         pass
+                final_equity = self._get_account_equity(cash_balance, total_unrealized)
                 self.runner.save_paper_state(
                     equity=final_equity,
-                    realized_pnl=final_equity - 100.0,
+                    realized_pnl=cash_balance - 100.0,
                     positions=positions_data,
                 )
-                self.log_view.write_line(f"[bold cyan]💾 Paper state saved: ${final_equity:.2f}[/bold cyan]")
+                self.log_view.write_line(f"[bold cyan]💾 Paper state saved: Total Equity=${final_equity:.2f} (Cash=${cash_balance:.2f})[/bold cyan]")
         except Exception:
             pass
         try:
@@ -220,15 +229,34 @@ class NodeDashboardApp(App):
             self._sync_prospects()
             ctx_map = self._fetch_asset_contexts()
             open_positions = self._get_open_positions()
-            equity = self._get_account_equity()
+
+            # Compute cash balance, unrealized PnL, and total notional exposure
+            cash_balance = self._get_account_cash()
+            total_unrealized = 0.0
+            total_notional = 0.0
+            for pos in open_positions:
+                try:
+                    coin = pos.instrument_id.symbol.value.split("-")[0]
+                    ctx = ctx_map.get(coin, {})
+                    cur_px = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+                    entry = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") else (pos.avg_px.as_double() if pos.avg_px else 0.0)
+                    qty = pos.quantity.as_double()
+                    if cur_px > 0 and entry > 0:
+                        pnl = (cur_px - entry) * qty * (1.0 if pos.is_long else -1.0)
+                        total_unrealized += pnl
+                        total_notional += (cur_px * qty)
+                except Exception:
+                    pass
+
+            total_equity = self._get_account_equity(cash_balance, total_unrealized)
 
             # Render UI components safely
-            self._render_top_overview(equity, open_positions, ctx_map)
+            self._render_top_overview(total_equity, cash_balance, total_unrealized, total_notional, open_positions, ctx_map)
             self._render_positions_table(open_positions, ctx_map)
             self._render_market_table(ctx_map, open_positions)
 
             # Synchronize JSON Bridge for AI Agents
-            self._sync_bridge(equity, open_positions)
+            self._sync_bridge(total_equity, cash_balance, open_positions, ctx_map)
             self._process_ai_commands(open_positions)
 
         except Exception as e:
@@ -282,42 +310,45 @@ class NodeDashboardApp(App):
             pass
         return []
 
-    def _get_account_equity(self) -> float:
-        """Fetch current margin balance from portfolio account."""
+    def _get_account_cash(self) -> float:
+        """Fetch current cash balance (realized equity) from portfolio account."""
         try:
-            account_id = AccountId("HYPERLIQUID-PAPER001" if self.runner.paper else "HYPERLIQUID-MARGIN")
-            return self.runner.node.portfolio.account(account_id).margin_balance().as_double()
+            if self.runner.node and self.runner.node.portfolio:
+                venue = Venue("HYPERLIQUID")
+                acct = self.runner.node.portfolio.account(venue=venue)
+                if acct:
+                    bal = acct.balance_total(USD)
+                    if bal:
+                        return bal.as_double()
         except Exception:
-            return 100.0
+            pass
+        return getattr(self.runner, "_paper_starting_equity", 100.0)
 
-    def _render_top_overview(self, equity: float, open_positions: List[Any], ctx_map: Dict[str, Any]) -> None:
+    def _get_account_equity(self, cash_balance: Optional[float] = None, total_unrealized: float = 0.0) -> float:
+        """Fetch current total equity (cash balance + unrealized PnL)."""
+        if cash_balance is None:
+            cash_balance = self._get_account_cash()
+        return round(cash_balance + total_unrealized, 2)
+
+    def _render_top_overview(
+        self,
+        equity: float,
+        cash_balance: float,
+        total_unrealized: float,
+        total_notional: float,
+        open_positions: List[Any],
+        ctx_map: Dict[str, Any],
+    ) -> None:
         """Render the top portfolio and AI strategy logic panels."""
         try:
-            # 1. Calculate Portfolio Metrics
-            total_unrealized = 0.0
-            total_notional = 0.0
-            for pos in open_positions:
-                try:
-                    coin = pos.instrument_id.symbol.value.split("-")[0]
-                    ctx = ctx_map.get(coin, {})
-                    cur_px = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
-                    entry = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") else (pos.avg_px.as_double() if pos.avg_px else 0.0)
-                    qty = pos.quantity.as_double()
-                    if cur_px > 0 and entry > 0:
-                        pnl = (cur_px - entry) * qty * (1.0 if pos.is_long else -1.0)
-                        total_unrealized += pnl
-                        total_notional += (cur_px * qty)
-                except Exception:
-                    pass
-
             pnl_color = "bold green" if total_unrealized >= 0 else "bold red"
             pnl_sign = "+" if total_unrealized >= 0 else ""
-            roi = (total_unrealized / equity * 100.0) if equity > 0 else 0.0
+            roi = (total_unrealized / cash_balance * 100.0) if cash_balance > 0 else 0.0
             roi_sign = "+" if roi >= 0 else ""
 
             port_text = (
                 f"[bold]PORTFOLIO OVERVIEW & RISK[/bold]\n"
-                f"• [bold]Equity:[/bold] ${equity:,.2f} | [bold]Unrealized P&L:[/bold] [{pnl_color}]{pnl_sign}${total_unrealized:,.2f} ({roi_sign}{roi:.2f}%)[/{pnl_color}]\n"
+                f"• [bold]Total Equity:[/bold] ${equity:,.2f} | [bold]Cash Balance:[/bold] ${cash_balance:,.2f} | [bold]Unrealized P&L:[/bold] [{pnl_color}]{pnl_sign}${total_unrealized:,.2f} ({roi_sign}{roi:.2f}%)[/{pnl_color}]\n"
                 f"• [bold]Open Positions:[/bold] {len(open_positions)} Active | [bold]Notional Exposure:[/bold] ${total_notional:,.2f}\n"
                 f"• [bold]Portfolio Guard:[/bold] [bold green]ACTIVE[/bold green] (Max 25% Pos, Max 10 Open, 20% Daily DD)"
             )
@@ -526,7 +557,7 @@ class NodeDashboardApp(App):
         except Exception:
             pass
 
-    def _sync_bridge(self, equity: float, open_positions: List[Any]) -> None:
+    def _sync_bridge(self, equity: float, cash_balance: float, open_positions: List[Any], ctx_map: Dict[str, Any]) -> None:
         """Safely export live state to bridge/active_trades.json and persist paper state."""
         try:
             bridge_path = os.path.join(os.getcwd(), "bridge", "active_trades.json")
@@ -535,18 +566,24 @@ class NodeDashboardApp(App):
                 try:
                     coin = pos.instrument_id.symbol.value.split("-")[0]
                     entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") else (pos.avg_px.as_double() if pos.avg_px else 0.0)
+                    ctx = ctx_map.get(coin, {})
+                    cur_px = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+                    qty = pos.quantity.as_double()
                     unrealized = 0.0
-                    try:
-                        pnl_money = self.runner.node.portfolio.unrealized_pnl(pos.instrument_id)
-                        unrealized = pnl_money.as_double() if pnl_money else 0.0
-                    except Exception:
-                        pass
+                    if cur_px > 0 and entry_px > 0 and qty > 0:
+                        unrealized = round((cur_px - entry_px) * qty * (1.0 if pos.is_long else -1.0), 2)
+                    else:
+                        try:
+                            pnl_money = self.runner.node.portfolio.unrealized_pnl(pos.instrument_id)
+                            unrealized = round(pnl_money.as_double(), 2) if pnl_money else 0.0
+                        except Exception:
+                            pass
 
                     positions_data.append({
                         "coin": coin,
                         "instrument_id": str(pos.instrument_id),
                         "side": "LONG" if pos.is_long else "SHORT",
-                        "size": pos.quantity.as_double(),
+                        "size": qty,
                         "entry_price": entry_px,
                         "unrealized_pnl": unrealized,
                     })
@@ -555,7 +592,8 @@ class NodeDashboardApp(App):
 
             state = {
                 "timestamp": time.time(),
-                "equity": equity,
+                "equity": round(equity, 2),
+                "cash_balance": round(cash_balance, 2),
                 "positions": positions_data,
             }
             tmp_path = f"{bridge_path}.tmp"
@@ -565,7 +603,7 @@ class NodeDashboardApp(App):
 
             # Persist paper state so restarts don't wipe the balance
             if self.runner.paper:
-                realized_pnl = equity - 100.0  # net gain vs original $100 starting balance
+                realized_pnl = cash_balance - 100.0  # net gain vs original $100 starting balance
                 self.runner.save_paper_state(
                     equity=equity,
                     realized_pnl=realized_pnl,
