@@ -37,6 +37,20 @@ AI_COMMANDS_PATH = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
 PAPER_STATE_PATH = os.path.join(REPO_ROOT, "bridge", "paper_state.json")
 SENTINEL_LOG_PATH = os.path.join(REPO_ROOT, "bridge", "sentinel.log")
 
+_active_engine = None
+
+
+def set_active_engine(engine: Any) -> None:
+    """Set the running UnifiedEngine instance for direct in-memory execution."""
+    global _active_engine
+    _active_engine = engine
+
+
+def get_active_engine() -> Optional[Any]:
+    """Get the running UnifiedEngine instance."""
+    global _active_engine
+    return _active_engine
+
 
 class CloseTradeRequest(BaseModel):
     coin: str
@@ -56,6 +70,9 @@ def load_json_file(path: str, default: Any = None) -> Any:
 
 def get_live_state() -> Dict[str, Any]:
     """Assemble complete live portfolio, trade, prospect, and audit state."""
+    if _active_engine:
+        return _active_engine.get_state()
+
     active_trades = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
     prospects_data = load_json_file(PROSPECTS_PATH, {"prospects": {}})
     paper_state = load_json_file(PAPER_STATE_PATH, {})
@@ -188,10 +205,17 @@ async def api_l2(coin: str = "BTC"):
 @app.post("/api/trades/close")
 async def api_close_trade(req: CloseTradeRequest):
     """
-    Publish an emergency CLOSE_POSITION command to bridge/ai_commands.json.
-    Nautilus TradingNode will execute this within 1 second.
+    Close an active trade directly in memory via active_engine or via bridge.
     """
     coin_clean = req.coin.upper().split("-")[0].split(".")[0]
+    
+    if _active_engine:
+        closed = _active_engine.close_position(coin_clean, reason=req.reason or "Manual Web Cockpit Close")
+        if closed:
+            return {"status": "SUCCESS", "message": f"Market close executed for {coin_clean}"}
+        else:
+            return {"status": "WARN", "message": f"No active position found to close for {coin_clean}"}
+
     cmds = load_json_file(AI_COMMANDS_PATH, [])
     if not isinstance(cmds, list):
         cmds = []
@@ -216,6 +240,10 @@ async def api_close_trade(req: CloseTradeRequest):
 @app.post("/api/trades/close_all")
 async def api_close_all():
     """Emergency abort: close all currently active positions."""
+    if _active_engine:
+        closed = _active_engine.close_all_positions(reason="Emergency Web Cockpit Close All")
+        return {"status": "SUCCESS", "message": f"Close-all executed for: {', '.join(closed) if closed else 'none'}"}
+
     state = get_live_state()
     positions = state.get("positions", [])
     if not positions:
