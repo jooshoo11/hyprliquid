@@ -1,14 +1,30 @@
 {
-  "timestamp": 1789843949.033798,
+  "timestamp": 1790020500.6688545,
   "equity": 100.0,
   "positions": [
     {
-      "coin": "AVAX",
-      "instrument_id": "AVAX-USD-PERP.HYPERLIQUID",
+      "coin": "DOGE",
+      "instrument_id": "DOGE-USD-PERP.HYPERLIQUID",
       "side": "SHORT",
-      "size": 205.5,
-      "entry_price": 9.7323,
-      "unrealized_pnl": 1.44
+      "size": 10207.0,
+      "entry_price": 0.097971,
+      "unrealized_pnl": 1.56
+    },
+    {
+      "coin": "ENA",
+      "instrument_id": "ENA-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 4686.0,
+      "entry_price": 0.21338,
+      "unrealized_pnl": 2.95
+    },
+    {
+      "coin": "PENGU",
+      "instrument_id": "PENGU-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 56230.0,
+      "entry_price": 0.008892,
+      "unrealized_pnl": 0.22
     }
   ]
 }

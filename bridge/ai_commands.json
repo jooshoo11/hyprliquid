@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "action": "CLOSE_POSITION",
+    "coin": "DOGE",
+    "reason": "Order book collapsed: Bid depth wall $16.8k > 4x Ask depth $1.9k"
+  },
+  {
+    "action": "CLOSE_POSITION",
+    "coin": "DOGE",
+    "reason": "Order book collapsed: Bid depth wall $93.2k > 4x Ask depth $3.1k"
+  }
+]

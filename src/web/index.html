@@ -448,13 +448,96 @@
       }
     }
 
+    let hlWs = null;
+
+    function connectHyperliquidWS(coin, interval) {
+      if (hlWs) {
+        try { hlWs.close(); } catch(e) {}
+      }
+
+      hlWs = new WebSocket('wss://api.hyperliquid.xyz/ws');
+
+      hlWs.onopen = () => {
+        // Subscribe to live candle stream
+        hlWs.send(JSON.stringify({
+          method: "subscribe",
+          subscription: { type: "candle", coin: coin, interval: interval }
+        }));
+        // Subscribe to live L2 book
+        hlWs.send(JSON.stringify({
+          method: "subscribe",
+          subscription: { type: "l2Book", coin: coin }
+        }));
+      };
+
+      hlWs.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.channel === "candle" && msg.data && msg.data.s === currentSymbol) {
+            const c = msg.data;
+            const candleObj = {
+              time: Math.floor(c.t / 1000),
+              open: parseFloat(c.o),
+              high: parseFloat(c.h),
+              low: parseFloat(c.l),
+              close: parseFloat(c.c),
+            };
+            if (candleSeries) {
+              candleSeries.update(candleObj);
+            }
+            if (volumeSeries) {
+              volumeSeries.update({
+                time: Math.floor(c.t / 1000),
+                value: parseFloat(c.v),
+                color: candleObj.close >= candleObj.open ? '#10b98144' : '#f43f5e44',
+              });
+            }
+            const curPx = candleObj.close;
+            const pxEl = document.getElementById('chart-active-price');
+            if (pxEl) {
+              pxEl.textContent = `$${curPx.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
+            }
+          } else if (msg.channel === "l2Book" && msg.data && msg.data.coin === currentSymbol) {
+            renderLiveL2(msg.data.levels);
+          }
+        } catch (e) {
+          console.error("HL WS Error:", e);
+        }
+      };
+    }
+
+    function renderLiveL2(levels) {
+      if (!levels || levels.length < 2) return;
+      const bids = levels[0] || [];
+      const asks = levels[1] || [];
+      const bidsVol = bids.slice(0, 5).reduce((acc, b) => acc + (parseFloat(b.sz) * parseFloat(b.px)), 0);
+      const asksVol = asks.slice(0, 5).reduce((acc, a) => acc + (parseFloat(a.sz) * parseFloat(a.px)), 0);
+      const total = bidsVol + asksVol;
+
+      const bidsEl = document.getElementById('l2-bids-depth');
+      const asksEl = document.getElementById('l2-asks-depth');
+      if (bidsEl) bidsEl.textContent = `Bids: $${(bidsVol / 1000).toFixed(1)}k`;
+      if (asksEl) asksEl.textContent = `Asks: $${(asksVol / 1000).toFixed(1)}k`;
+
+      if (total > 0) {
+        const bidPct = Math.round((bidsVol / total) * 100);
+        const askPct = 100 - bidPct;
+        const bidBar = document.getElementById('l2-bid-bar');
+        const askBar = document.getElementById('l2-ask-bar');
+        const skewLbl = document.getElementById('l2-skew-label');
+        if (bidBar) bidBar.style.width = `${bidPct}%`;
+        if (askBar) askBar.style.width = `${askPct}%`;
+        if (skewLbl) skewLbl.textContent = `Depth Skew: ${bidPct}% Bids vs ${askPct}% Asks`;
+      }
+    }
+
     function selectSymbol(coin) {
       if (!coin) return;
       currentSymbol = coin.toUpperCase().trim();
       document.getElementById('chart-active-symbol').textContent = `${currentSymbol}-PERP`;
       document.getElementById('l2-coin-name').textContent = currentSymbol;
       loadKlines(currentSymbol, currentInterval);
-      loadL2(currentSymbol);
+      connectHyperliquidWS(currentSymbol, currentInterval);
     }
 
     function changeInterval(tf) {
@@ -467,6 +550,7 @@
         }
       });
       loadKlines(currentSymbol, currentInterval);
+      connectHyperliquidWS(currentSymbol, currentInterval);
     }
 
     // Load L2 Orderbook Depth

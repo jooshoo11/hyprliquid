@@ -1,50 +1,62 @@
 {
-  "NEAR": {
-    "bias": "LONG",
-    "target_entry": 3.36,
-    "reason": "Funding APR -1110% (hourly -0.001268), extreme persistent negative carry; shorts bleeding heavily — squeeze candidate",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
-  "JUP": {
-    "bias": "LONG",
-    "target_entry": 0.262,
-    "reason": "Funding APR -638% (hourly -0.000728), short overcrowding sustained across all 10 recent periods; persistent negative premium",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
-  "WIF": {
-    "bias": "LONG",
-    "target_entry": 0.203,
-    "reason": "Funding APR -390% (hourly -0.000445), all 10 periods negative funding; short carry cost unsustainable",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
-  "OP": {
-    "bias": "LONG",
-    "target_entry": 0.1195,
-    "reason": "Funding APR -144% (hourly -0.000164), consistently negative premiums; shorts paying carry while price near multi-month lows",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
-  "XMR": {
-    "bias": "SHORT",
-    "target_entry": 620.0,
-    "reason": "Funding APR +1057% (hourly +0.001206, escalating), longs severely overleveraged; premium >+1% per 8h unsustainable",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
   "BTC": {
-    "bias": "SHORT",
-    "target_entry": 81700.0,
-    "reason": "Funding APR +131% (hourly +0.000150 avg, rising trend last 4 periods to +0.000192), longs overheated near $81.7K resistance",
-    "updated_at": "2026-09-19T18:31:00Z"
-  },
-  "ARB": {
-    "bias": "SHORT",
-    "target_entry": 0.205,
-    "reason": "Funding APR +97% (hourly +0.000111, spiked to +0.000286 last session), longs paying carry; price rejected at $0.208",
-    "updated_at": "2026-09-19T18:31:00Z"
+    "bias": "LONG",
+    "target_entry": 86339.5748,
+    "reason": "Spot-led momentum: +6.5% 24h on $4759.7M vol; healthy low funding APR +17.0%.",
+    "updated_at": "2026-09-21T19:53:59Z"
   },
   "ETH": {
     "bias": "LONG",
-    "target_entry": 2630.0,
-    "reason": "Funding flipping negative (recent rates -0.000052 to -0.000136), negative premiums across multiple periods; shorts accumulating at $2,635 support",
-    "updated_at": "2026-09-19T18:31:00Z"
+    "target_entry": 2753.5519,
+    "reason": "Spot-led momentum: +4.8% 24h on $2208.5M vol; healthy low funding APR +11.0%.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "SOL": {
+    "bias": "LONG",
+    "target_entry": 117.7291,
+    "reason": "Spot-led momentum: +6.8% 24h on $424.8M vol; healthy low funding APR +11.0%.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "SUI": {
+    "bias": "LONG",
+    "target_entry": 1.0192,
+    "reason": "Spot-led momentum: +15.9% 24h on $83.3M vol; healthy low funding APR +23.4%.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "USELESS": {
+    "bias": "SHORT",
+    "target_entry": 0.283,
+    "reason": "Crowded long fade: Funding APR +137.2% on $18.9M vol (+15.0% 24h); longs overleveraged.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "TAO": {
+    "bias": "SHORT",
+    "target_entry": 294.7884,
+    "reason": "Crowded long fade: Funding APR +128.4% on $56.0M vol (+10.9% 24h); longs overleveraged.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "NEAR": {
+    "bias": "SHORT",
+    "target_entry": 4.1748,
+    "reason": "Crowded long fade: Funding APR +108.2% on $305.2M vol (+0.0% 24h); longs overleveraged.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "FARTCOIN": {
+    "bias": "SHORT",
+    "target_entry": 0.1933,
+    "reason": "Crowded long fade: Funding APR +101.6% on $25.2M vol (+15.0% 24h); longs overleveraged.",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "HYPE": {
+    "bias": "SHORT",
+    "target_entry": 93.171,
+    "reason": "Top volume leader ($660.8M vol, -0.2% 24h).",
+    "updated_at": "2026-09-21T19:53:59Z"
+  },
+  "ZEC": {
+    "bias": "SHORT",
+    "target_entry": 1471.9913,
+    "reason": "Top volume leader ($558.9M vol, -3.1% 24h).",
+    "updated_at": "2026-09-21T19:53:59Z"
   }
 }
