@@ -64,9 +64,41 @@ def get_live_state() -> Dict[str, Any]:
     equity = float(active_trades.get("equity", 100.0))
     cash_balance = float(active_trades.get("cash_balance", 100.0))
 
-    # Calculate net unrealized and notional exposure
-    net_unrealized = sum(float(p.get("unrealized_pnl", 0.0)) for p in positions)
-    notional_exposure = sum(float(p.get("size", 0.0)) * float(p.get("entry_price", 0.0)) for p in positions)
+    # Dynamically compute real-time mark-to-market P&L from live prices
+    net_unrealized = 0.0
+    notional_exposure = 0.0
+    if positions:
+        try:
+            meta, asset_ctxs = info_client.get_meta_and_asset_ctxs()
+            universe = meta.get("universe", [])
+            px_map = {}
+            for u, ctx in zip(universe, asset_ctxs):
+                px_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+
+            for p in positions:
+                coin = p.get("coin", "").upper()
+                cur_px = px_map.get(coin, 0.0)
+                entry_px = float(p.get("entry_price", 0.0))
+                qty = float(p.get("size", 0.0))
+                side = p.get("side", "LONG").upper()
+                if cur_px > 0 and entry_px > 0 and qty > 0:
+                    pnl = (cur_px - entry_px) * qty * (1.0 if side == "LONG" else -1.0)
+                    p["unrealized_pnl"] = round(pnl, 2)
+                    p["mark_price"] = cur_px
+                    net_unrealized += pnl
+                    notional_exposure += (cur_px * qty)
+                else:
+                    net_unrealized += float(p.get("unrealized_pnl", 0.0))
+                    notional_exposure += (entry_px * qty)
+        except Exception:
+            net_unrealized = sum(float(p.get("unrealized_pnl", 0.0)) for p in positions)
+            notional_exposure = sum(float(p.get("size", 0.0)) * float(p.get("entry_price", 0.0)) for p in positions)
+    else:
+        net_unrealized = 0.0
+        notional_exposure = 0.0
+
+    live_equity = round(cash_balance + net_unrealized, 2)
+    pending_cmds = load_json_file(AI_COMMANDS_PATH, [])
 
     # Format prospects list
     raw_prospects = prospects_data.get("prospects") if (isinstance(prospects_data, dict) and "prospects" in prospects_data) else prospects_data
@@ -94,7 +126,7 @@ def get_live_state() -> Dict[str, Any]:
 
     return {
         "timestamp": time.time(),
-        "equity": round(equity, 2),
+        "equity": live_equity,
         "cash_balance": round(cash_balance, 2),
         "net_unrealized": round(net_unrealized, 2),
         "notional_exposure": round(notional_exposure, 2),
@@ -102,6 +134,7 @@ def get_live_state() -> Dict[str, Any]:
         "positions": positions,
         "prospects": prospects_list,
         "paper_state": paper_state,
+        "pending_ai_commands": pending_cmds,
     }
 
 
