@@ -527,7 +527,7 @@ class TradeManager:
         with self._lock:
             tracker = self.active_positions.get(key)
             if tracker is None:
-                return True, "Position not tracked"
+                return False, "HOLD (Position initializing/not yet registered)"
             duration = max(0.0, now - tracker.entry_time)
             if duration < self.min_holding_seconds:
                 return False, f"HOLD (Min holding period active: {int(duration)}s / {int(self.min_holding_seconds)}s)"

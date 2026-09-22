@@ -98,10 +98,12 @@ class UnifiedEngine:
             max_daily_drawdown_pct=0.20,
         )
         self.trade_manager = TradeManager(
-            min_holding_seconds=15.0,
-            reentry_cooldown_seconds=30.0,
-            breakeven_roi_pct=0.8,
-            trailing_roi_pct=1.2,
+            min_holding_seconds=60.0,
+            reentry_cooldown_seconds=60.0,
+            breakeven_roi_pct=1.0,
+            trailing_roi_pct=2.0,
+            mae_roi_pct=-2.5,
+            mae_loss_usd=-10.0,
         )
         self.analytics = PerformanceAnalytics()
 
@@ -569,7 +571,9 @@ class UnifiedEngine:
                         strat_name = str(pos.strategy_id)
                         cur_px = entry_px
 
-                        # 1. Audit L2 orderbook depth skew
+                        # 1. Fetch live price and L2 orderbook snapshot
+                        bids_depth = 0.0
+                        asks_depth = 0.0
                         l2 = self.info_client.get_l2_snapshot(coin)
                         if l2.get("status") == "SUCCESS":
                             bids = l2.get("bids", [])
@@ -584,33 +588,7 @@ class UnifiedEngine:
                             bids_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                             asks_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
-                            # Adverse depth wall collapse (>4x depth against position)
-                            if (side == "SHORT" and asks_depth > 0 and (bids_depth / asks_depth) > 4.0) or (side == "LONG" and bids_depth > 0 and (asks_depth / bids_depth) > 4.0):
-                                skew_ratio = (bids_depth / asks_depth) if side == "SHORT" else (asks_depth / bids_depth)
-                                reason = f"Orderbook depth wall collapsed: Skew {skew_ratio:.1f}x > 4.0x"
-                                can_exit, hold_reason = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
-                                if not can_exit:
-                                    self.log(f"⏸️ [AI Sentinel] Exit suppressed: {coin} - {hold_reason}", "INFO")
-                                else:
-                                    self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
-                                    self.close_position(coin, reason=reason)
-                                    continue
-
-                        # 2. Adverse funding rate spike (>120% APR)
-                        funding_apr = self.info_client.get_funding_rate(coin)
-                        if funding_apr is not None:
-                            if side == "LONG" and funding_apr > 1.20:
-                                reason = f"Adverse funding spike to +{funding_apr*100:.1f}% APR (toxic long carry)"
-                                self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
-                                self.close_position(coin, reason=reason)
-                                continue
-                            if side == "SHORT" and funding_apr < -1.20:
-                                reason = f"Adverse funding drop to {funding_apr*100:.1f}% APR (toxic short carry)"
-                                self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
-                                self.close_position(coin, reason=reason)
-                                continue
-
-                        # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
+                        # 2. Update TradeManager FIRST so position is tracked with correct entry time and price
                         action = self.trade_manager.update_position(
                             coin=coin,
                             side=side,
@@ -620,6 +598,48 @@ class UnifiedEngine:
                             strategy=strat_name,
                             entry_time=entry_time,
                         )
+
+                        # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
+                        if action.should_close:
+                            self.log(f"🛡️ [Trade Manager] TRIGGER: {coin} - {action.reason}", "TRIGGER")
+                            self.close_position(coin, reason=action.reason)
+                            continue
+
+                        # 4. Microstructure depth wall collapse check
+                        # ONLY applies to micro-scalps (OrderBookImbalance), NOT to macro swing / carry strategies!
+                        # Requires:
+                        # - Minimum holding period satisfied (held >= 60s)
+                        # - Position is in actual loss (ROI <= -0.8%)
+                        # - Severe adverse depth wall (>6.0x skew against position)
+                        if "OrderBookImbalance" in strat_name:
+                            can_exit, hold_reason = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
+                            if can_exit and action.roi <= -0.8:
+                                is_short_collapsed = (side == "SHORT" and asks_depth > 0 and (bids_depth / asks_depth) > 6.0)
+                                is_long_collapsed = (side == "LONG" and bids_depth > 0 and (asks_depth / bids_depth) > 6.0)
+                                if is_short_collapsed or is_long_collapsed:
+                                    skew_ratio = (bids_depth / asks_depth) if side == "SHORT" else (asks_depth / bids_depth)
+                                    reason = f"Orderbook depth wall collapsed: Skew {skew_ratio:.1f}x > 6.0x (ROI: {action.roi:.2f}%)"
+                                    self.log(f"🚨 [AI Sentinel] TRIGGER: {coin} - {reason}", "TRIGGER")
+                                    self.close_position(coin, reason=reason)
+                                    continue
+
+                        # 5. Adverse funding rate spike (>150% APR)
+                        # NEVER trigger on HourlyFundingFade (which intentionally trades high funding rates)
+                        # For other strategies, require min holding period satisfied.
+                        funding_apr = self.info_client.get_funding_rate(coin)
+                        if funding_apr is not None and "FundingFade" not in strat_name:
+                            can_exit, _ = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
+                            if can_exit:
+                                if side == "LONG" and funding_apr > 1.50:
+                                    reason = f"Adverse funding spike to +{funding_apr*100:.1f}% APR (toxic long carry)"
+                                    self.log(f"🚨 [AI Sentinel] TRIGGER: {coin} - {reason}", "TRIGGER")
+                                    self.close_position(coin, reason=reason)
+                                    continue
+                                if side == "SHORT" and funding_apr < -1.50:
+                                    reason = f"Adverse funding drop to {funding_apr*100:.1f}% APR (toxic short carry)"
+                                    self.log(f"🚨 [AI Sentinel] TRIGGER: {coin} - {reason}", "TRIGGER")
+                                    self.close_position(coin, reason=reason)
+                                    continue
 
                         # Record 10s Sentinel Thought
                         ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -642,11 +662,6 @@ class UnifiedEngine:
                         self.sentinel_thoughts.append(thought)
                         if len(self.sentinel_thoughts) > 50:
                             self.sentinel_thoughts.pop(0)
-
-                        if action.should_close:
-                            self.log(f"🛡️ [Trade Manager] TRIGGER: {coin} - {action.reason}", "TRIGGER")
-                            self.close_position(coin, reason=action.reason)
-                            continue
                 else:
                     # Portfolio is flat
                     ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
