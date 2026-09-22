@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--live", action="store_true", help="Run in Live Testnet mode with burner wallet instead of local Paper emulator")
     parser.add_argument("--risk-pct", type=float, default=0.01, help="Risk percentage per trade (default 0.01 = 1%%)")
     parser.add_argument("--rr-ratio", type=float, default=2.5, help="Reward-to-risk ratio (default 2.5)")
+    parser.add_argument("--watchdog-interval", type=float, default=10.0, help="Active trade watchdog audit interval in seconds (default 10.0)")
+    parser.add_argument("--prospector-interval", type=float, default=900.0, help="Market prospector scan interval in seconds (default 900.0 = 15m)")
     args = parser.parse_args()
 
     paper_mode = not args.live
@@ -50,7 +52,7 @@ def main():
         f"[bold cyan]HYPERLIQUID UNIFIED AUTONOMOUS TRADING SYSTEM[/bold cyan]\n"
         f"• [bold]Execution Mode:[/bold] {'[green]PAPER (Mainnet Data + Local Emulator)[/green]' if paper_mode else '[yellow]LIVE (Testnet Burner Wallet)[/yellow]'}\n"
         f"• [bold]Web Cockpit:[/bold] [bold underline cyan]http://localhost:{args.port}[/bold underline cyan]\n"
-        f"• [bold]AI Sentinel:[/bold] [green]ACTIVE[/green] (5s Orderbook Skew Watchdog + 15m Prospector)\n"
+        f"• [bold]AI Sentinel:[/bold] [green]ACTIVE[/green] ({int(args.watchdog_interval)}s Watchdog + {int(args.prospector_interval/60)}m Prospector)\n"
         f"• [bold]Strategies (4/4):[/bold] SMC Trend, Funding Fade, VWAP/OI Momentum, Book Scalper\n"
         f"• [bold]Risk Engine:[/bold] PortfolioGuard (Max 25% Pos, Max 10 Open, 20% Daily DD)\n"
         f"[dim]Press Ctrl+C to stop cleanly.[/dim]",
@@ -66,6 +68,8 @@ def main():
         risk_pct=args.risk_pct,
         rr_ratio=args.rr_ratio,
         web_port=args.port,
+        watchdog_interval=args.watchdog_interval,
+        prospector_interval=args.prospector_interval,
     )
 
     # 2. Hook engine into Web Server for direct in-memory execution

@@ -1,9 +1,54 @@
 {
-  "equity": 100.0,
-  "realized_pnl": 0.0,
-  "open_positions": [],
-  "session_start": "2026-09-22T22:16:27Z",
-  "last_updated": "2026-09-22T22:16:27Z",
+  "equity": 190.54,
+  "realized_pnl": 84.42,
+  "open_positions": [
+    {
+      "coin": "BCH",
+      "instrument_id": "BCH-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 5.372,
+      "entry_price": 344.38,
+      "mark_price": 345.27,
+      "unrealized_pnl": 4.78,
+      "roi_pct": 0.26,
+      "strategy": "Book Imbalance"
+    },
+    {
+      "coin": "ETHFI",
+      "instrument_id": "ETHFI-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 1339.4,
+      "entry_price": 0.69065,
+      "mark_price": 0.69112,
+      "unrealized_pnl": 0.63,
+      "roi_pct": 0.07,
+      "strategy": "Book Imbalance"
+    },
+    {
+      "coin": "GRASS",
+      "instrument_id": "GRASS-USD-PERP.HYPERLIQUID",
+      "side": "SHORT",
+      "size": 1285.2,
+      "entry_price": 0.43186,
+      "mark_price": 0.43184,
+      "unrealized_pnl": 0.03,
+      "roi_pct": 0.0,
+      "strategy": "Book Imbalance"
+    },
+    {
+      "coin": "MINA",
+      "instrument_id": "MINA-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 3500.0,
+      "entry_price": 0.15806999999999996,
+      "mark_price": 0.158265,
+      "unrealized_pnl": 0.68,
+      "roi_pct": 0.12,
+      "strategy": "Book Imbalance"
+    }
+  ],
+  "session_start": "2026-09-22T20:25:59Z",
+  "last_updated": "2026-09-22T20:25:59Z",
   "total_trades": 0,
   "starting_balance": 100.0
 }

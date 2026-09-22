@@ -28,7 +28,7 @@ import json
 import threading
 import signal
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import polars as pl
 from rich.console import Console
@@ -82,12 +82,16 @@ class UnifiedEngine:
         risk_pct: float = 0.01,
         rr_ratio: float = 2.5,
         web_port: int = 8000,
+        watchdog_interval: float = 10.0,
+        prospector_interval: float = 900.0,
     ):
         self.top_n = top_n
         self.paper = paper
         self.risk_pct = risk_pct
         self.rr_ratio = rr_ratio
         self.web_port = web_port
+        self.watchdog_interval = float(watchdog_interval)
+        self.prospector_interval = float(prospector_interval)
 
         self.info_client = HyperliquidInfoClient(network="mainnet" if paper else "testnet")
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
@@ -130,9 +134,44 @@ class UnifiedEngine:
         self.prospects_path = os.path.join(REPO_ROOT, "bridge", "prospects.json")
         self.funding_arbitrage_path = os.path.join(REPO_ROOT, "bridge", "funding_arbitrage.json")
         self.ai_commands_path = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
+        self.ai_status_path = os.path.join(REPO_ROOT, "bridge", "ai_status.json")
 
         self._paper_starting_equity = 100.0
         self._paper_realized_pnl = 0.0
+        self._prospector_scan_count = 0
+        self._last_prospector_scan = 0.0
+        self._next_prospector_scan = 0.0
+        self._last_watchdog_audit = 0.0
+
+    def _update_ai_status(self, open_count: int = 0) -> None:
+        """Update bridge/ai_status.json with live watchdog and prospector cadence."""
+        try:
+            status_payload = {
+                "status": "HEALTHY",
+                "is_fallback_active": False,
+                "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "prospector": {
+                    "status": "ACTIVE",
+                    "interval_seconds": self.prospector_interval,
+                    "interval_minutes": int(self.prospector_interval / 60),
+                    "scan_count": self._prospector_scan_count,
+                    "last_scan": datetime.fromtimestamp(self._last_prospector_scan, timezone.utc).isoformat() if self._last_prospector_scan else None,
+                    "next_scan": datetime.fromtimestamp(self._next_prospector_scan, timezone.utc).isoformat() if self._next_prospector_scan else None,
+                },
+                "watchdog": {
+                    "status": "ACTIVE",
+                    "interval_seconds": self.watchdog_interval,
+                    "target": "ACTIVE_TRADES",
+                    "active_positions_monitored": open_count,
+                    "last_audit": datetime.fromtimestamp(self._last_watchdog_audit, timezone.utc).isoformat() if self._last_watchdog_audit else None,
+                },
+            }
+            tmp_status = f"{self.ai_status_path}.tmp"
+            with open(tmp_status, "w") as f:
+                json.dump(status_payload, f, indent=2)
+            os.replace(tmp_status, self.ai_status_path)
+        except Exception:
+            pass
 
     def log(self, message: str, level: str = "INFO") -> None:
         """Structured logging with in-memory ring buffer for the web UI."""
@@ -436,6 +475,10 @@ class UnifiedEngine:
             "trade_manager": self.trade_manager.get_summary(),
             "strategy_allocations": self.guard.get_strategy_performance_status() if hasattr(self, "guard") and self.guard else {},
             "performance_metrics": self.analytics.get_metrics(self.trade_manager.get_closed_trades()),
+            "prospector_interval": self.prospector_interval,
+            "watchdog_interval": self.watchdog_interval,
+            "next_prospector_scan": datetime.fromtimestamp(self._next_prospector_scan, timezone.utc).isoformat() if self._next_prospector_scan else None,
+            "last_watchdog_audit": datetime.fromtimestamp(self._last_watchdog_audit, timezone.utc).isoformat() if self._last_watchdog_audit else None,
         }
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
@@ -557,11 +600,14 @@ class UnifiedEngine:
 
 
     def _ai_sentinel_watchdog_loop(self) -> None:
-        """In-process real-time trade sentry auditing active positions every 5s."""
-        self.log("🛡️ [AI Sentinel] Real-time active trade watchdog started (5s cycle).", "INFO")
+        """In-process real-time trade sentry auditing active positions every 10s."""
+        self.log(f"🛡️ [AI Sentinel] Real-time active trade watchdog started ({int(self.watchdog_interval)}s cycle).", "INFO")
         while self._is_running:
+            loop_start = time.time()
             try:
                 open_positions = self.get_open_positions()
+                self._last_watchdog_audit = time.time()
+                self._update_ai_status(open_count=len(open_positions))
                 if open_positions:
                     for pos in open_positions:
                         coin = pos.instrument_id.symbol.value.split("-")[0]
@@ -752,7 +798,9 @@ class UnifiedEngine:
             except Exception as e:
                 self.log(f"AI Sentinel watchdog loop notice: {e}", "WARN")
 
-            time.sleep(5.0)
+            elapsed = time.time() - loop_start
+            sleep_time = max(1.0, self.watchdog_interval - elapsed)
+            time.sleep(sleep_time)
 
     def _check_external_bridge_commands(self) -> None:
         """Execute any commands queued in bridge/ai_commands.json."""
@@ -777,8 +825,14 @@ class UnifiedEngine:
 
     def _ai_prospector_loop(self) -> None:
         """In-process market prospector scanning top 50 markets every 15m."""
-        self.log("🔍 [AI Prospector] High-frequency scanner started (15m cycle).", "INFO")
+        self.log(f"🔍 [AI Prospector] High-frequency scanner started ({int(self.prospector_interval / 60)}m cycle).", "INFO")
         while self._is_running:
+            self._prospector_scan_count += 1
+            now_ts = time.time()
+            self._last_prospector_scan = now_ts
+            self._next_prospector_scan = now_ts + self.prospector_interval
+            self._update_ai_status(open_count=len(self.get_open_positions()))
+            self.log(f"🔍 [AI Prospector] Running {int(self.prospector_interval / 60)}-minute market scan #{self._prospector_scan_count} across top 50 perpetuals...", "INFO")
             try:
                 meta, asset_ctxs = self.info_client.get_meta_and_asset_ctxs()
                 universe = meta.get("universe", [])
@@ -883,12 +937,12 @@ class UnifiedEngine:
                         instr_str = f"{c}-USD-PERP.HYPERLIQUID"
                         self.funding_strat.update_funding_rate(instr_str, apr)
 
-                self.log(f"🎯 [AI Prospector] Updated {len(prospects_list)} high-conviction targets: {[p['coin'] for p in prospects_list]}", "INFO")
-
                 # Sync to bridge/prospects.json
                 payload = {
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "scan_iteration": getattr(self, "_prospector_scan_count", 1),
+                    "scan_iteration": self._prospector_scan_count,
+                    "interval_minutes": int(self.prospector_interval / 60),
+                    "next_scan_at": datetime.fromtimestamp(self._next_prospector_scan, timezone.utc).isoformat(),
                     "macro_sentiment": "NEUTRAL_TO_BULLISH_SELECTIVE_EXPANSION",
                     "prospects": prospects_list,
                 }
@@ -911,11 +965,17 @@ class UnifiedEngine:
                 except Exception as arb_err:
                     self.log(f"Funding arbitrage scan warning: {arb_err}", "WARN")
 
+                self.log(
+                    f"🎯 [AI Prospector] Scan #{self._prospector_scan_count} complete: updated {len(prospects_list)} targets: "
+                    f"{[p['coin'] for p in prospects_list]}. Next scan scheduled in {int(self.prospector_interval / 60)} minutes.",
+                    "INFO",
+                )
+
             except Exception as e:
                 self.log(f"Prospector scan warning: {e}", "WARN")
 
-            # Wait 15 minutes or until stopped
-            for _ in range(900):
+            # Wait prospector_interval (15 minutes = 900s) or until stopped
+            for _ in range(int(self.prospector_interval)):
                 if not self._is_running:
                     break
                 time.sleep(1.0)
