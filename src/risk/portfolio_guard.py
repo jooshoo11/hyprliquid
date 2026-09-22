@@ -188,14 +188,14 @@ class PortfolioGuard:
             return dict(self.strategy_allocation_caps)
 
     def get_strategy_sizing_multiplier(self, strategy_name: str) -> float:
-        """Get current dynamic risk sizing multiplier (0.4x - 1.6x) for order sizing."""
+        """Get current dynamic risk sizing multiplier for order sizing (never throttled below 1.0x)."""
         with self._lock:
-            if strategy_name in self.strategy_sizing_multipliers:
-                return self.strategy_sizing_multipliers[strategy_name]
-            base_name = strategy_name.split("-")[0]
-            if base_name in self.strategy_sizing_multipliers:
-                return self.strategy_sizing_multipliers[base_name]
-            return 1.0
+            val = self.strategy_sizing_multipliers.get(strategy_name)
+            if val is None:
+                base_name = strategy_name.split("-")[0]
+                val = self.strategy_sizing_multipliers.get(base_name, 1.0)
+            # Never throttle below 1.0x - do not shrink positions 60% smaller!
+            return max(1.0, float(val))
 
     def get_strategy_performance_status(self) -> Dict[str, Dict[str, Any]]:
         """Get live performance metrics, tiers, and multipliers across all strategies."""

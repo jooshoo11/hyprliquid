@@ -166,8 +166,8 @@ def test_dynamic_sizing_multipliers_and_performance_status():
     assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 1.6
     assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC-001") == 1.6
 
-    # Cold strategy scales down to 0.4x sizing
-    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 0.4
+    # Sizing multiplier is never throttled below 1.0x (no 60% shrinkage penalty!)
+    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 1.0
 
     # Performance status verification
     status = guard.get_strategy_performance_status()
