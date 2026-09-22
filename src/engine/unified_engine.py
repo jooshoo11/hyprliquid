@@ -434,6 +434,7 @@ class UnifiedEngine:
             "circuit_breaker": "TRIPPED" if self.guard.is_circuit_breaker_triggered else "NORMAL",
             "paper": self.paper,
             "trade_manager": self.trade_manager.get_summary(),
+            "strategy_allocations": self.guard.get_strategy_performance_status() if hasattr(self, "guard") and self.guard else {},
             "performance_metrics": self.analytics.get_metrics(self.trade_manager.get_closed_trades()),
         }
 

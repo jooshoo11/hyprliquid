@@ -140,3 +140,40 @@ def test_portfolio_guard_stale_order_cancellation():
     # Acknowledge cancellation
     guard.acknowledge_order_cancelled(stale[0].order_id)
     assert len(guard.pending_orders) == 0
+
+
+def test_dynamic_sizing_multipliers_and_performance_status():
+    guard = PortfolioGuard(max_strategy_equity_pct=0.25)
+
+    # 1. Baseline multiplier without trades is 1.0x
+    assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 1.0
+    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 1.0
+
+    # 2. Add winning trades for TrendContinuationSMC (75% win rate -> HOT 1.6x)
+    trades = [
+        {"strategy": "TrendContinuationSMC", "gross_pnl": 50.0, "fees": 1.0, "net_pnl": 49.0},
+        {"strategy": "TrendContinuationSMC", "gross_pnl": 30.0, "fees": 1.0, "net_pnl": 29.0},
+        {"strategy": "TrendContinuationSMC", "gross_pnl": 40.0, "fees": 1.0, "net_pnl": 39.0},
+        {"strategy": "TrendContinuationSMC", "gross_pnl": -10.0, "fees": 1.0, "net_pnl": -11.0},
+        # Add losing trades for HourlyFundingFade (<25% win rate -> PROBATION 0.4x)
+        {"strategy": "HourlyFundingFade", "gross_pnl": -30.0, "fees": 1.0, "net_pnl": -31.0},
+        {"strategy": "HourlyFundingFade", "gross_pnl": -20.0, "fees": 1.0, "net_pnl": -21.0},
+    ]
+
+    guard.update_dynamic_allocations(trades)
+
+    # Hot strategy scales up to 1.6x sizing
+    assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 1.6
+    assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC-001") == 1.6
+
+    # Cold strategy scales down to 0.4x sizing
+    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 0.4
+
+    # Performance status verification
+    status = guard.get_strategy_performance_status()
+    assert "TrendContinuationSMC" in status
+    assert status["TrendContinuationSMC"]["multiplier"] == 1.6
+    assert "HOT" in status["TrendContinuationSMC"]["tier"]
+    assert status["TrendContinuationSMC"]["win_rate_pct"] == 75.0
+    assert status["HourlyFundingFade"]["multiplier"] == 0.4
+

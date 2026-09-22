@@ -367,7 +367,10 @@ class TrendContinuationSMC(Strategy):
             return
 
         equity = self._get_account_equity()
-        risk_usd = equity * self.trend_config.risk_per_trade_pct
+        sizing_mult = 1.0
+        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
+            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
+        risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
         qty_val = risk_usd / risk_per_unit
         
         # Enforce official Hyperliquid exchange max leverage for this coin
@@ -456,7 +459,10 @@ class TrendContinuationSMC(Strategy):
             return
 
         equity = self._get_account_equity()
-        risk_usd = equity * self.trend_config.risk_per_trade_pct
+        sizing_mult = 1.0
+        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
+            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
+        risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
         qty_val = risk_usd / risk_per_unit
         
         # Enforce official Hyperliquid exchange max leverage for this coin

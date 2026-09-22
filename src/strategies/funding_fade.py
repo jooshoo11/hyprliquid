@@ -201,7 +201,10 @@ class HourlyFundingFade(Strategy):
     ) -> None:
         """Submit post-only maker limit order to capture maker rebate (-0.01%)."""
         equity = self._get_account_equity()
-        risk_usd = equity * self.fade_config.risk_per_trade_pct
+        sizing_mult = 1.0
+        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
+            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
+        risk_usd = equity * self.fade_config.risk_per_trade_pct * sizing_mult
         risk_per_unit = price * self.fade_config.trailing_stop_pct
         if risk_per_unit <= 0:
             return

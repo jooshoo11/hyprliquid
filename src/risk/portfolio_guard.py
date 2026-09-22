@@ -52,6 +52,8 @@ class PortfolioGuard:
         self.max_strategy_equity_pct = max_strategy_equity_pct
         self.baseline_strategy_equity_pct = max_strategy_equity_pct
         self.strategy_allocation_caps: Dict[str, float] = {}
+        self.strategy_sizing_multipliers: Dict[str, float] = {}
+        self.strategy_performance_stats: Dict[str, Dict[str, Any]] = {}
         self.max_total_open_positions = max_total_open_positions
         self.max_daily_drawdown_pct = max_daily_drawdown_pct
         self.default_order_timeout_secs = default_order_timeout_secs
@@ -108,12 +110,21 @@ class PortfolioGuard:
                 return self.strategy_allocation_caps[base_name]
             return self.baseline_strategy_equity_pct
 
-    def update_dynamic_allocations(self, closed_trades: List[Dict[str, Any]]) -> Dict[str, float]:
+    def update_dynamic_allocations(
+        self,
+        closed_trades: List[Dict[str, Any]],
+        rolling_window: int = 30,
+    ) -> Dict[str, float]:
         """
-        Dynamically scale strategy margin allocation caps based on realized performance:
-          - Win rate >= 60% and net PnL > 0: expand cap dynamically up to 35% - 40%.
-          - Win rate < 40% or net PnL < 0: throttle cap down to 10% - 15%.
-          - Otherwise: baseline 25%.
+        Dynamically scale strategy margin allocation caps and risk sizing multipliers
+        based on rolling realized performance (last `rolling_window` trades per strategy).
+        
+        Tiers & Multipliers:
+          - HOT 🔥: Win rate >= 75% and net PnL > 0 -> Multiplier: 1.6x (Expand size + cap)
+          - WARM ⚡: Win rate >= 60% and net PnL > 0 -> Multiplier: 1.4x (Solid performer)
+          - NORMAL ⚖️: Win rate >= 40% and net PnL >= 0 -> Multiplier: 1.0x (Baseline)
+          - COLD ❄️: Win rate < 40% or net PnL < 0 -> Multiplier: 0.6x (Throttle size down)
+          - PROBATION ⚠️: Win rate < 25% or heavy net loss -> Multiplier: 0.4x (Minimal size)
         """
         strat_trades: Dict[str, List[Dict[str, Any]]] = {}
         for t in closed_trades:
@@ -127,30 +138,69 @@ class PortfolioGuard:
             for strat, trades in strat_trades.items():
                 if not trades:
                     continue
+                # Use rolling window of recent trades for adaptive learning
+                eval_trades = trades[-rolling_window:] if len(trades) > rolling_window else trades
                 wins = 0
+                gross_wins = 0.0
+                gross_losses = 0.0
                 total_net_pnl = 0.0
-                for tr in trades:
+                for tr in eval_trades:
                     gross = float(tr.get("gross_pnl") if "gross_pnl" in tr else (tr.get("pnl") or 0.0))
                     fees = float(tr.get("fees") or 0.0)
                     net = float(tr.get("net_pnl") if "net_pnl" in tr else (gross - fees))
                     total_net_pnl += net
                     if net > 0:
                         wins += 1
+                        gross_wins += gross
+                    elif net < 0:
+                        gross_losses += abs(gross)
 
-                win_rate = wins / len(trades)
+                win_rate = wins / len(eval_trades)
+                profit_factor = round(gross_wins / max(gross_losses, 0.01), 2) if gross_losses > 0 else (round(gross_wins, 2) if gross_wins > 0 else 1.0)
+
                 if win_rate >= 0.60 and total_net_pnl > 0:
                     multiplier = 1.6 if win_rate >= 0.75 else 1.4
+                    tier = "HOT 🔥" if win_rate >= 0.75 else "WARM ⚡"
                 elif win_rate < 0.40 and total_net_pnl < 0:
                     multiplier = 0.4 if (win_rate < 0.25 or total_net_pnl < -50.0) else 0.6
+                    tier = "PROBATION ⚠️" if (win_rate < 0.25 or total_net_pnl < -50.0) else "COLD ❄️"
                 elif total_net_pnl < 0:
                     multiplier = 0.6
+                    tier = "COLD ❄️"
                 else:
                     multiplier = 1.0
+                    tier = "NORMAL ⚖️"
 
                 cap = round(self.baseline_strategy_equity_pct * multiplier, 4)
                 self.strategy_allocation_caps[strat] = cap
+                self.strategy_sizing_multipliers[strat] = multiplier
+                self.strategy_performance_stats[strat] = {
+                    "strategy": strat,
+                    "tier": tier,
+                    "multiplier": multiplier,
+                    "allocation_cap": cap,
+                    "rolling_trades": len(eval_trades),
+                    "win_rate_pct": round(win_rate * 100.0, 1),
+                    "profit_factor": profit_factor,
+                    "rolling_net_pnl": round(total_net_pnl, 2),
+                }
 
             return dict(self.strategy_allocation_caps)
+
+    def get_strategy_sizing_multiplier(self, strategy_name: str) -> float:
+        """Get current dynamic risk sizing multiplier (0.4x - 1.6x) for order sizing."""
+        with self._lock:
+            if strategy_name in self.strategy_sizing_multipliers:
+                return self.strategy_sizing_multipliers[strategy_name]
+            base_name = strategy_name.split("-")[0]
+            if base_name in self.strategy_sizing_multipliers:
+                return self.strategy_sizing_multipliers[base_name]
+            return 1.0
+
+    def get_strategy_performance_status(self) -> Dict[str, Dict[str, Any]]:
+        """Get live performance metrics, tiers, and multipliers across all strategies."""
+        with self._lock:
+            return dict(self.strategy_performance_stats)
 
     def can_open_position(
         self,
