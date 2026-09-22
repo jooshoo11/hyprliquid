@@ -1,8 +1,7 @@
 {
-  "timestamp": 1790108759.8397994,
   "equity": 190.54,
-  "cash_balance": 184.42,
-  "positions": [
+  "realized_pnl": 84.42,
+  "open_positions": [
     {
       "coin": "BCH",
       "instrument_id": "BCH-USD-PERP.HYPERLIQUID",
@@ -47,5 +46,9 @@
       "roi_pct": 0.12,
       "strategy": "Book Imbalance"
     }
-  ]
+  ],
+  "session_start": "2026-09-22T20:25:59Z",
+  "last_updated": "2026-09-22T20:25:59Z",
+  "total_trades": 0,
+  "starting_balance": 100.0
 }

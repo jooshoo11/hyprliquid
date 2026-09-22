@@ -47,9 +47,10 @@ from nautilus_trader.adapters.hyperliquid.config import (
 from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
 from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
 from nautilus_trader.config import InstrumentProviderConfig
-from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue, StrategyId, AccountId
+from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue, StrategyId, AccountId, ClientOrderId
+from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.model.currencies import USD
-from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import AccountType, OrderSide
 from nautilus_trader.model.objects import MarginBalance, Money, AccountBalance
 from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.core.uuid import UUID4
@@ -59,7 +60,10 @@ from src.strategies.funding_fade import HourlyFundingFade, HourlyFundingFadeConf
 from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanceConfig
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
 from src.risk.portfolio_guard import PortfolioGuard
+from src.risk.trade_manager import TradeManager, TradeAction
+from src.risk.performance_analytics import PerformanceAnalytics
 from src.scanner.mcp_client import HyperliquidInfoClient
+from src.scanner.arbitrage_scanner import ArbitrageScanner
 from src.utils.instruments import get_coin_max_leverage
 from src.execution.node_runner import generate_or_load_wallet
 
@@ -93,6 +97,13 @@ class UnifiedEngine:
             max_total_open_positions=10,
             max_daily_drawdown_pct=0.20,
         )
+        self.trade_manager = TradeManager(
+            min_holding_seconds=15.0,
+            reentry_cooldown_seconds=30.0,
+            breakeven_roi_pct=0.8,
+            trailing_roi_pct=1.2,
+        )
+        self.analytics = PerformanceAnalytics()
 
         self.node: Optional[TradingNode] = None
         self.continuation_strat: Optional[TrendContinuationSMC] = None
@@ -102,7 +113,11 @@ class UnifiedEngine:
 
         self.top_coins: List[str] = []
         self.prospects: Dict[str, Any] = {}
+        self.funding_arbitrage_pairs: List[Dict[str, Any]] = []
         self.audit_events: List[Dict[str, Any]] = []
+        self.sentinel_thoughts: List[Dict[str, Any]] = []
+
+        self.arbitrage_scanner = ArbitrageScanner(info_client=self.info_client)
 
         self._is_running = False
         self._threads: List[threading.Thread] = []
@@ -111,6 +126,7 @@ class UnifiedEngine:
         self.paper_state_path = os.path.join(REPO_ROOT, "bridge", "paper_state.json")
         self.active_trades_path = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
         self.prospects_path = os.path.join(REPO_ROOT, "bridge", "prospects.json")
+        self.funding_arbitrage_path = os.path.join(REPO_ROOT, "bridge", "funding_arbitrage.json")
         self.ai_commands_path = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
 
         self._paper_starting_equity = 100.0
@@ -170,6 +186,7 @@ class UnifiedEngine:
     def setup(self) -> None:
         """Initialize Nautilus TradingNode and Strategy Actors."""
         self.load_paper_state()
+        self.guard.update_dynamic_allocations(self.trade_manager.get_closed_trades())
         mode_str = "MAINNET (LOCAL EMULATOR)" if self.paper else "TESTNET (BURNER KEY)"
         self.log(f"🚀 Initializing Unified Autonomous Trading Engine - {mode_str}...")
 
@@ -246,6 +263,7 @@ class UnifiedEngine:
         self.funding_strat = HourlyFundingFade(
             config=HourlyFundingFadeConfig(venue="HYPERLIQUID", risk_per_trade_pct=min(self.risk_pct, 0.0075)),
             portfolio_guard=self.guard,
+            info_client=self.info_client,
         )
         self.scalp_strat = OrderBookImbalance(
             config=OrderBookImbalanceConfig(venue="HYPERLIQUID", risk_per_trade_pct=min(self.risk_pct, 0.005)),
@@ -318,6 +336,17 @@ class UnifiedEngine:
                 total_unrealized += pnl
                 total_notional += (cur_px * qty)
 
+                strat_raw = str(pos.strategy_id) if hasattr(pos, "strategy_id") and pos.strategy_id else ""
+                strat_name = "SMC Trend"
+                if "Funding" in strat_raw:
+                    strat_name = "Funding Fade"
+                elif "OrderBook" in strat_raw or "Scalp" in strat_raw or "Imbalance" in strat_raw:
+                    strat_name = "Book Imbalance"
+                elif "Vwap" in strat_raw or "Momentum" in strat_raw:
+                    strat_name = "VWAP/OI"
+                elif "Continuation" in strat_raw or "SMC" in strat_raw:
+                    strat_name = "SMC Trend"
+
                 positions_data.append({
                     "coin": coin,
                     "instrument_id": str(pos.instrument_id),
@@ -327,6 +356,7 @@ class UnifiedEngine:
                     "mark_price": cur_px,
                     "unrealized_pnl": round(pnl, 2),
                     "roi_pct": round((pnl / (entry_px * qty) * 100.0) if (entry_px * qty) > 0 else 0.0, 2),
+                    "strategy": strat_name,
                 })
             except Exception:
                 pass
@@ -334,17 +364,58 @@ class UnifiedEngine:
         total_equity = round(cash_balance + total_unrealized, 2)
         roi_total = round((total_unrealized / cash_balance * 100.0) if cash_balance > 0 else 0.0, 2)
 
-        # Format prospects
+        # Format prospects: load from bridge/prospects.json if present
+        prospects_source = self.prospects
+        if os.path.exists(self.prospects_path):
+            try:
+                with open(self.prospects_path, "r") as f:
+                    p_json = json.load(f)
+                    if isinstance(p_json, dict) and "prospects" in p_json:
+                        prospects_source = p_json["prospects"]
+                    elif isinstance(p_json, dict) and p_json:
+                        prospects_source = p_json
+            except Exception:
+                pass
+
         prospects_list = []
-        for coin, p_data in self.prospects.items():
-            prospects_list.append({
-                "coin": coin,
-                "bias": p_data.get("bias", "NEUTRAL"),
-                "target_entry": p_data.get("target_entry", 0.0),
-                "rationale": p_data.get("reason", ""),
-                "change_24h": p_data.get("change_24h", 0.0),
-                "volume_24h": p_data.get("volume_24h", 0.0),
-            })
+        if isinstance(prospects_source, list):
+            for p in prospects_source:
+                if isinstance(p, dict):
+                    prospects_list.append({
+                        "coin": p.get("coin", "UNKNOWN"),
+                        "bias": p.get("bias", "NEUTRAL"),
+                        "score": p.get("score", 0.0),
+                        "target_entry": p.get("target_entry", 0.0),
+                        "rationale": p.get("reason") or p.get("rationale", ""),
+                        "change_24h": p.get("change_24h", 0.0),
+                        "volume_24h": p.get("volume_24h", p.get("volume_24h_usd", 0.0)),
+                        "funding_apr": p.get("funding_apr", p.get("funding_apr_pct", 0.0)),
+                        "mark_price": p.get("mark_price", 0.0),
+                    })
+        elif isinstance(prospects_source, dict):
+            for coin, p_data in prospects_source.items():
+                if isinstance(p_data, dict):
+                    prospects_list.append({
+                        "coin": coin,
+                        "bias": p_data.get("bias", "NEUTRAL"),
+                        "score": p_data.get("score", 0.0),
+                        "target_entry": p_data.get("target_entry", 0.0),
+                        "rationale": p_data.get("reason") or p_data.get("rationale", ""),
+                        "change_24h": p_data.get("change_24h", 0.0),
+                        "volume_24h": p_data.get("volume_24h", p_data.get("volume_24h_usd", 0.0)),
+                        "funding_apr": p_data.get("funding_apr", p_data.get("funding_apr_pct", 0.0)),
+                        "mark_price": p_data.get("mark_price", 0.0),
+                    })
+
+        # Load funding arbitrage opportunities
+        funding_arb_pairs = self.funding_arbitrage_pairs
+        if not funding_arb_pairs and os.path.exists(self.funding_arbitrage_path):
+            try:
+                with open(self.funding_arbitrage_path, "r") as f:
+                    f_data = json.load(f)
+                    funding_arb_pairs = f_data.get("pairs", [])
+            except Exception:
+                pass
 
         return {
             "timestamp": time.time(),
@@ -355,9 +426,13 @@ class UnifiedEngine:
             "roi_pct": roi_total,
             "positions": positions_data,
             "prospects": prospects_list,
+            "funding_arbitrage": funding_arb_pairs,
+            "sentinel_thoughts": self.sentinel_thoughts[-25:],
             "audit_events": self.audit_events[-20:],
             "circuit_breaker": "TRIPPED" if self.guard.is_circuit_breaker_triggered else "NORMAL",
             "paper": self.paper,
+            "trade_manager": self.trade_manager.get_summary(),
+            "performance_metrics": self.analytics.get_metrics(self.trade_manager.get_closed_trades()),
         }
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
@@ -388,6 +463,38 @@ class UnifiedEngine:
                     closed_any = True
                     self.log(f"Market close submitted for {coin_clean} via fallback {fallback.id} ({reason})", "CLOSE")
 
+            if closed_any:
+                entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
+                qty = pos.quantity.as_double() if hasattr(pos, "quantity") and hasattr(pos.quantity, "as_double") else 1.0
+                side = "LONG" if pos.is_long else "SHORT"
+                strat_id = str(pos.strategy_id)
+                exit_px = entry_px
+                tracker = self.trade_manager.get_position(coin_clean)
+                if tracker and tracker.current_price > 0:
+                    exit_px = tracker.current_price
+
+                self.trade_manager.close_and_journal_position(
+                    coin=coin_clean,
+                    exit_price=exit_px,
+                    reason=reason,
+                    fallback_side=side,
+                    fallback_size=qty,
+                    fallback_entry_price=entry_px,
+                    fallback_strategy=strat_id,
+                )
+
+                # Set 3-minute anti-churn cooldown
+                if hasattr(self, "guard") and self.guard:
+                    self.guard.set_cooldown(coin_clean, 180.0)
+                if hasattr(self, "portfolio_guard") and self.portfolio_guard:
+                    self.portfolio_guard.set_cooldown(coin_clean, 180.0)
+                if hasattr(self, "trade_manager") and self.trade_manager:
+                    self.trade_manager.cooldown_tracker[coin_clean] = time.time() + 180.0
+
+                # Dynamically adjust risk allocations based on updated trade performance
+                if hasattr(self, "guard") and self.guard:
+                    self.guard.update_dynamic_allocations(self.trade_manager.get_closed_trades())
+
         return closed_any
 
     def close_all_positions(self, reason: str = "Emergency Close All") -> List[str]:
@@ -400,6 +507,52 @@ class UnifiedEngine:
                 closed.append(coin)
         return closed
 
+    def log_missed_opportunity(
+        self,
+        coin: str,
+        strategy: str,
+        reason: str,
+        metrics: Optional[Dict[str, Any]] = None,
+        retrospective_note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Log a missed trading opportunity or rejected trade decision via TradeManager."""
+        return self.trade_manager.log_missed_opportunity(
+            coin=coin,
+            strategy=strategy,
+            reason=reason,
+            metrics=metrics,
+            retrospective_note=retrospective_note,
+        )
+
+    def get_missed_opportunities(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve latest missed opportunities via TradeManager."""
+        return self.trade_manager.get_missed_opportunities(limit=limit)
+
+    def get_closed_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retrieve recent closed trades via TradeManager."""
+        return self.trade_manager.get_closed_trades(limit=limit)
+
+    def is_in_cooldown(self, coin: str) -> bool:
+        """Check if coin is in re-entry cooldown period after closing."""
+        return self.trade_manager.is_in_cooldown(coin)
+
+    def find_capital_rotation_candidate(self, new_prospect_coin: str, conviction_score: float = 0.0) -> Optional[Tuple[str, str]]:
+        """Identify candidate position to close for capital rotation into a high-conviction prospect."""
+        return self.trade_manager.find_capital_rotation_candidate(
+            new_prospect_coin=new_prospect_coin,
+            new_prospect_conviction_score=conviction_score,
+            max_positions=self.guard.max_total_open_positions,
+        )
+
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Retrieve quantitative performance metrics from closed trades."""
+        return self.analytics.get_metrics(self.trade_manager.get_closed_trades())
+
+    def generate_performance_report(self, output_file: Optional[str] = None) -> str:
+        """Generate quantitative performance report in Markdown."""
+        return self.analytics.generate_markdown_report(self.trade_manager.get_closed_trades(), output_file=output_file)
+
+
     def _ai_sentinel_watchdog_loop(self) -> None:
         """In-process real-time trade sentry auditing active positions every 5s."""
         self.log("🛡️ [AI Sentinel] Real-time active trade watchdog started (5s cycle).", "INFO")
@@ -410,27 +563,38 @@ class UnifiedEngine:
                     for pos in open_positions:
                         coin = pos.instrument_id.symbol.value.split("-")[0]
                         side = "LONG" if pos.is_long else "SHORT"
+                        qty = pos.quantity.as_double() if hasattr(pos, "quantity") and hasattr(pos.quantity, "as_double") else 1.0
+                        entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
+                        entry_time = (pos.ts_opened / 1e9) if hasattr(pos, "ts_opened") and pos.ts_opened else None
+                        strat_name = str(pos.strategy_id)
+                        cur_px = entry_px
 
                         # 1. Audit L2 orderbook depth skew
                         l2 = self.info_client.get_l2_snapshot(coin)
                         if l2.get("status") == "SUCCESS":
                             bids = l2.get("bids", [])
                             asks = l2.get("asks", [])
+                            if bids and asks:
+                                cur_px = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2.0
+                            elif bids:
+                                cur_px = float(bids[0]["px"])
+                            elif asks:
+                                cur_px = float(asks[0]["px"])
+
                             bids_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                             asks_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
                             # Adverse depth wall collapse (>4x depth against position)
-                            if side == "SHORT" and asks_depth > 0 and (bids_depth / asks_depth) > 4.0:
-                                reason = f"Orderbook depth wall collapsed: Bid depth ${bids_depth/1e3:.1f}k > 4x Ask depth ${asks_depth/1e3:.1f}k"
-                                self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
-                                self.close_position(coin, reason=reason)
-                                continue
-
-                            if side == "LONG" and bids_depth > 0 and (asks_depth / bids_depth) > 4.0:
-                                reason = f"Orderbook depth wall collapsed: Ask depth ${asks_depth/1e3:.1f}k > 4x Bid depth ${bids_depth/1e3:.1f}k"
-                                self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
-                                self.close_position(coin, reason=reason)
-                                continue
+                            if (side == "SHORT" and asks_depth > 0 and (bids_depth / asks_depth) > 4.0) or (side == "LONG" and bids_depth > 0 and (asks_depth / bids_depth) > 4.0):
+                                skew_ratio = (bids_depth / asks_depth) if side == "SHORT" else (asks_depth / bids_depth)
+                                reason = f"Orderbook depth wall collapsed: Skew {skew_ratio:.1f}x > 4.0x"
+                                can_exit, hold_reason = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
+                                if not can_exit:
+                                    self.log(f"⏸️ [AI Sentinel] Exit suppressed: {coin} - {hold_reason}", "INFO")
+                                else:
+                                    self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
+                                    self.close_position(coin, reason=reason)
+                                    continue
 
                         # 2. Adverse funding rate spike (>120% APR)
                         funding_apr = self.info_client.get_funding_rate(coin)
@@ -445,6 +609,126 @@ class UnifiedEngine:
                                 self.log(f"🚨 [AI Sentinel] EMERGENCY TRIGGER: {coin} - {reason}", "TRIGGER")
                                 self.close_position(coin, reason=reason)
                                 continue
+
+                        # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
+                        action = self.trade_manager.update_position(
+                            coin=coin,
+                            side=side,
+                            size=qty,
+                            entry_price=entry_px,
+                            mark_price=cur_px,
+                            strategy=strat_name,
+                            entry_time=entry_time,
+                        )
+
+                        # Record 10s Sentinel Thought
+                        ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        funding_str = f"{funding_apr*100:+.1f}% APR" if funding_apr is not None else "N/A"
+                        skew_ratio = (bids_depth / max(asks_depth, 1.0)) if side == "SHORT" else (asks_depth / max(bids_depth, 1.0))
+                        
+                        thought_status = "TRIGGER" if action.should_close else ("ALERT" if (action.roi >= 1.0 or action.roi <= -1.5) else "NORMAL")
+                        thought_text = f"{coin} {side} [{strat_name}] ({action.roi:+.2f}% ROI | ${action.pnl:+.2f}): L2 Depth Skew {skew_ratio:.1f}x. Funding: {funding_str}. Sentry Action: {action.action} ({action.reason})."
+
+                        thought = {
+                            "timestamp": ts_str,
+                            "category": "AUDIT",
+                            "coin": coin,
+                            "side": side,
+                            "roi": round(action.roi, 2),
+                            "pnl": round(action.pnl, 2),
+                            "text": thought_text,
+                            "status": thought_status,
+                        }
+                        self.sentinel_thoughts.append(thought)
+                        if len(self.sentinel_thoughts) > 50:
+                            self.sentinel_thoughts.pop(0)
+
+                        if action.should_close:
+                            self.log(f"🛡️ [Trade Manager] TRIGGER: {coin} - {action.reason}", "TRIGGER")
+                            self.close_position(coin, reason=action.reason)
+                            continue
+                else:
+                    # Portfolio is flat
+                    ts_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    thought = {
+                        "timestamp": ts_str,
+                        "category": "STANDBY",
+                        "coin": "PORTFOLIO",
+                        "side": "FLAT",
+                        "roi": 0.0,
+                        "pnl": 0.0,
+                        "text": "Portfolio flat (0 open positions). AI Watchdog in low-power sentry mode. Surveillance active across top 30 perpetuals.",
+                        "status": "NORMAL",
+                    }
+                    self.sentinel_thoughts.append(thought)
+                    if len(self.sentinel_thoughts) > 50:
+                        self.sentinel_thoughts.pop(0)
+
+                # 1. Cancel stale unmitigated limit orders exceeding timeout
+                if self.node and hasattr(self.node, "trader") and self.node.trader and self.guard:
+                    stale_orders = self.guard.get_stale_orders_to_cancel()
+                    for stale in stale_orders:
+                        self.log(f"Cancelling stale order {stale.order_id} on {stale.instrument_id}", "INFO")
+                        try:
+                            cancel_cmd = CancelOrder(
+                                trader_id=self.node.trader_id,
+                                strategy_id=StrategyId(stale.strategy_id),
+                                instrument_id=stale.instrument_id,
+                                client_order_id=ClientOrderId(stale.order_id),
+                            )
+                            self.node.trader.execute(cancel_cmd)
+                        except Exception:
+                            pass
+                        self.guard.acknowledge_order_cancelled(stale.order_id)
+
+                # 2. Proactive Autonomous Microstructure Scanner (High-Frequency Sentry)
+                # Evaluates L2 depth skew on top perpetuals to enter high-conviction orderbook scalps
+                if (
+                    self.scalp_strat
+                    and self.node
+                    and hasattr(self.node, "cache")
+                    and self.node.cache
+                    and len(self.get_open_positions()) < self.guard.max_total_open_positions
+                ):
+                    scan_coins = self.top_coins[:8] if self.top_coins else list(self.prospects.keys())[:8]
+                    for sc_coin in scan_coins:
+                        if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
+                            break
+                        instr_key = f"{sc_coin}-USD-PERP.HYPERLIQUID"
+                        instrument = self.scalp_strat.instruments_map.get(instr_key)
+                        if not instrument or not self.scalp_strat.portfolio.is_flat(instrument.id):
+                            continue
+                        if len(self.node.cache.orders_open(instrument_id=instrument.id)) > 0:
+                            continue
+                        if self.guard.is_in_cooldown(sc_coin):
+                            continue
+
+                        l2_snap = self.info_client.get_l2_snapshot(sc_coin)
+                        if l2_snap.get("status") == "SUCCESS":
+                            bids = l2_snap.get("bids", [])
+                            asks = l2_snap.get("asks", [])
+                            if bids and asks and float(bids[0]["sz"]) > 0 and float(asks[0]["sz"]) > 0:
+                                b_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
+                                a_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
+                                if b_depth > 0 and a_depth > 0:
+                                    tick_size = instrument.price_increment.as_double()
+                                    skew_ratio = b_depth / a_depth
+                                    skew_threshold = getattr(self.scalp_strat.scalp_config, "skew_threshold", 1.5)
+                                    if skew_ratio >= skew_threshold:
+                                        wall_px = float(bids[0]["px"])
+                                        entry_px = wall_px
+                                        sl_px = wall_px - (self.scalp_strat.scalp_config.stop_ticks * tick_size)
+                                        tp_px = entry_px + (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
+                                        self.scalp_strat._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, skew_ratio)
+                                        time.sleep(0.2)
+                                    elif (a_depth / b_depth) >= skew_threshold:
+                                        skew_rev = a_depth / b_depth
+                                        wall_px = float(asks[0]["px"])
+                                        entry_px = wall_px
+                                        sl_px = wall_px + (self.scalp_strat.scalp_config.stop_ticks * tick_size)
+                                        tp_px = entry_px - (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
+                                        self.scalp_strat._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, skew_rev)
+                                        time.sleep(0.2)
 
                 # Also process any bridge commands if written externally
                 self._check_external_bridge_commands()
@@ -487,7 +771,7 @@ class UnifiedEngine:
                     name = u.get("name")
                     px = float(ctx.get("oraclePx", 0.0))
                     prev_px = float(ctx.get("prevDayPx", 0.0))
-                    funding = float(ctx.get("funding", 0.0)) * 24 * 365
+                    funding = float(ctx.get("funding", 0.0)) * 24 * 365 * 100.0
                     vol_24h = float(ctx.get("dayNtlVlm", 0.0))
                     change_24h = ((px - prev_px) / prev_px * 100) if prev_px > 0 else 0.0
                     records.append({
@@ -496,38 +780,120 @@ class UnifiedEngine:
                     })
 
                 df = pl.DataFrame(records).sort("vol_24h", descending=True).head(50)
-                prospects = {}
+                prospects_list = []
+                selected_coins = set()
 
-                # 1. Spot-led long momentum
-                longs = df.filter((pl.col("change_24h") > 3.0) & (pl.col("funding_apr") < 25.0)).sort("vol_24h", descending=True).head(5)
-                for row in longs.iter_rows(named=True):
-                    prospects[row["coin"]] = {
-                        "bias": "LONG",
-                        "target_entry": row["price"],
-                        "reason": f"Spot-led momentum: +{row['change_24h']:.1f}% 24h on ${row['vol_24h']/1e6:.1f}M vol; healthy low funding APR +{row['funding_apr']:.1f}%.",
-                        "change_24h": row["change_24h"],
-                        "volume_24h": row["vol_24h"],
-                    }
-
-                # 2. Crowded long fade
-                shorts = df.filter(pl.col("funding_apr") > 90.0).sort("funding_apr", descending=True).head(5)
+                # 1. Extreme Funding Shorts (Overleveraged Long Fades)
+                shorts = df.filter(pl.col("funding_apr") > 50.0).sort("funding_apr", descending=True).head(5)
                 for row in shorts.iter_rows(named=True):
-                    prospects[row["coin"]] = {
-                        "bias": "SHORT",
-                        "target_entry": row["price"],
-                        "reason": f"Crowded long fade: Funding APR +{row['funding_apr']:.1f}% on ${row['vol_24h']/1e6:.1f}M vol (+{row['change_24h']:.1f}% 24h); longs overleveraged.",
-                        "change_24h": row["change_24h"],
-                        "volume_24h": row["vol_24h"],
-                    }
+                    c = row["coin"]
+                    if c not in selected_coins:
+                        selected_coins.add(c)
+                        px = float(row["price"])
+                        funding_apr = float(row["funding_apr"])
+                        prospects_list.append({
+                            "coin": c,
+                            "bias": "SHORT",
+                            "conviction_score": min(95, int(80 + (funding_apr / 20.0))),
+                            "strategy": "Hourly Funding Fade",
+                            "mark_price": px,
+                            "target_entry": round(px * 1.008, 4),
+                            "stop_loss": round(px * 1.035, 4),
+                            "take_profit": round(px * 0.940, 4),
+                            "funding_apr_pct": funding_apr,
+                            "volume_24h_usd": float(row["vol_24h"]),
+                            "rationale": f"Crowded long leverage: Funding APR +{funding_apr:.1f}% on ${row['vol_24h']/1e6:.1f}M 24h vol; longs paying steep hourly fees.",
+                        })
 
-                self.prospects = prospects
-                biases = {c: p["bias"] for c, p in prospects.items()}
+                # 2. Spot-Led Long Momentum (Clean Volume with Healthy Baseline Funding)
+                longs = df.filter((pl.col("change_24h") > 1.5) & (pl.col("funding_apr") < 35.0)).sort("vol_24h", descending=True).head(5)
+                for row in longs.iter_rows(named=True):
+                    c = row["coin"]
+                    if c not in selected_coins:
+                        selected_coins.add(c)
+                        px = float(row["price"])
+                        funding_apr = float(row["funding_apr"])
+                        chg = float(row["change_24h"])
+                        prospects_list.append({
+                            "coin": c,
+                            "bias": "LONG",
+                            "conviction_score": min(93, int(82 + chg)),
+                            "strategy": "SMC Trend & Spot Divergence",
+                            "mark_price": px,
+                            "target_entry": round(px * 0.994, 4),
+                            "stop_loss": round(px * 0.975, 4),
+                            "take_profit": round(px * 1.045, 4),
+                            "funding_apr_pct": funding_apr,
+                            "volume_24h_usd": float(row["vol_24h"]),
+                            "rationale": f"Spot-led accumulation: +{chg:.1f}% 24h on ${row['vol_24h']/1e6:.1f}M vol; healthy baseline funding (+{funding_apr:.1f}% APR).",
+                        })
+
+                # 3. Fill remaining slots up to 10 with highest volume leaders
+                if len(prospects_list) < 10:
+                    for row in df.iter_rows(named=True):
+                        c = row["coin"]
+                        if c not in selected_coins:
+                            selected_coins.add(c)
+                            px = float(row["price"])
+                            funding_apr = float(row["funding_apr"])
+                            chg = float(row["change_24h"])
+                            bias = "SHORT" if funding_apr > 40.0 else "LONG"
+                            prospects_list.append({
+                                "coin": c,
+                                "bias": bias,
+                                "conviction_score": 80,
+                                "strategy": "VWAP / Volume Breakout",
+                                "mark_price": px,
+                                "target_entry": round(px * (0.995 if bias == "LONG" else 1.005), 4),
+                                "stop_loss": round(px * (0.975 if bias == "LONG" else 1.025), 4),
+                                "take_profit": round(px * (1.045 if bias == "LONG" else 0.955), 4),
+                                "funding_apr_pct": funding_apr,
+                                "volume_24h_usd": float(row["vol_24h"]),
+                                "rationale": f"Top volume leader (${row['vol_24h']/1e6:.1f}M 24h vol) with {bias} bias and +{funding_apr:.1f}% APR funding.",
+                            })
+                            if len(prospects_list) >= 10:
+                                break
+
+                # Update in-memory prospects map
+                self.prospects = {p["coin"]: p for p in prospects_list}
+                biases = {p["coin"]: p["bias"] for p in prospects_list}
                 self.guard.set_prospect_biases(biases)
-                self.log(f"🎯 [AI Prospector] Updated {len(prospects)} high-conviction targets: {list(prospects.keys())}", "INFO")
+
+                # Feed live funding rates directly into funding strategy actor
+                if hasattr(self, "funding_strat") and self.funding_strat:
+                    for row in df.iter_rows(named=True):
+                        c = row["coin"]
+                        apr = float(row["funding_apr"])
+                        instr_str = f"{c}-USD-PERP.HYPERLIQUID"
+                        self.funding_strat.update_funding_rate(instr_str, apr)
+
+                self.log(f"🎯 [AI Prospector] Updated {len(prospects_list)} high-conviction targets: {[p['coin'] for p in prospects_list]}", "INFO")
 
                 # Sync to bridge/prospects.json
+                payload = {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "scan_iteration": getattr(self, "_prospector_scan_count", 1),
+                    "macro_sentiment": "NEUTRAL_TO_BULLISH_SELECTIVE_EXPANSION",
+                    "prospects": prospects_list,
+                }
                 with open(self.prospects_path, "w") as f:
-                    json.dump(prospects, f, indent=2)
+                    json.dump(payload, f, indent=2)
+
+                # 3. Scan Delta-Neutral Funding Carry Arbitrage opportunities
+                try:
+                    arb_pairs = self.arbitrage_scanner.scan_and_save()
+                    self.funding_arbitrage_pairs = arb_pairs
+                    if arb_pairs:
+                        top_pair = arb_pairs[0]
+                        self.log(
+                            f"💎 [Funding Arbitrage] Detected {len(arb_pairs)} delta-neutral carry pairs. "
+                            f"Top: {top_pair['pair_id']} @ +{top_pair['net_carry_apr_pct']}% Net Carry APR",
+                            "TRIGGER",
+                        )
+                    else:
+                        self.log("💎 [Funding Arbitrage] Scan complete: 0 pairs qualified (strict < -50% & > +100% APR with spread <= 0.10% & depth >= $10k)", "INFO")
+                except Exception as arb_err:
+                    self.log(f"Funding arbitrage scan warning: {arb_err}", "WARN")
 
             except Exception as e:
                 self.log(f"Prospector scan warning: {e}", "WARN")

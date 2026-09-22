@@ -7,6 +7,8 @@ Microstructure order book imbalance scalper on Hyperliquid.
 - Risk: Tight 3-tick stop behind the wall with dual take-profit targets.
 """
 
+import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
@@ -24,11 +26,11 @@ from src.utils.instruments import get_coin_max_leverage
 
 class OrderBookImbalanceConfig(StrategyConfig, kw_only=True):
     """Configuration for OrderBookImbalance scalper."""
-    skew_threshold: float = 3.0  # Bid/Ask depth ratio > 3.0
-    stop_ticks: int = 3  # 3-tick stop behind the wall
+    skew_threshold: float = 1.5  # Bid/Ask depth ratio > 1.5
+    stop_ticks: int = 4  # 4-tick stop behind the wall
     take_profit_ticks: int = 8  # 8-tick quick scalp target
-    risk_per_trade_pct: float = 0.005  # 0.5% equity risk
-    max_active_positions: int = 3
+    risk_per_trade_pct: float = 0.0075  # 0.75% equity risk
+    max_active_positions: int = 6
     venue: str = "HYPERLIQUID"
 
 
@@ -46,7 +48,7 @@ class OrderBookImbalance(Strategy):
 
     def on_start(self) -> None:
         """Subscribe to quote ticks and bars across venue instruments."""
-        if getattr(self.cache, "is_backtest", True):
+        if getattr(self.cache, "is_backtest", False):
             self.log.info("LIVE_PAPER_ONLY: OrderBookImbalance logic disabled during historical backtest.")
             self._disabled = True
             
@@ -122,7 +124,7 @@ class OrderBookImbalance(Strategy):
         # Add a 1 second cooldown per instrument to prevent async spam
         if not hasattr(self, "_last_order_ts"):
             self._last_order_ts = {}
-        if (tick.ts_event - self._last_order_ts.get(instr_str, 0)) < 1_000_000_000:
+        if (bar.ts_event - self._last_order_ts.get(instr_str, 0)) < 1_000_000_000:
             return
 
         # Derive simulated imbalance from bar volume and range compression
@@ -201,10 +203,17 @@ class OrderBookImbalance(Strategy):
         sl_obj = instrument.make_price(Decimal(str(round(sl_price, instrument.price_precision))))
         tp_obj = instrument.make_price(Decimal(str(round(tp_price, instrument.price_precision))))
 
-        self.log.info(
-            f"🎯 OrderBookImbalance {side} {instrument.id}: Qty={quantity} @ {entry_obj} | "
-            f"SL={sl_obj} (3-ticks behind wall) | TP={tp_obj} | Skew={skew:.2f}"
+        instr_str = str(instrument.id)
+        if not hasattr(self, "_last_order_ts"):
+            self._last_order_ts = {}
+        self._last_order_ts[instr_str] = int(time.time() * 1_000_000_000)
+
+        msg = (
+            f"🎯 OrderBookImbalance {side.name} {instrument.id}: Qty={quantity} @ {entry_obj} | "
+            f"SL={sl_obj} | TP={tp_obj} | Skew={skew:.2f}"
         )
+        self.log.info(msg)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
         try:
             bracket_list = self.order_factory.bracket(
@@ -226,6 +235,7 @@ class OrderBookImbalance(Strategy):
                     order=bracket_list.first,
                     strategy_name=self.__class__.__name__,
                     notional_usd=notional_usd,
+                    timeout_seconds=30.0,
                 )
         except Exception as e:
             self.log.error(f"Failed to submit orderbook scalp bracket: {e}")

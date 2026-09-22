@@ -100,9 +100,9 @@ class SessionVwapState:
 
 class VwapOiMomentumConfig(StrategyConfig, kw_only=True):
     """Configuration for VwapOiMomentum strategy."""
-    oi_zscore_threshold: float = 2.0  # OI expansion > 2 std dev
+    oi_zscore_threshold: float = 1.0  # OI expansion > 1 std dev for responsive momentum triggers
     risk_per_trade_pct: float = 0.01  # 1% equity risk
-    max_active_positions: int = 4
+    max_active_positions: int = 5
     venue: str = "HYPERLIQUID"
 
 

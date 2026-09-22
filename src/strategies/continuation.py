@@ -250,29 +250,67 @@ class TrendContinuationSMC(Strategy):
         if active_positions >= self.trend_config.max_active_positions:
             return
 
+        # Determine trend state: from 4H if initialized, or fallback to PortfolioGuard prospect bias / 5M swing bias
+        trend = state.trend_state
+        if trend == "NEUTRAL" and self.portfolio_guard and hasattr(self.portfolio_guard, "prospect_biases"):
+            coin = str(state.instrument_id.symbol).split("-")[0].split(".")[0].upper()
+            bias = self.portfolio_guard.prospect_biases.get(coin)
+            if bias == "LONG":
+                trend = "BULLISH"
+            elif bias == "SHORT":
+                trend = "BEARISH"
+
         # Bullish Continuation Trigger
-        if state.trend_state == "BULLISH":
+        if trend == "BULLISH":
+            target_zone = None
             for zone in state.demand_zones:
                 if not zone.mitigated and (low_px <= zone.high and high_px >= zone.low):
                     zone.touched = True
+                    target_zone = zone
                     state.zone_in_play = zone
+                    break
 
-            if state.zone_in_play and state.zone_in_play.zone_type == "DEMAND":
+            if not target_zone and state.recent_swing_low:
+                # Use recent 5M swing low as dynamic demand zone
+                if low_px <= (state.recent_swing_low * 1.003) and close_px >= state.recent_swing_low:
+                    target_zone = Zone(
+                        zone_type="DEMAND",
+                        low=state.recent_swing_wick_low or (state.recent_swing_low * 0.998),
+                        high=state.recent_swing_low,
+                        ts_event=bar.ts_event,
+                    )
+                    state.zone_in_play = target_zone
+
+            if target_zone:
                 # MSS: 5M candle close breaks previous 5M swing fractal
                 if state.recent_swing_high and close_px > state.recent_swing_high:
-                    self._execute_long_entry(bar, state, state.zone_in_play)
+                    self._execute_long_entry(bar, state, target_zone)
 
         # Bearish Continuation Trigger
-        elif state.trend_state == "BEARISH":
+        elif trend == "BEARISH":
+            target_zone = None
             for zone in state.supply_zones:
                 if not zone.mitigated and (high_px >= zone.low and low_px <= zone.high):
                     zone.touched = True
+                    target_zone = zone
                     state.zone_in_play = zone
+                    break
 
-            if state.zone_in_play and state.zone_in_play.zone_type == "SUPPLY":
+            if not target_zone and state.recent_swing_high:
+                # Use recent 5M swing high as dynamic supply zone
+                if high_px >= (state.recent_swing_high * 0.997) and close_px <= state.recent_swing_high:
+                    target_zone = Zone(
+                        zone_type="SUPPLY",
+                        low=state.recent_swing_high,
+                        high=state.recent_swing_wick_high or (state.recent_swing_high * 1.002),
+                        ts_event=bar.ts_event,
+                    )
+                    state.zone_in_play = target_zone
+
+            if target_zone:
                 # MSS: 5M candle close breaks previous 5M swing low fractal
                 if state.recent_swing_low and close_px < state.recent_swing_low:
-                    self._execute_short_entry(bar, state, state.zone_in_play)
+                    self._execute_short_entry(bar, state, target_zone)
 
     def _update_5m_swing_points(self, state: SMCInstrumentState) -> None:
         """Detect swing fractal highs and lows from recent 5M bars using SMC."""

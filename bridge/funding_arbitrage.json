@@ -1,0 +1,25 @@
+{
+  "timestamp": 1790108713.3032281,
+  "updated_at": "2026-09-22T20:25:13.303230+00:00",
+  "strategy": "DELTA_NEUTRAL_FUNDING_CARRY",
+  "thresholds": {
+    "max_negative_funding_apr": -0.5,
+    "min_positive_funding_apr": 1.0,
+    "max_spread_pct": 0.1,
+    "min_top5_depth_usd": 10000.0
+  },
+  "count": 0,
+  "rpc_health": {
+    "public_rpc": {
+      "url": "https://api.hyperliquid.xyz/info",
+      "status_code": 200,
+      "latency_ms": 348.42,
+      "rate_limit_cap": "100 req/min"
+    },
+    "chainstack_private_rpc": {
+      "status": "UNCONFIGURED",
+      "message": "CHAINSTACK_HYPERCORE_RPC_URL is not set in .env. Falling back to public RPC."
+    }
+  },
+  "pairs": []
+}

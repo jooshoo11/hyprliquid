@@ -44,12 +44,14 @@ class PortfolioGuard:
 
     def __init__(
         self,
-        max_strategy_equity_pct: float = 0.25,  # Max 25% margin per strategy
-        max_total_open_positions: int = 4,      # Max 4 concurrent positions across node
-        max_daily_drawdown_pct: float = 0.02,   # Hard stop at 2% 24h drawdown
+        max_strategy_equity_pct: float = 0.40,  # Max 40% margin per strategy
+        max_total_open_positions: int = 8,      # Max 8 concurrent positions across node
+        max_daily_drawdown_pct: float = 0.20,   # 20% daily drawdown circuit breaker
         default_order_timeout_secs: float = 300.0,
     ) -> None:
         self.max_strategy_equity_pct = max_strategy_equity_pct
+        self.baseline_strategy_equity_pct = max_strategy_equity_pct
+        self.strategy_allocation_caps: Dict[str, float] = {}
         self.max_total_open_positions = max_total_open_positions
         self.max_daily_drawdown_pct = max_daily_drawdown_pct
         self.default_order_timeout_secs = default_order_timeout_secs
@@ -64,9 +66,11 @@ class PortfolioGuard:
         self.current_equity: float = 0.0
         self.is_circuit_breaker_triggered: bool = False
         self.day_start_timestamp_ms: int = int(time.time() * 1000)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._pending_approvals: int = 0
         self.prospect_biases: Dict[str, str] = {}
+        self.cooldown_tracker: Dict[str, float] = {}
+        self.reentry_cooldown_seconds: float = 30.0  # 30 seconds anti-churn cooldown
 
     def update_equity(self, equity: float) -> None:
         """Update portfolio equity and evaluate 24-hour drawdown circuit breaker."""
@@ -94,6 +98,60 @@ class PortfolioGuard:
         with self._lock:
             self.prospect_biases = dict(biases)
 
+    def get_strategy_allocation_cap(self, strategy_name: str) -> float:
+        """Get current dynamic or baseline equity margin cap for a strategy."""
+        with self._lock:
+            if strategy_name in self.strategy_allocation_caps:
+                return self.strategy_allocation_caps[strategy_name]
+            base_name = strategy_name.split("-")[0]
+            if base_name in self.strategy_allocation_caps:
+                return self.strategy_allocation_caps[base_name]
+            return self.baseline_strategy_equity_pct
+
+    def update_dynamic_allocations(self, closed_trades: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Dynamically scale strategy margin allocation caps based on realized performance:
+          - Win rate >= 60% and net PnL > 0: expand cap dynamically up to 35% - 40%.
+          - Win rate < 40% or net PnL < 0: throttle cap down to 10% - 15%.
+          - Otherwise: baseline 25%.
+        """
+        strat_trades: Dict[str, List[Dict[str, Any]]] = {}
+        for t in closed_trades:
+            strat = t.get("strategy") or "default"
+            strat_trades.setdefault(strat, []).append(t)
+            base_strat = strat.split("-")[0]
+            if base_strat != strat:
+                strat_trades.setdefault(base_strat, []).append(t)
+
+        with self._lock:
+            for strat, trades in strat_trades.items():
+                if not trades:
+                    continue
+                wins = 0
+                total_net_pnl = 0.0
+                for tr in trades:
+                    gross = float(tr.get("gross_pnl") if "gross_pnl" in tr else (tr.get("pnl") or 0.0))
+                    fees = float(tr.get("fees") or 0.0)
+                    net = float(tr.get("net_pnl") if "net_pnl" in tr else (gross - fees))
+                    total_net_pnl += net
+                    if net > 0:
+                        wins += 1
+
+                win_rate = wins / len(trades)
+                if win_rate >= 0.60 and total_net_pnl > 0:
+                    multiplier = 1.6 if win_rate >= 0.75 else 1.4
+                elif win_rate < 0.40 and total_net_pnl < 0:
+                    multiplier = 0.4 if (win_rate < 0.25 or total_net_pnl < -50.0) else 0.6
+                elif total_net_pnl < 0:
+                    multiplier = 0.6
+                else:
+                    multiplier = 1.0
+
+                cap = round(self.baseline_strategy_equity_pct * multiplier, 4)
+                self.strategy_allocation_caps[strat] = cap
+
+            return dict(self.strategy_allocation_caps)
+
     def can_open_position(
         self,
         strategy_name: str,
@@ -108,12 +166,22 @@ class PortfolioGuard:
 
             # AI Prospect bias check from bridge/prospects.json
             coin = str(instrument_id).split("-")[0].split(".")[0].upper()
+
+            # Anti-churn re-entry cooldown (prevent rapid flip-flopping)
+            now_sec = time.time()
+            cooldown_until = self.cooldown_tracker.get(coin, 0.0)
+            if now_sec < cooldown_until:
+                rem_sec = int(cooldown_until - now_sec)
+                return False, f"Anti-churn cooldown active for {coin} ({rem_sec}s remaining)."
+
             prospect_bias = self.prospect_biases.get(coin)
             if prospect_bias:
-                if prospect_bias == "LONG" and side != OrderSide.BUY:
-                    return False, f"AI Prospect bias for {coin} is LONG; rejecting {side.name} entry."
-                elif prospect_bias == "SHORT" and side != OrderSide.SELL:
-                    return False, f"AI Prospect bias for {coin} is SHORT; rejecting {side.name} entry."
+                # Do not block microstructural orderbook scalpers from taking resting liquidity on either side
+                if "OrderBook" not in strategy_name and "Scalp" not in strategy_name:
+                    if prospect_bias == "LONG" and side != OrderSide.BUY:
+                        return False, f"AI Prospect bias for {coin} is LONG; rejecting {side.name} entry."
+                    elif prospect_bias == "SHORT" and side != OrderSide.SELL:
+                        return False, f"AI Prospect bias for {coin} is SHORT; rejecting {side.name} entry."
 
             effective_count = current_open_positions_count + self._pending_approvals
             if effective_count >= self.max_total_open_positions:
@@ -126,10 +194,10 @@ class PortfolioGuard:
             if proposed_notional_usd > (max_coin_notional * 1.01):
                 return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
 
-            max_allowed_margin = self.current_equity * self.max_strategy_equity_pct
+            cap = self.get_strategy_allocation_cap(strategy_name)
+            max_allowed_margin = self.current_equity * cap
             current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, 0.0)
             if (current_strategy_margin + proposed_notional_usd) > max_allowed_margin:
-                import time
                 if not hasattr(self, "_log_cooldown"):
                     self._log_cooldown = {}
                 now = time.time()
@@ -138,8 +206,9 @@ class PortfolioGuard:
                     return False, "SILENT_BLOCK"
                 self._log_cooldown[key] = now
                 
+                pct_str = f"{int(cap * 100)}%" if cap <= 1.0 else f"{int(cap)}x"
                 return False, (
-                    f"Strategy '{strategy_name}' exceeds 25% allocation limit "
+                    f"Strategy '{strategy_name}' exceeds {pct_str} allocation limit "
                     f"(${current_strategy_margin + proposed_notional_usd:,.2f} > ${max_allowed_margin:,.2f})."
                 )
 
@@ -188,8 +257,23 @@ class PortfolioGuard:
         instr_str = str(instrument_id)
         self.active_instrument_directions.pop(instr_str, None)
 
+        # Set 3-minute anti-churn cooldown on the closed coin
+        coin = instr_str.split("-")[0].split(".")[0].upper()
+        self.cooldown_tracker[coin] = time.time() + self.reentry_cooldown_seconds
+
         current = self.strategy_allocated_margin.get(strategy_name, 0.0)
         self.strategy_allocated_margin[strategy_name] = max(0.0, current - freed_notional_usd)
+
+    def set_cooldown(self, coin: str, duration_seconds: float = 180.0) -> None:
+        """Explicitly set cooldown on a coin (e.g. after manual or sentinel close)."""
+        with self._lock:
+            c = str(coin).split("-")[0].split(".")[0].upper()
+            self.cooldown_tracker[c] = time.time() + duration_seconds
+
+    def is_in_cooldown(self, coin: str) -> bool:
+        """Check if coin is currently under anti-churn cooldown."""
+        c = str(coin).split("-")[0].split(".")[0].upper()
+        return time.time() < self.cooldown_tracker.get(c, 0.0)
 
     def get_stale_orders_to_cancel(self) -> List[PendingOrderEntry]:
         """

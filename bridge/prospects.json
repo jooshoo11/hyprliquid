@@ -1,62 +1,137 @@
 {
-  "BTC": {
-    "bias": "LONG",
-    "target_entry": 86339.5748,
-    "reason": "Spot-led momentum: +6.5% 24h on $4759.7M vol; healthy low funding APR +17.0%.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "ETH": {
-    "bias": "LONG",
-    "target_entry": 2753.5519,
-    "reason": "Spot-led momentum: +4.8% 24h on $2208.5M vol; healthy low funding APR +11.0%.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "SOL": {
-    "bias": "LONG",
-    "target_entry": 117.7291,
-    "reason": "Spot-led momentum: +6.8% 24h on $424.8M vol; healthy low funding APR +11.0%.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "SUI": {
-    "bias": "LONG",
-    "target_entry": 1.0192,
-    "reason": "Spot-led momentum: +15.9% 24h on $83.3M vol; healthy low funding APR +23.4%.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "USELESS": {
-    "bias": "SHORT",
-    "target_entry": 0.283,
-    "reason": "Crowded long fade: Funding APR +137.2% on $18.9M vol (+15.0% 24h); longs overleveraged.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "TAO": {
-    "bias": "SHORT",
-    "target_entry": 294.7884,
-    "reason": "Crowded long fade: Funding APR +128.4% on $56.0M vol (+10.9% 24h); longs overleveraged.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "NEAR": {
-    "bias": "SHORT",
-    "target_entry": 4.1748,
-    "reason": "Crowded long fade: Funding APR +108.2% on $305.2M vol (+0.0% 24h); longs overleveraged.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "FARTCOIN": {
-    "bias": "SHORT",
-    "target_entry": 0.1933,
-    "reason": "Crowded long fade: Funding APR +101.6% on $25.2M vol (+15.0% 24h); longs overleveraged.",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "HYPE": {
-    "bias": "SHORT",
-    "target_entry": 93.171,
-    "reason": "Top volume leader ($660.8M vol, -0.2% 24h).",
-    "updated_at": "2026-09-21T19:53:59Z"
-  },
-  "ZEC": {
-    "bias": "SHORT",
-    "target_entry": 1471.9913,
-    "reason": "Top volume leader ($558.9M vol, -3.1% 24h).",
-    "updated_at": "2026-09-21T19:53:59Z"
-  }
+  "updated_at": "2026-09-22T20:25:11.206736+00:00",
+  "scan_iteration": 1,
+  "macro_sentiment": "NEUTRAL_TO_BULLISH_SELECTIVE_EXPANSION",
+  "prospects": [
+    {
+      "coin": "USELESS",
+      "bias": "SHORT",
+      "conviction_score": 85,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 0.34624,
+      "target_entry": 0.349,
+      "stop_loss": 0.3584,
+      "take_profit": 0.3255,
+      "funding_apr_pct": 102.21649800000002,
+      "volume_24h_usd": 20756603.1067,
+      "rationale": "Crowded long leverage: Funding APR +102.2% on $20.8M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "PENGU",
+      "bias": "SHORT",
+      "conviction_score": 84,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 0.010327,
+      "target_entry": 0.0104,
+      "stop_loss": 0.0107,
+      "take_profit": 0.0097,
+      "funding_apr_pct": 87.99271080000001,
+      "volume_24h_usd": 20252601.760727,
+      "rationale": "Crowded long leverage: Funding APR +88.0% on $20.3M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "INJ",
+      "bias": "SHORT",
+      "conviction_score": 84,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 7.794,
+      "target_entry": 7.8564,
+      "stop_loss": 8.0668,
+      "take_profit": 7.3264,
+      "funding_apr_pct": 81.92579760000001,
+      "volume_24h_usd": 5248029.846919999,
+      "rationale": "Crowded long leverage: Funding APR +81.9% on $5.2M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "SPX",
+      "bias": "SHORT",
+      "conviction_score": 83,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 0.5378,
+      "target_entry": 0.5421,
+      "stop_loss": 0.5566,
+      "take_profit": 0.5055,
+      "funding_apr_pct": 76.2953952,
+      "volume_24h_usd": 5550683.016038001,
+      "rationale": "Crowded long leverage: Funding APR +76.3% on $5.6M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "FET",
+      "bias": "SHORT",
+      "conviction_score": 83,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 0.208543,
+      "target_entry": 0.2102,
+      "stop_loss": 0.2158,
+      "take_profit": 0.196,
+      "funding_apr_pct": 69.2413176,
+      "volume_24h_usd": 5774355.275729999,
+      "rationale": "Crowded long leverage: Funding APR +69.2% on $5.8M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "HYPE",
+      "bias": "LONG",
+      "conviction_score": 84,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 95.9945,
+      "target_entry": 95.4185,
+      "stop_loss": 93.5946,
+      "take_profit": 100.3143,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 545060404.2806101,
+      "rationale": "Spot-led accumulation: +2.1% 24h on $545.1M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "ZEC",
+      "bias": "LONG",
+      "conviction_score": 83,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 1506.515,
+      "target_entry": 1497.4759,
+      "stop_loss": 1468.8521,
+      "take_profit": 1574.3082,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 431263729.5400002,
+      "rationale": "Spot-led accumulation: +1.8% 24h on $431.3M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "NEAR",
+      "bias": "LONG",
+      "conviction_score": 85,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 4.26528,
+      "target_entry": 4.2397,
+      "stop_loss": 4.1586,
+      "take_profit": 4.4572,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 299893697.6852901,
+      "rationale": "Spot-led accumulation: +3.2% 24h on $299.9M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "XRP",
+      "bias": "LONG",
+      "conviction_score": 85,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 1.57815,
+      "target_entry": 1.5687,
+      "stop_loss": 1.5387,
+      "take_profit": 1.6492,
+      "funding_apr_pct": 28.235670000000002,
+      "volume_24h_usd": 288449193.6763,
+      "rationale": "Spot-led accumulation: +3.3% 24h on $288.4M vol; healthy baseline funding (+28.2% APR)."
+    },
+    {
+      "coin": "UNI",
+      "bias": "LONG",
+      "conviction_score": 86,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 9.2895,
+      "target_entry": 9.2338,
+      "stop_loss": 9.0573,
+      "take_profit": 9.7075,
+      "funding_apr_pct": 30.415420800000003,
+      "volume_24h_usd": 91423330.09848998,
+      "rationale": "Spot-led accumulation: +4.7% 24h on $91.4M vol; healthy baseline funding (+30.4% APR)."
+    }
+  ]
 }

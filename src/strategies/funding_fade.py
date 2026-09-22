@@ -41,14 +41,14 @@ class FundingFadePosition:
 
 class HourlyFundingFadeConfig(StrategyConfig, kw_only=True):
     """Configuration for HourlyFundingFade strategy."""
-    min_funding_apr_threshold: float = 0.80  # 80% APR
-    entry_window_start_min: int = 48
-    entry_window_end_min: int = 52
-    exit_window_start_min: int = 2
-    exit_window_end_min: int = 5
+    min_funding_apr_threshold: float = 0.40  # 40% APR for active carry opportunities
+    entry_window_start_min: int = 40
+    entry_window_end_min: int = 55
+    exit_window_start_min: int = 1
+    exit_window_end_min: int = 6
     trailing_stop_pct: float = 0.012  # 1.2%
     risk_per_trade_pct: float = 0.0075  # 0.75% equity risk
-    max_active_positions: int = 3
+    max_active_positions: int = 5
     venue: str = "HYPERLIQUID"
 
 
@@ -57,11 +57,12 @@ class HourlyFundingFade(Strategy):
     NautilusTrader implementation of HourlyFundingFade.
     """
 
-    def __init__(self, config: HourlyFundingFadeConfig, portfolio_guard: Optional[Any] = None) -> None:
+    def __init__(self, config: HourlyFundingFadeConfig, portfolio_guard: Optional[Any] = None, info_client: Optional[Any] = None) -> None:
         super().__init__(config)
         self.fade_config: HourlyFundingFadeConfig = config
         self.venue = Venue(config.venue)
         self.portfolio_guard = portfolio_guard
+        self.info_client = info_client
         self.instruments_map: Dict[str, Instrument] = {}
         self.active_fades: Dict[str, FundingFadePosition] = {}
         self.current_funding_rates: Dict[str, float] = {}
@@ -71,15 +72,16 @@ class HourlyFundingFade(Strategy):
         instruments = [i for i in self.cache.instruments() if str(i.id.venue) == self.fade_config.venue]
         self.log.info(f"HourlyFundingFade active across {len(instruments)} instruments")
 
-        # Load historical funding data if available
+        # Load historical funding data only if in backtest mode
         self.funding_df = None
-        funding_path = "catalog/funding/"
-        if os.path.exists(funding_path):
-            try:
-                self.funding_df = pl.scan_parquet(f"{funding_path}/**/*.parquet").collect()
-                self.log.info(f"Loaded historical funding from {funding_path}")
-            except Exception as e:
-                self.log.warning(f"Could not load historical funding: {e}")
+        if getattr(self.cache, "is_backtest", False):
+            funding_path = "catalog/funding/"
+            if os.path.exists(funding_path):
+                try:
+                    self.funding_df = pl.scan_parquet(f"{funding_path}/**/*.parquet", hive_partitioning=True).collect()
+                    self.log.info(f"Loaded historical funding from {funding_path}")
+                except Exception as e:
+                    self.log.warning(f"Could not load historical funding: {e}")
 
         for instrument in instruments:
             instr_str = str(instrument.id)
@@ -140,20 +142,45 @@ class HourlyFundingFade(Strategy):
 
             funding_apr = self.current_funding_rates.get(instr_str, 0.0)
 
-            # If funding is not explicitly set, compute intraday premium estimate
+            # If funding is not explicitly set, query live Info client if available
+            if funding_apr == 0.0 and self.info_client is not None:
+                coin = instr_str.split("-")[0].split(".")[0].upper()
+                try:
+                    live_rate = self.info_client.get_funding_rate(coin)
+                    if live_rate is not None:
+                        funding_apr = float(live_rate)
+                        self.current_funding_rates[instr_str] = funding_apr
+                except Exception:
+                    pass
+
+            # Fallback to historical funding dataframe if available
+            if funding_apr == 0.0 and self.funding_df is not None:
+                try:
+                    cols = self.funding_df.columns
+                    coin = instr_str.split("-")[0].split(".")[0].upper()
+                    cond = pl.lit(True)
+                    if "instrument_id" in cols:
+                        cond = cond & (pl.col("instrument_id") == instr_str)
+                    elif "coin" in cols:
+                        cond = cond & (pl.col("coin") == coin)
+
+                    if "timestamp" in cols:
+                        cond = cond & (pl.col("timestamp") <= int(bar.ts_event / 1_000_000_000))
+                    elif "time" in cols:
+                        cond = cond & (pl.col("time") <= int(bar.ts_event / 1_000_000))
+
+                    rate_col = "funding_rate" if "funding_rate" in cols else ("fundingRate" if "fundingRate" in cols else None)
+                    if rate_col:
+                        row = self.funding_df.filter(cond).tail(1)
+                        if len(row) > 0:
+                            funding_apr = row[rate_col].item() * 24 * 365
+                except Exception:
+                    pass
+
             if funding_apr == 0.0:
-                if self.funding_df is not None:
-                    # Lookup historical funding rate
-                    row = self.funding_df.filter(
-                        (pl.col("instrument_id") == instr_str) & 
-                        (pl.col("timestamp") <= int(bar.ts_event / 1_000_000_000))
-                    ).tail(1)
-                    if len(row) > 0:
-                        funding_apr = row["funding_rate"].item() * 24 * 365
-                else:
-                    # Estimate from bar momentum
-                    ret = (close_px - bar.open.as_double()) / bar.open.as_double()
-                    funding_apr = ret * 24 * 365 * 0.1
+                # Estimate from bar momentum
+                ret = (close_px - bar.open.as_double()) / bar.open.as_double()
+                funding_apr = ret * 24 * 365 * 0.1
 
             # Extreme positive funding (> +80% APR): FADE crowded longs -> SHORT
             if funding_apr >= self.fade_config.min_funding_apr_threshold:

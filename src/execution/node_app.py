@@ -579,6 +579,17 @@ class NodeDashboardApp(App):
                         except Exception:
                             pass
 
+                    strat_raw = str(pos.strategy_id) if hasattr(pos, "strategy_id") and pos.strategy_id else ""
+                    strat_name = "SMC Trend"
+                    if "Funding" in strat_raw:
+                        strat_name = "Funding Fade"
+                    elif "OrderBook" in strat_raw or "Scalp" in strat_raw or "Imbalance" in strat_raw:
+                        strat_name = "Book Imbalance"
+                    elif "Vwap" in strat_raw or "Momentum" in strat_raw:
+                        strat_name = "VWAP/OI"
+                    elif "Continuation" in strat_raw or "SMC" in strat_raw:
+                        strat_name = "SMC Trend"
+
                     positions_data.append({
                         "coin": coin,
                         "instrument_id": str(pos.instrument_id),
@@ -586,6 +597,7 @@ class NodeDashboardApp(App):
                         "size": qty,
                         "entry_price": entry_px,
                         "unrealized_pnl": unrealized,
+                        "strategy": strat_name,
                     })
                 except Exception:
                     pass

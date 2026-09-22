@@ -11,6 +11,7 @@ from src.strategies.continuation import TrendContinuationSMC, TrendContinuationC
 from src.strategies.funding_fade import HourlyFundingFade, HourlyFundingFadeConfig
 from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanceConfig
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
+from src.strategies.funding_arbitrage import DeltaNeutralCarryStrategy, DeltaNeutralCarryConfig
 
 __all__ = [
     "TrendContinuationSMC",
@@ -21,4 +22,6 @@ __all__ = [
     "OrderBookImbalanceConfig",
     "VwapOiMomentum",
     "VwapOiMomentumConfig",
+    "DeltaNeutralCarryStrategy",
+    "DeltaNeutralCarryConfig",
 ]

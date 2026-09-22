@@ -33,6 +33,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from src.scanner.mcp_client import HyperliquidInfoClient
+from src.scanner.arbitrage_scanner import ArbitrageScanner
 
 console = Console()
 
@@ -50,10 +51,12 @@ class AISentinel:
         self.trade_check_interval = trade_check_interval
         self.prospect_interval = prospect_interval
         self.info_client = HyperliquidInfoClient()
+        self.arbitrage_scanner = ArbitrageScanner(info_client=self.info_client)
 
         self.active_trades_path = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
         self.ai_commands_path = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
         self.prospects_path = os.path.join(REPO_ROOT, "bridge", "prospects.json")
+        self.funding_arbitrage_path = os.path.join(REPO_ROOT, "bridge", "funding_arbitrage.json")
 
         self.last_prospect_scan: float = 0.0
         self._running: bool = True
@@ -175,7 +178,13 @@ class AISentinel:
             for c, data in prospects.items():
                 b = data["bias"]
                 b_color = "bold green" if b == "LONG" else "bold red"
-                table.add_row(c, f"[{b_color}]{b}[/{b_color}]", f"${data['target_entry']:,.4f}", data["reason"][:65] + "...")
+            # Also scan delta-neutral funding carry arbitrage opportunities
+            try:
+                arb_pairs = self.arbitrage_scanner.scan_and_save()
+                if arb_pairs:
+                    console.print(f"[bold yellow]💎 [Funding Arbitrage] Detected {len(arb_pairs)} delta-neutral carry opportunities (Top: {arb_pairs[0]['pair_id']} @ +{arb_pairs[0]['net_carry_apr_pct']}%) [/bold yellow]")
+            except Exception as arb_err:
+                console.print(f"[dim]Funding arbitrage scan notice: {arb_err}[/dim]")
 
             console.print(table)
             return prospects

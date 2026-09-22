@@ -219,6 +219,159 @@ class HyperliquidInfoClient:
         candles = self._info.candles_snapshot(coin, interval, start_time_ms, end_time_ms)
         return candles
 
+    def get_funding_rates(self, coin: str) -> Dict[str, Any]:
+        """
+        Fetches recent funding rates and annualized funding metrics for a specific perp market.
+        Interfaces directly with the hyperliquid-info-mcp tool specification.
+        """
+        try:
+            now_ms = int(time.time() * 1000)
+            start_ms = now_ms - (7 * 24 * 3600 * 1000)
+            history = self._info.funding_history(coin, start_ms, now_ms)
+            recent_rates = [float(item.get("funding", 0)) for item in history[-24:]]
+            avg_rate = sum(recent_rates) / len(recent_rates) if recent_rates else 0.0
+
+            # Also retrieve current instantaneous funding rate
+            current_apr = self.get_funding_rate(coin) or 0.0
+
+            return {
+                "status": "SUCCESS",
+                "coin": coin,
+                "average_hourly_funding_24h": avg_rate,
+                "annualized_funding_pct": avg_rate * 24 * 365 * 100,
+                "annualized_funding_apr": (avg_rate * 24 * 365) if avg_rate != 0.0 else current_apr,
+                "current_funding_apr": current_apr,
+                "recent_records": history[-10:] if history else [],
+            }
+        except Exception as e:
+            cur_apr = self.get_funding_rate(coin)
+            if cur_apr is not None:
+                return {
+                    "status": "SUCCESS",
+                    "coin": coin,
+                    "average_hourly_funding_24h": cur_apr / (24 * 365),
+                    "annualized_funding_pct": cur_apr * 100,
+                    "annualized_funding_apr": cur_apr,
+                    "current_funding_apr": cur_apr,
+                    "recent_records": [],
+                }
+            return {"status": "FAILED", "coin": coin, "error": str(e)}
+
+    def get_open_interest(self, coin: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Fetches current open interest analytics across Hyperliquid markets.
+        Interfaces with hyperliquid-info-mcp tool specification.
+        """
+        try:
+            meta, asset_ctxs = self.get_meta_and_asset_ctxs()
+            universe = meta.get("universe", [])
+            results = []
+            for i, asset in enumerate(universe):
+                name = asset.get("name", "")
+                if coin and coin.upper() != name.upper():
+                    continue
+                ctx = asset_ctxs[i] if i < len(asset_ctxs) else {}
+                hourly_funding = float(ctx.get("funding", 0.0))
+                results.append({
+                    "symbol": name,
+                    "open_interest": float(ctx.get("openInterest", 0.0)),
+                    "oracle_price": float(ctx.get("oraclePx", 0.0)),
+                    "funding_rate": hourly_funding,
+                    "funding_apr": hourly_funding * 24 * 365,
+                    "volume_24h": float(ctx.get("dayNtlVlm", 0.0)),
+                })
+
+            return {
+                "status": "SUCCESS",
+                "count": len(results),
+                "markets": results[:20] if not coin else results,
+            }
+        except Exception as e:
+            return {"status": "FAILED", "error": str(e)}
+
+    def check_rpc_latency_and_rate_limits(self) -> Dict[str, Any]:
+        """
+        Tests and compares latency and rate-limit health of Chainstack HyperCore private RPC vs public RPC.
+        Interfaces with chainstack-hypercore-mcp tool specification.
+        """
+        private_rpc = os.getenv("CHAINSTACK_HYPERCORE_RPC_URL")
+        public_rpc = "https://api.hyperliquid.xyz/info"
+
+        results = {}
+        # Test Public RPC
+        try:
+            t0 = time.time()
+            r = self._session.post(public_rpc, json={"type": "allMids"}, timeout=3)
+            results["public_rpc"] = {
+                "url": public_rpc,
+                "status_code": r.status_code,
+                "latency_ms": round((time.time() - t0) * 1000, 2),
+                "rate_limit_cap": "100 req/min",
+            }
+        except Exception as e:
+            results["public_rpc"] = {"error": str(e)}
+
+        # Test Private RPC if configured
+        if private_rpc and "your-api-key" not in private_rpc and "demo" not in private_rpc:
+            try:
+                t0 = time.time()
+                r = self._session.post(private_rpc, json={"type": "allMids"}, timeout=3)
+                results["chainstack_private_rpc"] = {
+                    "url": private_rpc,
+                    "status_code": r.status_code,
+                    "latency_ms": round((time.time() - t0) * 1000, 2),
+                    "rate_limit_cap": "Unlimited / High-Throughput Tier",
+                }
+            except Exception as e:
+                results["chainstack_private_rpc"] = {"error": str(e)}
+        else:
+            results["chainstack_private_rpc"] = {
+                "status": "UNCONFIGURED",
+                "message": "CHAINSTACK_HYPERCORE_RPC_URL is not set in .env. Falling back to public RPC.",
+            }
+
+        return {
+            "status": "SUCCESS",
+            "health_check": results,
+        }
+
+    def get_high_throughput_l2(self, coin: str) -> Dict[str, Any]:
+        """
+        Fetches rapid L2 order book snapshot using high-throughput Chainstack RPC bypass.
+        Interfaces with chainstack-hypercore-mcp tool specification.
+        """
+        private_rpc = os.getenv("CHAINSTACK_HYPERCORE_RPC_URL")
+        public_rpc = "https://api.hyperliquid.xyz/info"
+        target_url = private_rpc if (private_rpc and "your-api-key" not in private_rpc and "demo" not in private_rpc) else public_rpc
+        endpoint_label = "Chainstack HyperCore Private RPC" if target_url == private_rpc else "Hyperliquid Public RPC (Fallback)"
+
+        body = {"type": "l2Book", "coin": coin}
+        try:
+            t0 = time.time()
+            resp = self._session.post(target_url, json=body, headers={"Content-Type": "application/json"}, timeout=5)
+            latency_ms = (time.time() - t0) * 1000
+            data = resp.json()
+            levels = data.get("levels", [[], []]) if isinstance(data, dict) else [[], []]
+            bids = levels[0][:10] if len(levels) > 0 else []
+            asks = levels[1][:10] if len(levels) > 1 else []
+
+            return {
+                "status": "SUCCESS",
+                "coin": coin,
+                "endpoint_used": endpoint_label,
+                "latency_ms": round(latency_ms, 2),
+                "bids": bids,
+                "asks": asks,
+                "time": data.get("time") if isinstance(data, dict) else None,
+                "response": data,
+            }
+        except Exception as e:
+            fallback = self.get_l2_snapshot(coin)
+            if fallback.get("status") == "SUCCESS":
+                fallback["endpoint_used"] = "Fallback get_l2_snapshot"
+                return fallback
+            return {"status": "FAILED", "coin": coin, "endpoint_used": endpoint_label, "error": str(e)}
+
     def get_funding_rate(self, coin: str) -> Optional[float]:
         """
         Fetch annualized funding rate APR for a coin from real-time asset contexts.

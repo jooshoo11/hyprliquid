@@ -73,8 +73,42 @@
       </div>
     </div>
 
-    <!-- Right status badges & Emergency control -->
+    <!-- Right status badges, Sparkline & Emergency control -->
     <div class="flex items-center space-x-3">
+      <!-- Live Equity Sparkline mini-chart in header stats bar -->
+      <div class="hidden lg:flex items-center space-x-3 bg-slate-900/90 px-3 py-1 rounded-xl border border-slate-800">
+        <div class="flex flex-col text-right">
+          <span class="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Equity Curve</span>
+          <span id="header-sparkline-equity" class="text-xs font-mono font-bold text-emerald-400">$100.00</span>
+        </div>
+        <canvas id="equity-sparkline" width="120" height="28" class="w-[120px] h-[28px] rounded"></canvas>
+      </div>
+
+      <!-- EST. FEES & CARRY Metric Pill in header stats bar -->
+      <div class="hidden md:flex items-center space-x-2 bg-slate-900/90 px-3 py-1 rounded-xl border border-slate-800 text-xs mono shadow-sm">
+        <div class="flex flex-col text-right sm:text-left">
+          <span class="text-[9px] text-slate-500 font-bold uppercase tracking-wider flex items-center gap-1">
+            <i class="fa-solid fa-receipt text-cyan-400 text-[10px]"></i> EST. FEES &amp; CARRY
+          </span>
+          <div class="flex items-center gap-1.5 font-semibold text-[11px] mt-0.5">
+            <span id="header-fees" class="text-rose-400">Fees: -$0.00</span>
+            <span class="text-slate-600">|</span>
+            <span id="header-carry" class="text-emerald-400">Carry: +$0.00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Web Audio Mute Toggle Button -->
+      <button id="btn-audio-toggle" onclick="toggleAudioMute()" title="Audio Alerts: Enabled (Click to Mute)" class="bg-slate-900/90 hover:bg-slate-800 text-cyan-400 border border-slate-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all active:scale-95">
+        <i id="audio-icon" class="fa-solid fa-volume-high text-xs"></i>
+      </button>
+
+      <!-- Daily PnL Report Button -->
+      <button onclick="openDailyPnlModal()" title="View Daily P&L Performance Report" class="bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95">
+        <i class="fa-solid fa-file-waveform text-cyan-400"></i>
+        <span>PnL Report</span>
+      </button>
+
       <div class="hidden md:flex items-center space-x-2 bg-slate-900/90 px-3 py-1 rounded-full border border-slate-800 text-xs">
         <span class="text-slate-500">Circuit Guard:</span>
         <span id="badge-guard" class="text-emerald-400 font-semibold">ACTIVE (Max 25%)</span>
@@ -85,9 +119,10 @@
         <span id="ws-status" class="text-slate-300">LIVE WS</span>
       </div>
 
-      <button onclick="emergencyCloseAll()" class="bg-rose-950/70 hover:bg-rose-900 text-rose-300 border border-rose-800/80 hover:border-rose-600 px-3.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm active:scale-95">
-        <i class="fa-solid fa-triangle-exclamation text-rose-400"></i>
-        <span>CLOSE ALL</span>
+      <!-- RED FLATTEN ALL BUTTON -->
+      <button id="btn-flatten-all" onclick="openFlattenModal()" class="bg-red-600 hover:bg-red-500 text-white font-bold px-3.5 py-1.5 rounded-lg text-xs tracking-wider uppercase flex items-center gap-1.5 transition-all shadow-lg shadow-red-600/30 active:scale-95 border border-red-400/50">
+        <i class="fa-solid fa-skull-crossbones text-white"></i>
+        <span>FLATTEN ALL</span>
       </button>
     </div>
   </header>
@@ -179,6 +214,91 @@
       </div>
     </section>
 
+    <!-- QUANT PERFORMANCE ANALYTICS CARD -->
+    <section class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col gap-3">
+      <div class="flex flex-wrap items-center justify-between pb-2.5 border-b border-slate-800/80 gap-2">
+        <div class="flex items-center space-x-2.5">
+          <div class="w-7 h-7 rounded-lg bg-cyan-950/80 border border-cyan-700/60 flex items-center justify-center text-cyan-400">
+            <i class="fa-solid fa-chart-pie text-xs"></i>
+          </div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <span class="font-extrabold text-xs sm:text-sm text-white tracking-wider uppercase">Quant Performance Analytics</span>
+              <span class="px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-mono text-[10px] font-bold">REAL-TIME</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex items-center space-x-3 text-xs mono text-slate-400">
+          <span id="analytics-trade-count" class="text-slate-400">Trades: <strong class="text-white">0</strong></span>
+          <span class="text-slate-600">|</span>
+          <span id="analytics-win-loss" class="text-slate-400">W/L: <strong class="text-emerald-400">0</strong> / <strong class="text-rose-400">0</strong></span>
+        </div>
+      </div>
+
+      <!-- 5 Metric Pods -->
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <!-- Win Rate % -->
+        <div class="bg-slate-900/90 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between shadow-inner group hover:border-cyan-700/50 transition-colors">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>WIN RATE</span>
+            <i class="fa-solid fa-trophy text-[10px] text-amber-400"></i>
+          </div>
+          <div class="mt-1.5 flex items-baseline justify-between">
+            <span id="quant-win-rate" class="text-xl font-bold mono text-emerald-400">0.0%</span>
+            <span class="text-[10px] text-slate-500 mono font-semibold">TARGET &ge;55%</span>
+          </div>
+        </div>
+
+        <!-- Profit Factor -->
+        <div class="bg-slate-900/90 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between shadow-inner group hover:border-cyan-700/50 transition-colors">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>PROFIT FACTOR</span>
+            <i class="fa-solid fa-scale-balanced text-[10px] text-cyan-400"></i>
+          </div>
+          <div class="mt-1.5 flex items-baseline justify-between">
+            <span id="quant-profit-factor" class="text-xl font-bold mono text-cyan-400">0.00</span>
+            <span class="text-[10px] text-slate-500 mono font-semibold">TARGET &gt;1.5</span>
+          </div>
+        </div>
+
+        <!-- Sharpe Ratio -->
+        <div class="bg-slate-900/90 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between shadow-inner group hover:border-cyan-700/50 transition-colors">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>SHARPE RATIO</span>
+            <i class="fa-solid fa-chart-simple text-[10px] text-indigo-400"></i>
+          </div>
+          <div class="mt-1.5 flex items-baseline justify-between">
+            <span id="quant-sharpe-ratio" class="text-xl font-bold mono text-indigo-400">0.00</span>
+            <span class="text-[10px] text-slate-500 mono font-semibold">ANNUALIZED</span>
+          </div>
+        </div>
+
+        <!-- Expectancy ($/trade) -->
+        <div class="bg-slate-900/90 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between shadow-inner group hover:border-cyan-700/50 transition-colors">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>EXPECTANCY</span>
+            <i class="fa-solid fa-calculator text-[10px] text-purple-400"></i>
+          </div>
+          <div class="mt-1.5 flex items-baseline justify-between">
+            <span id="quant-expectancy" class="text-xl font-bold mono text-purple-400">$0.00</span>
+            <span class="text-[10px] text-slate-500 mono font-semibold">/ TRADE</span>
+          </div>
+        </div>
+
+        <!-- Total Net P&L -->
+        <div class="bg-slate-900/90 border border-slate-800/80 rounded-lg p-3 flex flex-col justify-between shadow-inner group hover:border-cyan-700/50 transition-colors col-span-2 sm:col-span-1">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>TOTAL NET P&amp;L</span>
+            <i class="fa-solid fa-sack-dollar text-[10px] text-emerald-400"></i>
+          </div>
+          <div class="mt-1.5 flex items-baseline justify-between">
+            <span id="quant-total-net-pnl" class="text-xl font-bold mono text-emerald-400">+$0.00</span>
+            <span id="quant-gross-sub" class="text-[10px] text-slate-500 mono font-semibold">Gross: $0.00</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- GRID: CHART + POSITIONS (LEFT) & PROSPECTOR (RIGHT) -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
       
@@ -198,27 +318,47 @@
                 </div>
               </div>
               <input id="input-custom-symbol" type="text" placeholder="+ coin" class="bg-slate-900 border border-slate-700/80 rounded px-2 py-0.5 text-xs text-white uppercase mono w-20 focus:outline-none focus:border-cyan-400" onkeydown="if(event.key==='Enter') selectSymbol(this.value)">
+              <!-- Funding Rate Pill in chart header next to symbol selector -->
+              <div id="chart-funding-pill" class="px-2.5 py-0.5 rounded-full bg-slate-900/90 border border-slate-700/80 text-xs mono font-semibold text-cyan-400 flex items-center gap-1.5 shadow-sm">
+                <i class="fa-solid fa-bolt text-[10px] text-cyan-400"></i>
+                <span id="chart-funding-text">Funding: --% APR</span>
+              </div>
             </div>
 
-            <!-- Timeframe selector -->
-            <div class="flex items-center space-x-1 bg-slate-900/80 p-1 rounded-lg border border-slate-800 text-xs mono">
-              <button onclick="changeInterval('1m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="1m">1m</button>
-              <button onclick="changeInterval('5m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="5m">5m</button>
-              <button onclick="changeInterval('15m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="15m">15m</button>
-              <button onclick="changeInterval('1h')" class="tf-btn px-2 py-0.5 rounded bg-cyan-900 text-cyan-200 font-bold" data-tf="1h">1h</button>
-              <button onclick="changeInterval('4h')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="4h">4h</button>
-              <button onclick="changeInterval('1d')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="1d">1d</button>
+            <!-- Indicators and Timeframe selector -->
+            <div class="flex items-center space-x-2">
+              <!-- Quantitative Indicator Overlays Toggle Buttons -->
+              <div class="flex items-center space-x-1 bg-slate-900/80 p-1 rounded-lg border border-slate-800 text-xs mono">
+                <button id="btn-toggle-ema" onclick="toggleEMA()" class="px-2 py-0.5 rounded font-bold bg-amber-950 text-amber-300 border border-amber-700 transition-colors" title="Toggle EMA 20 (#f59e0b) & EMA 50 (#06b6d4)">EMA 20/50</button>
+                <button id="btn-toggle-vwap" onclick="toggleVWAP()" class="px-2 py-0.5 rounded font-bold bg-purple-950 text-purple-300 border border-purple-700 transition-colors" title="Toggle Volume-Weighted Average Price (#a855f7)">VWAP</button>
+              </div>
+
+              <!-- Timeframe selector -->
+              <div class="flex items-center space-x-1 bg-slate-900/80 p-1 rounded-lg border border-slate-800 text-xs mono">
+                <button onclick="changeInterval('1m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="1m">1m</button>
+                <button onclick="changeInterval('5m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="5m">5m</button>
+                <button onclick="changeInterval('15m')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="15m">15m</button>
+                <button onclick="changeInterval('1h')" class="tf-btn px-2 py-0.5 rounded bg-cyan-900 text-cyan-200 font-bold" data-tf="1h">1h</button>
+                <button onclick="changeInterval('4h')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="4h">4h</button>
+                <button onclick="changeInterval('1d')" class="tf-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-tf="1d">1d</button>
+              </div>
             </div>
           </div>
 
-          <!-- Chart Stats Bar -->
-          <div class="flex items-center justify-between py-2 text-xs mono text-slate-300">
-            <div class="flex items-center space-x-4">
+          <!-- Chart Stats Bar with Dynamic Indicators Legend -->
+          <div class="flex flex-wrap items-center justify-between py-2 text-xs mono text-slate-300 gap-2">
+            <div class="flex items-center space-x-3">
               <span id="chart-active-symbol" class="font-bold text-white text-base">BTC-PERP</span>
               <span id="chart-active-price" class="text-base text-cyan-400 font-semibold">$0.00</span>
               <span id="chart-active-funding" class="text-slate-400">Funding: --</span>
             </div>
-            <div id="chart-pos-tag" class="hidden text-xs px-2 py-0.5 rounded border"></div>
+            <!-- Dynamic Indicator Legend -->
+            <div class="flex items-center space-x-3 text-[11px]">
+              <span id="legend-ema20" class="text-amber-400 font-medium">EMA20: --</span>
+              <span id="legend-ema50" class="text-cyan-400 font-medium">EMA50: --</span>
+              <span id="legend-vwap" class="text-purple-400 font-medium">VWAP: --</span>
+              <div id="chart-pos-tag" class="hidden text-xs px-2 py-0.5 rounded border"></div>
+            </div>
           </div>
 
           <!-- The Lightweight Chart Canvas -->
@@ -229,36 +369,122 @@
           </div>
         </div>
 
-        <!-- ACTIVE POSITIONS TABLE -->
+        <!-- 10s AI SENTINEL LOGIC STREAM PANEL -->
         <div class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col">
-          <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
-            <div class="flex items-center space-x-2">
-              <i class="fa-solid fa-bolt text-amber-400 text-sm"></i>
-              <span class="font-bold text-sm text-white tracking-wide">ACTIVE OPEN POSITIONS</span>
-              <span id="table-pos-badge" class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-xs mono">0</span>
+          <div class="flex flex-wrap items-center justify-between pb-3 border-b border-slate-800/80 gap-2">
+            <div class="flex items-center space-x-2.5">
+              <div class="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-700/60 flex items-center justify-center text-cyan-400">
+                <i class="fa-solid fa-satellite-dish text-sm"></i>
+              </div>
+              <div>
+                <div class="flex items-center space-x-2">
+                  <span class="font-bold text-sm text-white tracking-wide">10s AI SENTINEL LOGIC STREAM</span>
+                  <span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/60 font-mono text-[10px] font-semibold flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-live"></span> 10s WATCHDOG
+                  </span>
+                </div>
+                <p class="text-[11px] text-slate-400">Autonomous real-time trade sentry, L2 liquidity collapse watchdog &amp; execution rationale</p>
+              </div>
             </div>
-            <span class="text-xs text-slate-400">Auto-audited every 10s by AI Sentinel</span>
+
+            <!-- Category filter pills -->
+            <div class="flex items-center space-x-1 bg-slate-900/90 p-1 rounded-lg border border-slate-800 text-xs mono">
+              <button onclick="filterSentinelCategory('ALL')" class="sentinel-filter-btn px-2.5 py-0.5 rounded bg-cyan-900 text-cyan-200 font-bold" data-cat="ALL">ALL</button>
+              <button onclick="filterSentinelCategory('[AUDIT]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-emerald-400 font-semibold" data-cat="[AUDIT]">[AUDIT]</button>
+              <button onclick="filterSentinelCategory('[RISK]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-rose-400 font-semibold" data-cat="[RISK]">[RISK]</button>
+              <button onclick="filterSentinelCategory('[SCREEN]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-indigo-400 font-semibold" data-cat="[SCREEN]">[SCREEN]</button>
+              <button onclick="filterSentinelCategory('[MISSED]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-amber-400 font-semibold" data-cat="[MISSED]">[MISSED]</button>
+            </div>
           </div>
 
-          <div class="overflow-x-auto mt-2">
-            <table class="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr class="text-slate-400 border-b border-slate-800 mono font-semibold">
-                  <th class="py-2.5 px-3">COIN</th>
-                  <th class="py-2.5 px-3">SIDE</th>
-                  <th class="py-2.5 px-3">SIZE</th>
-                  <th class="py-2.5 px-3">ENTRY PRICE</th>
-                  <th class="py-2.5 px-3">UNREALIZED P&L</th>
-                  <th class="py-2.5 px-3">ROI%</th>
-                  <th class="py-2.5 px-3 text-right">ACTION</th>
-                </tr>
-              </thead>
-              <tbody id="positions-table-body" class="divide-y divide-slate-800/60 mono">
-                <tr>
-                  <td colspan="7" class="py-8 text-center text-slate-500 italic">No open positions. Scanning markets...</td>
-                </tr>
-              </tbody>
-            </table>
+          <!-- Streaming list container -->
+          <div id="sentinel-stream-container" class="flex flex-col gap-2 mt-3 overflow-y-auto max-h-[220px] pr-1 mono text-xs">
+            <div class="text-xs text-slate-500 py-6 text-center italic">Awaiting AI Sentinel 10-second thoughts stream...</div>
+          </div>
+        </div>
+
+        <!-- ORDERS & TRADE HISTORY TABBED CONTAINER -->
+        <div class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col">
+          <div class="flex flex-wrap items-center justify-between pb-3 border-b border-slate-800/80 gap-3">
+            <!-- Tabs -->
+            <div class="flex items-center bg-slate-900/90 p-1 rounded-lg border border-slate-800">
+              <button id="tab-btn-active" onclick="switchOrdersTab('active')" class="px-3.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 bg-cyan-900 text-cyan-200 border border-cyan-700/60 shadow-sm">
+                <i class="fa-solid fa-bolt text-amber-400 text-[11px]"></i>
+                <span>Active Positions</span>
+                <span id="tab-active-count" class="px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[10px] mono ml-1">0</span>
+              </button>
+              <button id="tab-btn-closed" onclick="switchOrdersTab('closed')" class="px-3.5 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-white transition-all flex items-center gap-1.5">
+                <i class="fa-solid fa-clock-rotate-left text-slate-400 text-[11px]"></i>
+                <span>Closed Order History</span>
+                <span id="tab-closed-count" class="px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] mono ml-1">0</span>
+              </button>
+            </div>
+
+            <!-- Actions: Missed Setups & Refresh -->
+            <div class="flex items-center space-x-2">
+              <button onclick="openMissedSetupsModal()" class="bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 hover:text-white border border-amber-800/60 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 shadow-sm">
+                <i class="fa-solid fa-filter-circle-xmark text-amber-400"></i>
+                <span>Missed Setups &amp; Retrospective</span>
+              </button>
+              <button onclick="refreshOrdersHistory()" title="Refresh Orders History" class="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 rounded-lg text-xs transition-colors">
+                <i class="fa-solid fa-rotate text-[11px]"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- TAB 1: ACTIVE POSITIONS TABLE -->
+          <div id="tab-content-active" class="block">
+            <div class="overflow-x-auto mt-2">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="text-slate-400 border-b border-slate-800 mono font-semibold">
+                    <th class="py-2.5 px-3">COIN</th>
+                    <th class="py-2.5 px-3">STRATEGY</th>
+                    <th class="py-2.5 px-3">SIDE</th>
+                    <th class="py-2.5 px-3">SIZE</th>
+                    <th class="py-2.5 px-3">ENTRY PRICE</th>
+                    <th class="py-2.5 px-3">UNREALIZED P&L</th>
+                    <th class="py-2.5 px-3">ROI%</th>
+                    <th class="py-2.5 px-3 text-right">ACTION</th>
+                  </tr>
+                </thead>
+                <tbody id="positions-table-body" class="divide-y divide-slate-800/60 mono">
+                  <tr>
+                    <td colspan="8" class="py-8 text-center text-slate-500 italic">No open positions. Scanning markets...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- TAB 2: CLOSED ORDER HISTORY TABLE -->
+          <div id="tab-content-closed" class="hidden">
+            <div class="overflow-x-auto mt-2">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr class="text-slate-400 border-b border-slate-800 mono font-semibold">
+                    <th class="py-2.5 px-3">DATE/TIME (UTC)</th>
+                    <th class="py-2.5 px-3">COIN</th>
+                    <th class="py-2.5 px-3">STRATEGY</th>
+                    <th class="py-2.5 px-3">SIDE</th>
+                    <th class="py-2.5 px-3">SIZE</th>
+                    <th class="py-2.5 px-3">ENTRY PX</th>
+                    <th class="py-2.5 px-3">EXIT PX</th>
+                    <th class="py-2.5 px-3">GROSS P&amp;L ($)</th>
+                    <th class="py-2.5 px-3">FEES ($)</th>
+                    <th class="py-2.5 px-3">NET P&amp;L ($)</th>
+                    <th class="py-2.5 px-3">ROI (%)</th>
+                    <th class="py-2.5 px-3">DURATION</th>
+                    <th class="py-2.5 px-3">CLOSE REASON</th>
+                  </tr>
+                </thead>
+                <tbody id="closed-orders-table-body" class="divide-y divide-slate-800/60 mono">
+                  <tr>
+                    <td colspan="13" class="py-8 text-center text-slate-500 italic">Loading closed trade history...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -307,14 +533,170 @@
           </div>
         </div>
 
+        <!-- DELTA-NEUTRAL FUNDING ARBITRAGE WIDGET -->
+        <div class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-800/80">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-scale-balanced text-amber-400 text-sm"></i>
+              <span class="font-bold text-xs text-slate-300 tracking-wide">FUNDING ARBITRAGE (DELTA-NEUTRAL)</span>
+            </div>
+            <span id="funding-arb-badge" class="text-[10px] px-2 py-0.5 rounded bg-amber-950/60 text-amber-300 border border-amber-800/40 mono font-semibold">0 PAIRS</span>
+          </div>
+
+          <p class="text-[11px] text-slate-400 mt-2 mb-2">High-yield carry pairs (Long &lt; -50% APR, Short &gt; +100% APR; spread &le; 0.10%, depth &ge; $10k):</p>
+
+          <div id="funding-arb-list" class="flex flex-col gap-2 overflow-y-auto max-h-[300px] pr-1">
+            <div class="text-xs text-slate-500 py-4 text-center italic">Scanning funding carry pairs...</div>
+          </div>
+        </div>
+
       </div>
 
     </div>
 
   </main>
 
-  <!-- TOAST NOTIFICATION CONTAINER -->
-  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+  <!-- TOAST NOTIFICATION CONTAINER (TOP-RIGHT) -->
+  <div id="toast-container" class="fixed top-16 right-5 z-[9999] flex flex-col gap-2.5 max-w-sm w-full pointer-events-none"></div>
+
+  <!-- FLATTEN ALL CONFIRMATION MODAL -->
+  <div id="flatten-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden transition-opacity duration-200">
+    <div class="bg-[#0f172a] border-2 border-rose-600/90 rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-rose-950/60 flex flex-col gap-4 transform transition-transform scale-100 duration-200 mx-4">
+      <div class="flex items-start justify-between">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-xl bg-rose-950/90 border border-rose-600/70 flex items-center justify-center text-rose-400 text-lg shadow-inner">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+          </div>
+          <div>
+            <h3 class="font-extrabold text-base text-white tracking-wide">EMERGENCY FLATTEN ALL</h3>
+            <p class="text-xs text-rose-400 font-medium">Immediate market close across all active strategies</p>
+          </div>
+        </div>
+        <button onclick="closeFlattenModal()" class="text-slate-400 hover:text-white transition-colors text-sm p-1 rounded-lg hover:bg-slate-800">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-300 space-y-2.5">
+        <p class="leading-relaxed">
+          Are you sure you want to execute an <strong class="text-rose-400 font-semibold">Emergency Abort</strong>? This will immediately send market orders to close:
+        </p>
+        <div id="flatten-positions-summary" class="mono font-semibold text-white bg-slate-950/80 p-2.5 rounded-lg border border-slate-800 text-xs max-h-36 overflow-y-auto">
+          Loading active positions...
+        </div>
+        <p class="text-[11px] text-slate-400 italic">
+          Orders will be broadcast immediately to Hyperliquid and bridge commands queued.
+        </p>
+      </div>
+
+      <div class="flex items-center justify-end space-x-3 pt-2">
+        <button onclick="closeFlattenModal()" class="px-4 py-2 rounded-xl text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition-colors">
+          Cancel
+        </button>
+        <button id="btn-confirm-flatten" onclick="confirmFlattenAll()" class="px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 transition-all flex items-center gap-1.5 shadow-lg shadow-rose-600/40 active:scale-95">
+          <i class="fa-solid fa-skull-crossbones"></i>
+          <span>Yes, Flatten All</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAILY PNL REPORT MODAL -->
+  <div id="daily-pnl-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden transition-opacity duration-200">
+    <div class="bg-[#0f172a] border border-slate-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col gap-4 max-h-[85vh] overflow-hidden mx-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-xl bg-cyan-950/80 border border-cyan-700/60 flex items-center justify-center text-cyan-400 shadow-inner">
+            <i class="fa-solid fa-file-waveform"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm text-white tracking-wide">Daily P&L Performance Report</h3>
+            <p id="daily-pnl-status-sub" class="text-xs text-slate-400">Loading daily audit...</p>
+          </div>
+        </div>
+        <button onclick="closeDailyPnlModal()" class="text-slate-400 hover:text-white transition-colors text-sm p-1 rounded-lg hover:bg-slate-800">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <div id="daily-pnl-content" class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 text-xs font-mono text-slate-200 overflow-y-auto max-h-[55vh] whitespace-pre-wrap leading-relaxed">
+        Loading report...
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-slate-800">
+        <span class="text-[11px] text-slate-500">Source: <code class="text-cyan-400">reports/daily_pnl.md</code></span>
+        <button onclick="closeDailyPnlModal()" class="px-4 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition-colors">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MISSED SETUPS & RETROSPECTIVE MODAL -->
+  <div id="missed-setups-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden transition-opacity duration-200">
+    <div class="bg-[#0f172a] border border-slate-800 rounded-2xl max-w-4xl w-full p-6 shadow-2xl flex flex-col gap-4 max-h-[85vh] overflow-hidden mx-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-xl bg-amber-950/80 border border-amber-700/60 flex items-center justify-center text-amber-400 shadow-inner">
+            <i class="fa-solid fa-filter-circle-xmark"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm text-white tracking-wide">Missed Setups &amp; Retrospective Audit</h3>
+            <p class="text-xs text-slate-400">Analysis of trade signals filtered or skipped by risk &amp; execution guards</p>
+          </div>
+        </div>
+        <button onclick="closeMissedSetupsModal()" class="text-slate-400 hover:text-white transition-colors text-sm p-1 rounded-lg hover:bg-slate-800">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <!-- Summary metrics strip in modal -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col">
+          <span class="text-[10px] text-slate-500 font-bold uppercase">Total Screened Setups</span>
+          <span id="missed-stat-total" class="text-lg font-bold mono text-white mt-1">0</span>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col">
+          <span class="text-[10px] text-slate-500 font-bold uppercase">Blocked By Risk / Spread</span>
+          <span id="missed-stat-blocked" class="text-lg font-bold mono text-amber-400 mt-1">0</span>
+        </div>
+        <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3 flex flex-col">
+          <span class="text-[10px] text-slate-500 font-bold uppercase">Estimated Capital Preserved</span>
+          <span id="missed-stat-saved" class="text-lg font-bold mono text-emerald-400 mt-1">+$0.00</span>
+        </div>
+      </div>
+
+      <!-- Table of missed setups -->
+      <div class="overflow-y-auto max-h-[50vh] pr-1">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead>
+            <tr class="text-slate-400 border-b border-slate-800 mono font-semibold sticky top-0 bg-[#0f172a] z-10">
+              <th class="py-2.5 px-3">TIMESTAMP</th>
+              <th class="py-2.5 px-3">COIN</th>
+              <th class="py-2.5 px-3">STRATEGY</th>
+              <th class="py-2.5 px-3">SIDE</th>
+              <th class="py-2.5 px-3">SIGNAL PX</th>
+              <th class="py-2.5 px-3">FILTER GATE</th>
+              <th class="py-2.5 px-3">RETROSPECTIVE OUTCOME</th>
+            </tr>
+          </thead>
+          <tbody id="missed-setups-table-body" class="divide-y divide-slate-800/60 mono">
+            <tr>
+              <td colspan="7" class="py-8 text-center text-slate-500 italic">Loading missed setups...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Footer -->
+      <div class="flex items-center justify-between pt-2 border-t border-slate-800">
+        <span class="text-[11px] text-slate-500">Source: <code class="text-amber-400">reports/decision_journal.jsonl</code></span>
+        <button onclick="closeMissedSetupsModal()" class="px-4 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 transition-colors">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- JAVASCRIPT COCKPIT ENGINE -->
   <script>
@@ -322,9 +704,97 @@
     let currentSymbol = 'BTC';
     let currentInterval = '1h';
     let chart, candleSeries, volumeSeries;
+    let ema20Series = null, ema50Series = null, vwapSeries = null;
+    let isEmaVisible = true, isVwapVisible = true;
     let entryPriceLine = null;
+    let stopLossPriceLine = null;
+    let takeProfitPriceLine = null;
     let livePositions = [];
     let liveProspects = [];
+    let currentKlines = [];
+
+    // Indicator calculation helpers
+    function computeEMA(data, period) {
+      const k = 2 / (period + 1);
+      const result = [];
+      let prevEma = null;
+
+      for (let i = 0; i < data.length; i++) {
+        const close = data[i].close;
+        if (prevEma === null) {
+          prevEma = close;
+        } else {
+          prevEma = (close * k) + (prevEma * (1 - k));
+        }
+        result.push({ time: data[i].time, value: prevEma });
+      }
+      return result;
+    }
+
+    function computeVWAP(data) {
+      const result = [];
+      let cumVol = 0;
+      let cumTPV = 0;
+
+      for (let i = 0; i < data.length; i++) {
+        const d = data[i];
+        const tp = (d.high + d.low + d.close) / 3;
+        const vol = d.volume || 1;
+        cumVol += vol;
+        cumTPV += tp * vol;
+        const vwapVal = cumVol > 0 ? (cumTPV / cumVol) : d.close;
+        result.push({ time: d.time, value: vwapVal });
+      }
+      return result;
+    }
+
+    function updateLegendValues(px, e20, e50, vw) {
+      const pxEl = document.getElementById('chart-active-price');
+      const e20El = document.getElementById('legend-ema20');
+      const e50El = document.getElementById('legend-ema50');
+      const vwEl = document.getElementById('legend-vwap');
+
+      if (pxEl && px !== undefined && px !== null) {
+        pxEl.textContent = `$${px.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
+      }
+      if (e20El) {
+        e20El.textContent = e20 !== undefined && e20 !== null ? `EMA20: $${e20.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}` : 'EMA20: --';
+      }
+      if (e50El) {
+        e50El.textContent = e50 !== undefined && e50 !== null ? `EMA50: $${e50.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}` : 'EMA50: --';
+      }
+      if (vwEl) {
+        vwEl.textContent = vw !== undefined && vw !== null ? `VWAP: $${vw.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}` : 'VWAP: --';
+      }
+    }
+
+    // Toggle Indicators
+    function toggleEMA() {
+      isEmaVisible = !isEmaVisible;
+      if (ema20Series) ema20Series.applyOptions({ visible: isEmaVisible });
+      if (ema50Series) ema50Series.applyOptions({ visible: isEmaVisible });
+      const btn = document.getElementById('btn-toggle-ema');
+      if (btn) {
+        if (isEmaVisible) {
+          btn.className = "px-2 py-0.5 rounded font-bold bg-amber-950 text-amber-300 border border-amber-700 transition-colors";
+        } else {
+          btn.className = "px-2 py-0.5 rounded font-medium bg-slate-900 text-slate-500 border border-slate-800 transition-colors";
+        }
+      }
+    }
+
+    function toggleVWAP() {
+      isVwapVisible = !isVwapVisible;
+      if (vwapSeries) vwapSeries.applyOptions({ visible: isVwapVisible });
+      const btn = document.getElementById('btn-toggle-vwap');
+      if (btn) {
+        if (isVwapVisible) {
+          btn.className = "px-2 py-0.5 rounded font-bold bg-purple-950 text-purple-300 border border-purple-700 transition-colors";
+        } else {
+          btn.className = "px-2 py-0.5 rounded font-medium bg-slate-900 text-slate-500 border border-slate-800 transition-colors";
+        }
+      }
+    }
 
     // Initialize Lightweight Chart
     function initChart() {
@@ -369,10 +839,58 @@
         wickDownColor: '#f43f5e',
       });
 
+      // EMA 20 (Fast Trend, Amber #f59e0b)
+      ema20Series = chart.addLineSeries({
+        color: '#f59e0b',
+        lineWidth: 1.5,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'EMA 20',
+      });
+
+      // EMA 50 (Medium Trend, Cyan #06b6d4)
+      ema50Series = chart.addLineSeries({
+        color: '#06b6d4',
+        lineWidth: 1.5,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'EMA 50',
+      });
+
+      // VWAP (Volume-Weighted Average Price, Purple #a855f7)
+      vwapSeries = chart.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 1.5,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'VWAP',
+      });
+
       volumeSeries = chart.addHistogramSeries({
         priceFormat: { type: 'volume' },
         priceScaleId: '',
         scaleMargins: { top: 0.8, bottom: 0 },
+      });
+
+      // Crosshair move dynamic legend update
+      chart.subscribeCrosshairMove((param) => {
+        if (!param || !param.time || !param.seriesData) {
+          if (currentKlines && currentKlines.length > 0) {
+            const last = currentKlines[currentKlines.length - 1];
+            updateLegendValues(last.close, last.ema20, last.ema50, last.vwap);
+          }
+          return;
+        }
+        const cData = param.seriesData.get(candleSeries);
+        const e20 = param.seriesData.get(ema20Series);
+        const e50 = param.seriesData.get(ema50Series);
+        const vw = param.seriesData.get(vwapSeries);
+
+        const px = cData ? (cData.close !== undefined ? cData.close : cData.value) : null;
+        const e20Val = e20 ? e20.value : null;
+        const e50Val = e50 ? e50.value : null;
+        const vwVal = vw ? vw.value : null;
+        updateLegendValues(px, e20Val, e50Val, vwVal);
       });
 
       window.addEventListener('resize', () => {
@@ -407,8 +925,25 @@
           candleSeries.setData(candleData);
           volumeSeries.setData(volumeData);
 
-          const last = data[data.length - 1];
-          document.getElementById('chart-active-price').textContent = `$${last.close.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
+          // Compute Client-Side Indicators
+          const ema20Data = computeEMA(candleData, 20);
+          const ema50Data = computeEMA(candleData, 50);
+          const vwapData = computeVWAP(data);
+
+          if (ema20Series) ema20Series.setData(ema20Data);
+          if (ema50Series) ema50Series.setData(ema50Data);
+          if (vwapSeries) vwapSeries.setData(vwapData);
+
+          // Store for legend reference
+          currentKlines = data.map((d, i) => ({
+            ...d,
+            ema20: ema20Data[i] ? ema20Data[i].value : null,
+            ema50: ema50Data[i] ? ema50Data[i].value : null,
+            vwap: vwapData[i] ? vwapData[i].value : null,
+          }));
+
+          const last = currentKlines[currentKlines.length - 1];
+          updateLegendValues(last.close, last.ema20, last.ema50, last.vwap);
 
           // Draw position line if this symbol has an open position
           updateChartPositionLine(coin);
@@ -440,9 +975,10 @@
           title: `${match.side} ENTRY: $${match.entry_price}`,
         });
 
+        const strat = match.strategy || 'SMC Trend';
         posTag.classList.remove('hidden');
-        posTag.className = `text-xs px-2 py-0.5 rounded border mono font-bold ${isLong ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' : 'bg-rose-950/60 text-rose-400 border-rose-800/60'}`;
-        posTag.textContent = `${match.side} ${match.size} @ $${match.entry_price}`;
+        posTag.className = `text-xs px-2 py-0.5 rounded border mono font-bold flex items-center gap-1.5 ${isLong ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' : 'bg-rose-950/60 text-rose-400 border-rose-800/60'}`;
+        posTag.innerHTML = `<span>${match.side} ${match.size} @ $${match.entry_price}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700 font-normal">[${strat}]</span>`;
       } else {
         posTag.classList.add('hidden');
       }
@@ -581,7 +1117,466 @@
       }
     }
 
-    // Execute close trade
+    // --- Web Audio API Synthesizer (Pure Web Audio Oscillator API - No external files) ---
+    let audioCtx = null;
+    let isMuted = false;
+
+    function getAudioContext() {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          audioCtx = new AudioContextClass();
+        }
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    // 1. Fill Chime: Harmonic major arpeggio (C5: 523.25Hz -> E5: 659.25Hz -> G5: 783.99Hz)
+    function playFillChime() {
+      if (isMuted) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const notes = [523.25, 659.25, 783.99];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+
+          gain.gain.setValueAtTime(0, now + idx * 0.08);
+          gain.gain.linearRampToValueAtTime(0.18, now + idx * 0.08 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.35);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.start(now + idx * 0.08);
+          osc.stop(now + idx * 0.08 + 0.36);
+        });
+      } catch (e) {
+        console.warn("Audio chime error:", e);
+      }
+    }
+
+    // 2. Warning Chime: Dual frequency risk pulse (380Hz -> 280Hz triangle wave)
+    function playWarningChime() {
+      if (isMuted) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        [0, 0.14].forEach((offset) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(380, now + offset);
+          osc.frequency.exponentialRampToValueAtTime(280, now + offset + 0.1);
+
+          gain.gain.setValueAtTime(0, now + offset);
+          gain.gain.linearRampToValueAtTime(0.22, now + offset + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.12);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.start(now + offset);
+          osc.stop(now + offset + 0.13);
+        });
+      } catch (e) {
+        console.warn("Audio warning chime error:", e);
+      }
+    }
+
+    // 3. Close Chime: Descending resolution (G5: 783.99Hz -> C5: 523.25Hz)
+    function playCloseChime() {
+      if (isMuted) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const notes = [783.99, 523.25];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+
+          gain.gain.setValueAtTime(0, now + idx * 0.12);
+          gain.gain.linearRampToValueAtTime(0.16, now + idx * 0.12 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.12 + 0.4);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+
+          osc.start(now + idx * 0.12);
+          osc.stop(now + idx * 0.12 + 0.41);
+        });
+      } catch (e) {
+        console.warn("Audio close chime error:", e);
+      }
+    }
+
+    // Toggle audio mute button
+    function toggleAudioMute() {
+      isMuted = !isMuted;
+      const btn = document.getElementById('btn-audio-toggle');
+      const icon = document.getElementById('audio-icon');
+      if (isMuted) {
+        btn.className = "bg-slate-900/90 hover:bg-slate-800 text-slate-500 border border-slate-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all active:scale-95";
+        icon.className = "fa-solid fa-volume-xmark text-xs";
+        btn.title = "Audio Alerts: Muted (Click to Unmute)";
+        showToast("Audio chimes muted", "info", "SOUND MUTED");
+      } else {
+        btn.className = "bg-slate-900/90 hover:bg-slate-800 text-cyan-400 border border-slate-800 px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all active:scale-95";
+        icon.className = "fa-solid fa-volume-high text-xs";
+        btn.title = "Audio Alerts: Enabled (Click to Mute)";
+        getAudioContext();
+        playFillChime();
+        showToast("Audio chimes enabled", "info", "SOUND ENABLED");
+      }
+    }
+
+    // --- Non-Intrusive Top-Right Toast Notification System ---
+    function showToast(msg, type = 'info', title = null) {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+
+      const toast = document.createElement('div');
+      
+      const typeStyles = {
+        execution: {
+          border: 'border-cyan-500/80',
+          bg: 'bg-slate-900/95',
+          text: 'text-cyan-200',
+          icon: 'fa-bolt text-cyan-400',
+          defaultTitle: 'EXECUTION EVENT'
+        },
+        success: {
+          border: 'border-emerald-500/80',
+          bg: 'bg-slate-900/95',
+          text: 'text-emerald-200',
+          icon: 'fa-circle-check text-emerald-400',
+          defaultTitle: 'SUCCESS'
+        },
+        warning: {
+          border: 'border-amber-500/80',
+          bg: 'bg-slate-900/95',
+          text: 'text-amber-200',
+          icon: 'fa-triangle-exclamation text-amber-400',
+          defaultTitle: 'RISK WARNING'
+        },
+        error: {
+          border: 'border-rose-500/80',
+          bg: 'bg-slate-900/95',
+          text: 'text-rose-200',
+          icon: 'fa-circle-xmark text-rose-400',
+          defaultTitle: 'ERROR'
+        },
+        trigger: {
+          border: 'border-purple-500/80',
+          bg: 'bg-slate-900/95',
+          text: 'text-purple-200',
+          icon: 'fa-shield-halved text-purple-400',
+          defaultTitle: 'AI SENTINEL TRIGGER'
+        },
+        info: {
+          border: 'border-slate-700',
+          bg: 'bg-slate-900/95',
+          text: 'text-slate-200',
+          icon: 'fa-circle-info text-cyan-400',
+          defaultTitle: 'SYSTEM NOTICE'
+        }
+      };
+
+      const style = typeStyles[type] || typeStyles.info;
+      const displayTitle = title || style.defaultTitle;
+
+      toast.className = `${style.bg} ${style.border} ${style.text} border backdrop-blur-md px-3.5 py-2.5 rounded-xl shadow-2xl text-xs flex items-start gap-3 pointer-events-auto transition-all duration-300 transform translate-x-8 opacity-0 relative overflow-hidden`;
+      
+      toast.innerHTML = `
+        <div class="mt-0.5 text-sm flex-shrink-0">
+          <i class="fa-solid ${style.icon}"></i>
+        </div>
+        <div class="flex-1 pr-2">
+          <div class="font-bold uppercase tracking-wider text-[10px] text-slate-400 font-mono">${displayTitle}</div>
+          <div class="text-xs font-medium text-slate-100 mt-0.5 leading-snug">${msg}</div>
+        </div>
+        <button onclick="this.parentElement.remove()" class="text-slate-400 hover:text-white transition-colors text-xs p-0.5 flex-shrink-0">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      `;
+
+      container.appendChild(toast);
+
+      // Trigger audio based on type
+      if (type === 'warning' || type === 'error' || type === 'trigger') {
+        playWarningChime();
+      }
+
+      // Smooth slide-in
+      requestAnimationFrame(() => {
+        toast.classList.remove('translate-x-8', 'opacity-0');
+        toast.classList.add('translate-x-0', 'opacity-100');
+      });
+
+      // Auto-dismiss after 4500ms
+      setTimeout(() => {
+        toast.classList.remove('translate-x-0', 'opacity-100');
+        toast.classList.add('translate-x-8', 'opacity-0');
+        setTimeout(() => toast.remove(), 320);
+      }, 4500);
+    }
+
+    // --- Live Equity Sparkline Mini-Chart ---
+    let equityHistory = [];
+    const MAX_SPARKLINE_POINTS = 50;
+
+    function updateSparkline(equity) {
+      if (equity === undefined || equity === null) return;
+      equity = parseFloat(equity);
+      if (isNaN(equity)) return;
+
+      const now = Date.now();
+      if (equityHistory.length === 0 || now - (equityHistory[equityHistory.length - 1].time || 0) >= 800) {
+        equityHistory.push({ time: now, val: equity });
+        if (equityHistory.length > MAX_SPARKLINE_POINTS) {
+          equityHistory.shift();
+        }
+      } else {
+        equityHistory[equityHistory.length - 1].val = equity;
+      }
+
+      const canvas = document.getElementById('equity-sparkline');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth || 120;
+      const height = canvas.clientHeight || 28;
+
+      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+        canvas.width = width * dpr;
+        canvas.height = height * dpr;
+      }
+
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, width, height);
+
+      const pts = equityHistory.map(p => p.val);
+      const isUp = pts.length > 1 ? (pts[pts.length - 1] >= pts[0]) : true;
+      const strokeColor = isUp ? '#10b981' : '#f43f5e';
+      const fillColorTop = isUp ? 'rgba(16, 185, 129, 0.28)' : 'rgba(244, 63, 94, 0.28)';
+
+      if (pts.length < 2) {
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, height / 2);
+        ctx.lineTo(width, height / 2);
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      let min = Math.min(...pts);
+      let max = Math.max(...pts);
+      if (max === min) {
+        min -= 0.5;
+        max += 0.5;
+      }
+      const range = max - min;
+      const pad = 3;
+
+      const coords = pts.map((val, i) => {
+        const x = (i / (pts.length - 1)) * width;
+        const y = height - pad - ((val - min) / range) * (height - pad * 2);
+        return { x, y };
+      });
+
+      // Fill area under curve
+      const grad = ctx.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, fillColorTop);
+      grad.addColorStop(1, 'rgba(15, 23, 42, 0)');
+
+      ctx.beginPath();
+      ctx.moveTo(coords[0].x, height);
+      ctx.lineTo(coords[0].x, coords[0].y);
+      for (let i = 1; i < coords.length; i++) {
+        ctx.lineTo(coords[i].x, coords[i].y);
+      }
+      ctx.lineTo(coords[coords.length - 1].x, height);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Stroke line
+      ctx.beginPath();
+      ctx.moveTo(coords[0].x, coords[0].y);
+      for (let i = 1; i < coords.length; i++) {
+        ctx.lineTo(coords[i].x, coords[i].y);
+      }
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      // Terminal point dot
+      const last = coords[coords.length - 1];
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+
+      ctx.restore();
+
+      const sparkEquityEl = document.getElementById('header-sparkline-equity');
+      if (sparkEquityEl) {
+        sparkEquityEl.textContent = `$${equity.toFixed(2)}`;
+        sparkEquityEl.className = `text-xs font-mono font-bold ${isUp ? 'text-emerald-400' : 'text-rose-400'}`;
+      }
+    }
+
+    // --- Strategy Attribution Badges ---
+    function getStrategyBadge(strategy) {
+      const s = (strategy || '').toLowerCase();
+      if (s.includes('smc') || s.includes('continuation') || s.includes('trend')) {
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-950/90 text-sky-300 border border-sky-700/60 font-mono text-[11px] font-semibold tracking-tight shadow-sm"><i class="fa-solid fa-chart-line text-[10px] text-sky-400"></i> SMC Trend</span>`;
+      } else if (s.includes('funding') || s.includes('fade')) {
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-950/90 text-purple-300 border border-purple-700/60 font-mono text-[11px] font-semibold tracking-tight shadow-sm"><i class="fa-solid fa-clock-rotate-left text-[10px] text-purple-400"></i> Funding Fade</span>`;
+      } else if (s.includes('imbalance') || s.includes('book') || s.includes('scalp')) {
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-700/60 font-mono text-[11px] font-semibold tracking-tight shadow-sm"><i class="fa-solid fa-scale-balanced text-[10px] text-amber-400"></i> Book Imbalance</span>`;
+      } else if (s.includes('vwap') || s.includes('oi') || s.includes('momentum')) {
+        return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-700/60 font-mono text-[11px] font-semibold tracking-tight shadow-sm"><i class="fa-solid fa-wave-square text-[10px] text-emerald-400"></i> VWAP/OI</span>`;
+      }
+      return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 font-mono text-[11px] font-semibold tracking-tight"><i class="fa-solid fa-microchip text-[10px] text-cyan-400"></i> ${strategy || 'SMC Trend'}</span>`;
+    }
+
+    // --- Trade Event Detector (Audio & Toast triggers) ---
+    let previousPositionMap = new Map();
+    let isInitialStateLoaded = false;
+
+    function detectTradeEvents(newPositions) {
+      const currentMap = new Map();
+      (newPositions || []).forEach(p => currentMap.set(p.coin.toUpperCase(), p));
+
+      if (!isInitialStateLoaded) {
+        previousPositionMap = currentMap;
+        isInitialStateLoaded = true;
+        return;
+      }
+
+      // Check for newly opened positions
+      currentMap.forEach((pos, coin) => {
+        if (!previousPositionMap.has(coin)) {
+          playFillChime();
+          const strat = pos.strategy || 'AI Strategy';
+          showToast(`Position Opened: ${coin} ${pos.side} [${strat}] size ${parseFloat(pos.size).toLocaleString()} @ $${pos.entry_price}`, 'execution', 'TRADE FILLED');
+        }
+      });
+
+      // Check for closed positions
+      previousPositionMap.forEach((pos, coin) => {
+        if (!currentMap.has(coin)) {
+          playCloseChime();
+          const strat = pos.strategy || 'AI Strategy';
+          showToast(`Position Closed: ${coin} [${strat}]`, 'info', 'TRADE CLOSED');
+        }
+      });
+
+      previousPositionMap = currentMap;
+    }
+
+    // --- FLATTEN ALL Modal & Execution ---
+    function openFlattenModal() {
+      const modal = document.getElementById('flatten-modal');
+      const summaryEl = document.getElementById('flatten-positions-summary');
+      const confirmBtn = document.getElementById('btn-confirm-flatten');
+
+      if (!livePositions || livePositions.length === 0) {
+        summaryEl.innerHTML = `<span class="text-slate-400 italic">No active positions open. All strategies are currently FLAT.</span>`;
+        confirmBtn.disabled = true;
+        confirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
+      } else {
+        confirmBtn.disabled = false;
+        confirmBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        summaryEl.innerHTML = livePositions.map(p => {
+          const isLong = p.side === 'LONG';
+          const sideColor = isLong ? 'text-emerald-400' : 'text-rose-400';
+          const strat = p.strategy || 'SMC Trend';
+          return `<div class="flex items-center justify-between py-1 border-b border-slate-800/60 last:border-0">
+            <span><strong class="text-white">${p.coin}</strong> <span class="${sideColor}">[${p.side}]</span> size ${parseFloat(p.size).toLocaleString()}</span>
+            <span class="text-slate-400 text-[10px] mono">[${strat}]</span>
+          </div>`;
+        }).join('');
+      }
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    }
+
+    function closeFlattenModal() {
+      const modal = document.getElementById('flatten-modal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    async function confirmFlattenAll() {
+      const confirmBtn = document.getElementById('btn-confirm-flatten');
+      const originalHtml = confirmBtn.innerHTML;
+      confirmBtn.disabled = true;
+      confirmBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Flattening...</span>`;
+
+      try {
+        const resp = await fetch('/api/trades/close_all', { method: 'POST' });
+        const res = await resp.json();
+        playCloseChime();
+        closeFlattenModal();
+        showToast(res.message || "All positions market-closed successfully!", 'warning', 'FLATTEN ALL EXECUTED');
+      } catch (err) {
+        showToast(`Failed to flatten all: ${err}`, 'error', 'FLATTEN FAILED');
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.innerHTML = originalHtml;
+      }
+    }
+
+    // --- Daily PnL Report Modal ---
+    async function openDailyPnlModal() {
+      const modal = document.getElementById('daily-pnl-modal');
+      const contentEl = document.getElementById('daily-pnl-content');
+      const subEl = document.getElementById('daily-pnl-status-sub');
+
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+      contentEl.textContent = "Fetching daily PnL report from server...";
+      subEl.textContent = "Querying /api/reports/daily_pnl...";
+
+      try {
+        const resp = await fetch('/api/reports/daily_pnl');
+        const data = await resp.json();
+        contentEl.textContent = data.markdown || data.report || "No report content returned.";
+        subEl.textContent = data.exists ? "Loaded from reports/daily_pnl.md" : "Real-time summary (file pending)";
+      } catch (err) {
+        contentEl.textContent = `Error loading daily PnL report: ${err}`;
+        subEl.textContent = "Request failed";
+      }
+    }
+
+    function closeDailyPnlModal() {
+      const modal = document.getElementById('daily-pnl-modal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
+    // Close single trade
     async function closeTrade(coin) {
       if (!confirm(`Confirm immediate market close for ${coin}?`)) return;
       try {
@@ -591,47 +1586,15 @@
           body: JSON.stringify({ coin: coin, reason: "Manual Web Cockpit Close" })
         });
         const res = await resp.json();
-        showToast(res.message || `Close command sent for ${coin}`, 'success');
+        playCloseChime();
+        showToast(res.message || `Close command sent for ${coin}`, 'success', 'TRADE CLOSED');
       } catch (err) {
-        showToast(`Failed to close ${coin}: ${err}`, 'error');
-      }
-    }
-
-    // Execute emergency close all
-    async function emergencyCloseAll() {
-      if (!confirm(`🚨 EMERGENCY: Are you sure you want to market-close ALL active positions immediately?`)) return;
-      try {
-        const resp = await fetch('/api/trades/close_all', { method: 'POST' });
-        const res = await resp.json();
-        showToast(res.message || "Close-all executed!", 'warning');
-      } catch (err) {
-        showToast(`Failed to close all: ${err}`, 'error');
+        showToast(`Failed to close ${coin}: ${err}`, 'error', 'CLOSE FAILED');
       }
     }
 
     function triggerProspectScan() {
-      showToast("Triggering AI Prospector scan across top 50 perpetuals...", "info");
-      // Simulated trigger: state will update on next sentinel cycle
-    }
-
-    // Toast alerts
-    function showToast(msg, type = 'info') {
-      const container = document.getElementById('toast-container');
-      const toast = document.createElement('div');
-      const colors = {
-        success: 'bg-emerald-950 border-emerald-600 text-emerald-200',
-        error: 'bg-rose-950 border-rose-600 text-rose-200',
-        warning: 'bg-amber-950 border-amber-600 text-amber-200',
-        info: 'bg-slate-900 border-cyan-600 text-cyan-200',
-      };
-      toast.className = `${colors[type] || colors.info} border px-4 py-2.5 rounded-lg shadow-xl text-xs flex items-center gap-2 pointer-events-auto transition-all transform duration-300 translate-y-2 opacity-0`;
-      toast.innerHTML = `<i class="fa-solid fa-circle-info"></i><span>${msg}</span>`;
-      container.appendChild(toast);
-      setTimeout(() => { toast.classList.remove('translate-y-2', 'opacity-0'); }, 10);
-      setTimeout(() => {
-        toast.classList.add('opacity-0', 'translate-y-2');
-        setTimeout(() => toast.remove(), 300);
-      }, 4000);
+      showToast("Triggering AI Prospector scan across top 50 perpetuals...", "info", "PROSPECTOR SCAN");
     }
 
     // Connect WebSocket
@@ -661,6 +1624,244 @@
       };
     }
 
+    // --- 10s AI SENTINEL LOGIC STREAM ---
+    let latestSentinelThoughts = [];
+    let activeSentinelCategory = 'ALL';
+
+    function filterSentinelCategory(cat) {
+      activeSentinelCategory = cat;
+      document.querySelectorAll('.sentinel-filter-btn').forEach(btn => {
+        if (btn.getAttribute('data-cat') === cat) {
+          btn.className = "sentinel-filter-btn px-2.5 py-0.5 rounded bg-cyan-900 text-cyan-200 font-bold";
+        } else {
+          btn.className = "sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400 font-semibold";
+        }
+      });
+      renderSentinelThoughts(latestSentinelThoughts);
+    }
+
+    function renderSentinelThoughts(thoughts) {
+      if (!thoughts) return;
+      latestSentinelThoughts = thoughts;
+      const container = document.getElementById('sentinel-stream-container');
+      if (!container) return;
+
+      const filtered = activeSentinelCategory === 'ALL'
+        ? thoughts
+        : thoughts.filter(t => (t.category || '').toUpperCase() === activeSentinelCategory.toUpperCase());
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div class="text-xs text-slate-500 py-6 text-center italic">No thoughts in category ${activeSentinelCategory}. Monitoring active stream...</div>`;
+        return;
+      }
+
+      container.innerHTML = filtered.slice(-15).reverse().map(t => {
+        const cat = t.category || '[AUDIT]';
+        let catStyle = 'bg-cyan-950 text-cyan-300 border-cyan-800/60';
+        if (cat.includes('AUDIT')) catStyle = 'bg-emerald-950 text-emerald-300 border-emerald-800/60';
+        else if (cat.includes('RISK')) catStyle = 'bg-rose-950 text-rose-300 border-rose-800/60';
+        else if (cat.includes('SCREEN')) catStyle = 'bg-indigo-950 text-indigo-300 border-indigo-800/60';
+        else if (cat.includes('MISSED')) catStyle = 'bg-amber-950 text-amber-300 border-amber-800/60';
+
+        const status = t.status || 'NORMAL';
+        let statusStyle = 'text-slate-400 border-slate-700 bg-slate-900';
+        if (status === 'HEALTHY' || status === 'OPTIMAL') statusStyle = 'text-emerald-400 border-emerald-800 bg-emerald-950/60';
+        else if (status === 'TRIGGER' || status === 'WARNING') statusStyle = 'text-rose-400 border-rose-800 bg-rose-950/60';
+        else if (status === 'FILTERED' || status === 'WATCHING') statusStyle = 'text-amber-400 border-amber-800 bg-amber-950/60';
+        else if (status === 'MONITORING') statusStyle = 'text-cyan-400 border-cyan-800 bg-cyan-950/60';
+
+        const coinBadge = t.coin ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-cyan-300 border border-slate-700 font-bold">${t.coin}</span>` : '';
+
+        return `
+          <div class="p-2.5 rounded-lg bg-slate-900/80 hover:bg-slate-800/60 border border-slate-800/70 transition-all flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center space-x-2">
+                <span class="text-slate-500 text-[10px] font-mono">${t.timestamp || '--:--:--'}</span>
+                <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold tracking-wide ${catStyle}">${cat}</span>
+                ${coinBadge}
+              </div>
+              <span class="px-2 py-0.2 rounded border text-[10px] font-semibold ${statusStyle}">${status}</span>
+            </div>
+            <p class="text-slate-200 text-xs leading-relaxed font-mono mt-0.5">${t.thought || ''}</p>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // --- ORDERS & TRADE HISTORY TAB LOGIC ---
+    let currentOrdersTab = 'active';
+
+    function switchOrdersTab(tab) {
+      currentOrdersTab = tab;
+      const btnActive = document.getElementById('tab-btn-active');
+      const btnClosed = document.getElementById('tab-btn-closed');
+      const contentActive = document.getElementById('tab-content-active');
+      const contentClosed = document.getElementById('tab-content-closed');
+
+      if (tab === 'active') {
+        btnActive.className = "px-3.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 bg-cyan-900 text-cyan-200 border border-cyan-700/60 shadow-sm";
+        btnClosed.className = "px-3.5 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-white transition-all flex items-center gap-1.5";
+        contentActive.classList.remove('hidden');
+        contentClosed.classList.add('hidden');
+      } else {
+        btnClosed.className = "px-3.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 bg-cyan-900 text-cyan-200 border border-cyan-700/60 shadow-sm";
+        btnActive.className = "px-3.5 py-1.5 rounded-md text-xs font-medium text-slate-400 hover:text-white transition-all flex items-center gap-1.5";
+        contentClosed.classList.remove('hidden');
+        contentActive.classList.add('hidden');
+        loadClosedOrders();
+      }
+    }
+
+    async function loadClosedOrders() {
+      const tbody = document.getElementById('closed-orders-table-body');
+      if (!tbody) return;
+
+      try {
+        const resp = await fetch('/api/orders/history');
+        const data = await resp.json();
+        const closed = data.closed_trades || [];
+        const open = data.open_positions || [];
+
+        const activeCnt = document.getElementById('tab-active-count');
+        const closedCnt = document.getElementById('tab-closed-count');
+        if (activeCnt) activeCnt.textContent = open.length;
+        if (closedCnt) closedCnt.textContent = closed.length;
+
+        if (closed.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-slate-500 italic">No closed trades recorded yet this session.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = closed.map(t => {
+          const isLong = (t.side || '').toUpperCase() === 'LONG';
+          const grossVal = parseFloat(t.gross_pnl !== undefined ? t.gross_pnl : (t.pnl || 0.0));
+          const feesVal = parseFloat(t.fees !== undefined ? t.fees : 0.0);
+          const netVal = parseFloat(t.net_pnl !== undefined ? t.net_pnl : (grossVal - feesVal));
+          const roiVal = parseFloat(t.roi || 0.0);
+
+          const grossColor = grossVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
+          const netColor = netVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
+          const sideBadge = isLong
+            ? '<span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-bold">LONG</span>'
+            : '<span class="px-2 py-0.5 rounded bg-rose-950/80 text-rose-400 border border-rose-800 font-bold">SHORT</span>';
+
+          const entryPx = parseFloat(t.entry_price || t.entry || 0.0);
+          const exitPx = parseFloat(t.exit_price || t.exit || 0.0);
+          const entryFmt = entryPx >= 1 ? entryPx.toFixed(2) : entryPx.toFixed(4);
+          const exitFmt = exitPx >= 1 ? exitPx.toFixed(2) : exitPx.toFixed(4);
+          const stratBadge = getStrategyBadge(t.strategy);
+          const dateFmt = (t.timestamp || '').replace('T', ' ').replace('Z', '');
+
+          const reasonText = t.close_reason || t.reason || 'Closed';
+          const isRotation = Boolean(t.is_rotation) ||
+            (t.close_reason && t.close_reason.toLowerCase().includes('rotation')) ||
+            (t.reason && t.reason.toLowerCase().includes('rotation'));
+
+          const rotationBadge = isRotation
+            ? '<span class="px-2 py-0.5 rounded bg-indigo-950/90 text-indigo-300 border border-indigo-700/70 font-mono text-[10px] font-bold tracking-tight inline-flex items-center gap-1 shadow-sm mr-1.5"><i class="fa-solid fa-arrows-rotate text-[9px] text-indigo-400"></i> [ROTATION]</span>'
+            : '';
+
+          return `
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-2.5 px-3 text-slate-400 whitespace-nowrap">${dateFmt}</td>
+              <td class="py-2.5 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${t.coin}')">
+                ${t.coin}
+              </td>
+              <td class="py-2.5 px-3">${stratBadge}</td>
+              <td class="py-2.5 px-3">${sideBadge}</td>
+              <td class="py-2.5 px-3 text-slate-300">${parseFloat(t.size || 0).toLocaleString()}</td>
+              <td class="py-2.5 px-3 text-slate-300">$${entryFmt}</td>
+              <td class="py-2.5 px-3 text-slate-300">$${exitFmt}</td>
+              <td class="py-2.5 px-3 font-semibold ${grossColor}">${grossVal >= 0 ? '+' : ''}$${grossVal.toFixed(2)}</td>
+              <td class="py-2.5 px-3 text-slate-400 font-mono">-$${feesVal.toFixed(2)}</td>
+              <td class="py-2.5 px-3 font-bold ${netColor}">${netVal >= 0 ? '+' : ''}$${netVal.toFixed(2)}</td>
+              <td class="py-2.5 px-3 ${netColor}">${roiVal >= 0 ? '+' : ''}${roiVal.toFixed(2)}%</td>
+              <td class="py-2.5 px-3 text-slate-400 whitespace-nowrap">${t.duration || '--'}</td>
+              <td class="py-2.5 px-3 text-slate-300 max-w-xs truncate" title="${reasonText}">${rotationBadge}${reasonText}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error("Failed to load closed orders:", err);
+      }
+    }
+
+    async function refreshOrdersHistory() {
+      await loadClosedOrders();
+      showToast("Order and trade history refreshed", "info", "ORDERS REFRESHED");
+    }
+
+    // --- MISSED SETUPS & RETROSPECTIVE MODAL ---
+    async function openMissedSetupsModal() {
+      const modal = document.getElementById('missed-setups-modal');
+      const tbody = document.getElementById('missed-setups-table-body');
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+
+      tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500 italic"><i class="fa-solid fa-spinner fa-spin mr-2"></i> Querying /api/missed_opportunities...</td></tr>`;
+
+      try {
+        const resp = await fetch('/api/missed_opportunities');
+        const data = await resp.json();
+        const missed = data.missed_opportunities || [];
+
+        document.getElementById('missed-stat-total').textContent = missed.length;
+        const blockedCnt = missed.filter(m => (m.status || '').toUpperCase() === 'FILTERED').length;
+        document.getElementById('missed-stat-blocked').textContent = blockedCnt;
+        const totalSaved = missed.reduce((acc, m) => acc + (parseFloat(m.pnl_saved_usd) || 0), 0);
+        document.getElementById('missed-stat-saved').textContent = `+$${totalSaved.toFixed(2)}`;
+
+        if (missed.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500 italic">No missed opportunities recorded yet.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = missed.map(m => {
+          const isLong = (m.side || '').toUpperCase() === 'LONG';
+          const sideBadge = isLong
+            ? '<span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-bold">LONG</span>'
+            : '<span class="px-2 py-0.5 rounded bg-rose-950/80 text-rose-400 border border-rose-800 font-bold">SHORT</span>';
+
+          const cat = m.category || '[RISK_FILTER]';
+          let catStyle = 'bg-rose-950/80 text-rose-300 border-rose-800/60';
+          if (cat.includes('SPREAD')) catStyle = 'bg-amber-950/80 text-amber-300 border-amber-800/60';
+          else if (cat.includes('RATIO')) catStyle = 'bg-sky-950/80 text-sky-300 border-sky-800/60';
+          else if (cat.includes('LIQUIDITY')) catStyle = 'bg-purple-950/80 text-purple-300 border-purple-800/60';
+
+          const stratBadge = getStrategyBadge(m.strategy);
+          const dateFmt = (m.timestamp || '').replace('T', ' ').replace('Z', '');
+          const pxFmt = parseFloat(m.signal_price || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4});
+
+          return `
+            <tr class="hover:bg-slate-800/40 transition-colors">
+              <td class="py-2.5 px-3 text-slate-400 whitespace-nowrap">${dateFmt}</td>
+              <td class="py-2.5 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${m.coin}')">
+                ${m.coin}
+              </td>
+              <td class="py-2.5 px-3">${stratBadge}</td>
+              <td class="py-2.5 px-3">${sideBadge}</td>
+              <td class="py-2.5 px-3 text-slate-300 font-mono">$${pxFmt}</td>
+              <td class="py-2.5 px-3">
+                <div class="flex flex-col gap-1">
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-bold w-fit ${catStyle}">${cat}</span>
+                  <span class="text-slate-300 text-[11px]">${m.filter_reason || ''}</span>
+                </div>
+              </td>
+              <td class="py-2.5 px-3 text-emerald-300 text-[11px] leading-snug">${m.retrospective_outcome || ''}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-rose-400 italic">Error loading missed opportunities: ${err}</td></tr>`;
+      }
+    }
+
+    function closeMissedSetupsModal() {
+      const modal = document.getElementById('missed-setups-modal');
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+
     // Render Cockpit UI from Live State
     function updateCockpitUI(data) {
       // 1. Top Metrics
@@ -674,6 +1875,34 @@
 
       livePositions = positions;
       liveProspects = prospects;
+
+      // Update Equity Sparkline mini-chart
+      updateSparkline(equity);
+
+      // Detect Trade Events (Chimes & Toasts)
+      detectTradeEvents(positions);
+
+      // Render 10s AI Sentinel Logic Stream
+      if (data.sentinel_thoughts) {
+        renderSentinelThoughts(data.sentinel_thoughts);
+      }
+
+      // Update Est. Fees & Carry Pill
+      const totalFees = data.total_fees_paid || 0.0;
+      const totalCarry = data.est_funding_carry !== undefined ? data.est_funding_carry : 0.0;
+      const feesEl = document.getElementById('header-fees');
+      const carryEl = document.getElementById('header-carry');
+      if (feesEl) {
+        feesEl.textContent = `Fees: -$${Math.abs(totalFees).toFixed(2)}`;
+      }
+      if (carryEl) {
+        carryEl.textContent = `Carry: ${totalCarry >= 0 ? '+' : '-'}$${Math.abs(totalCarry).toFixed(2)}`;
+        carryEl.className = totalCarry >= 0 ? 'text-emerald-400' : 'text-rose-400';
+      }
+
+      // Update Active Positions count badge in tab
+      const activeCnt = document.getElementById('tab-active-count');
+      if (activeCnt) activeCnt.textContent = positions.length;
 
       document.getElementById('metric-equity').textContent = `$${equity.toFixed(2)}`;
       document.getElementById('metric-cash').textContent = `$${cash.toFixed(2)}`;
@@ -699,47 +1928,70 @@
         pnlBadge.textContent = 'DRAWDOWN';
       }
 
-      // 2. Positions Table
+      // 2. Positions Table with Strategy Attribution Badges & Anti-Churn Timer
       const posTableBody = document.getElementById('positions-table-body');
-      document.getElementById('table-pos-badge').textContent = positions.length;
+      const activeBadge = document.getElementById('tab-active-count');
+      if (activeBadge) activeBadge.textContent = positions.length;
 
-      if (positions.length === 0) {
-        posTableBody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500 italic">No open positions. Scanning markets...</td></tr>`;
-      } else {
-        posTableBody.innerHTML = positions.map(pos => {
-          const isLong = pos.side === 'LONG';
-          const pnlVal = parseFloat(pos.unrealized_pnl || 0.0);
-          const pnlColor = pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
-          const sideBadge = isLong
-            ? '<span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-bold">LONG 🟢</span>'
-            : '<span class="px-2 py-0.5 rounded bg-rose-950/80 text-rose-400 border border-rose-800 font-bold">SHORT 🔴</span>';
+      if (posTableBody) {
+        if (positions.length === 0) {
+          posTableBody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-slate-500 italic">No open positions. Scanning markets...</td></tr>`;
+        } else {
+          posTableBody.innerHTML = positions.map(pos => {
+            const isLong = pos.side === 'LONG';
+            const pnlVal = parseFloat(pos.unrealized_pnl || 0.0);
+            const pnlColor = pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
+            const sideBadge = isLong
+              ? '<span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-bold">LONG 🟢</span>'
+              : '<span class="px-2 py-0.5 rounded bg-rose-950/80 text-rose-400 border border-rose-800 font-bold">SHORT 🔴</span>';
 
-          const entryPx = parseFloat(pos.entry_price || 0.0);
-          const entryFmt = entryPx >= 1 ? entryPx.toFixed(2) : entryPx.toFixed(4);
-          const sizeVal = parseFloat(pos.size || 0.0).toLocaleString();
-          const roiEst = (entryPx > 0) ? ((pnlVal / (entryPx * parseFloat(pos.size || 1))) * 100).toFixed(2) : '0.00';
+            const entryPx = parseFloat(pos.entry_price || 0.0);
+            const entryFmt = entryPx >= 1 ? entryPx.toFixed(2) : entryPx.toFixed(4);
+            const sizeVal = parseFloat(pos.size || 0.0).toLocaleString();
+            const roiEst = (entryPx > 0) ? ((pnlVal / (entryPx * parseFloat(pos.size || 1))) * 100).toFixed(2) : '0.00';
+            const stratBadge = getStrategyBadge(pos.strategy);
 
-          return `
-            <tr class="hover:bg-slate-800/40 transition-colors">
-              <td class="py-3 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${pos.coin}')">
-                <i class="fa-solid fa-chart-line text-[10px] text-slate-500 mr-1.5"></i>${pos.coin}
-              </td>
-              <td class="py-3 px-3">${sideBadge}</td>
-              <td class="py-3 px-3 text-slate-300">${sizeVal}</td>
-              <td class="py-3 px-3 text-slate-300">$${entryFmt}</td>
-              <td class="py-3 px-3 font-bold ${pnlColor}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</td>
-              <td class="py-3 px-3 ${pnlColor}">${roiEst}%</td>
-              <td class="py-3 px-3 text-right">
-                <button onclick="closeTrade('${pos.coin}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800 px-2.5 py-1 rounded text-xs font-semibold transition-all">
-                  Close
-                </button>
-              </td>
-            </tr>
-          `;
-        }).join('');
+            // Anti-churn timer calculation (if within first 90 seconds)
+            let remSeconds = 0;
+            if (pos.anti_churn_remaining !== undefined && pos.anti_churn_remaining > 0) {
+              remSeconds = pos.anti_churn_remaining;
+            } else if (pos.duration_seconds !== undefined && pos.duration_seconds < 90) {
+              remSeconds = 90 - pos.duration_seconds;
+            } else if (data.anti_churn_status && data.anti_churn_status[pos.coin]) {
+              const ac = data.anti_churn_status[pos.coin];
+              remSeconds = typeof ac === 'object' ? (ac.remaining_seconds || 0) : ac;
+            }
+
+            const antiChurnBadge = remSeconds > 0
+              ? `<span class="px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-700/60 font-mono text-[10px] font-bold tracking-tight inline-flex items-center gap-1 shadow-sm" title="Anti-churn minimum hold active (90s)">⏳ ${Math.ceil(remSeconds)}s min hold</span>`
+              : '';
+
+            return `
+              <tr class="hover:bg-slate-800/40 transition-colors">
+                <td class="py-3 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${pos.coin}')">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="flex items-center"><i class="fa-solid fa-circle-dot text-[9px] text-cyan-400 mr-1.5"></i>${pos.coin}</span>
+                    ${antiChurnBadge}
+                  </div>
+                </td>
+                <td class="py-3 px-3">${stratBadge}</td>
+                <td class="py-3 px-3">${sideBadge}</td>
+                <td class="py-3 px-3 text-slate-300">${sizeVal}</td>
+                <td class="py-3 px-3 text-slate-300">$${entryFmt}</td>
+                <td class="py-3 px-3 font-bold ${pnlColor}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</td>
+                <td class="py-3 px-3 ${pnlColor}">${roiEst}%</td>
+                <td class="py-3 px-3 text-right whitespace-nowrap">
+                  <button onclick="closeTrade('${pos.coin}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800 px-2.5 py-1 rounded text-xs font-semibold transition-all active:scale-95">
+                    Close
+                  </button>
+                </td>
+              </tr>
+            `;
+          }).join('');
+        }
       }
 
-      // 3. Symbol Pills (Active Trades + BTC, ETH, SOL)
+    // 3. Symbol Pills (Active Trades + BTC, ETH, SOL)
       const pillsContainer = document.getElementById('chart-symbol-pills');
       const activeCoins = [...new Set([...positions.map(p => p.coin), 'BTC', 'ETH', 'SOL'])];
       pillsContainer.innerHTML = activeCoins.map(coin => {
@@ -787,6 +2039,55 @@
         }).join('');
       }
 
+      // 5. Delta-Neutral Funding Arbitrage
+      const fundingArbList = document.getElementById('funding-arb-list');
+      const fundingArbBadge = document.getElementById('funding-arb-badge');
+      const fundingArb = data.funding_arbitrage || [];
+
+      if (fundingArbBadge) {
+        fundingArbBadge.innerText = `${fundingArb.length} PAIRS`;
+      }
+
+      if (fundingArbList) {
+        if (fundingArb.length > 0) {
+          fundingArbList.innerHTML = fundingArb.map(pair => {
+            const longLeg = pair.long_leg || {};
+            const shortLeg = pair.short_leg || {};
+            return `
+              <div class="p-2.5 bg-slate-900/90 border border-amber-900/40 hover:border-amber-600/60 rounded-lg transition-all flex flex-col gap-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-bold text-amber-300 mono">${pair.pair_id || 'CARRY PAIR'}</span>
+                  <span class="text-xs px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 font-bold mono">+${pair.net_carry_apr_pct}% APR</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-[11px] mono pt-1 border-t border-slate-800/80">
+                  <div class="flex flex-col">
+                    <div class="flex items-center justify-between text-emerald-400">
+                      <span class="font-bold cursor-pointer hover:underline" onclick="selectSymbol('${longLeg.coin}')">LONG ${longLeg.coin}</span>
+                      <span>${longLeg.funding_apr_pct >= 0 ? '+' : ''}${longLeg.funding_apr_pct}%</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500">Spread: ${longLeg.spread_pct}% | Depth: $${((longLeg.top5_depth_usd || 0) / 1000).toFixed(1)}k</span>
+                  </div>
+                  <div class="flex flex-col">
+                    <div class="flex items-center justify-between text-rose-400">
+                      <span class="font-bold cursor-pointer hover:underline" onclick="selectSymbol('${shortLeg.coin}')">SHORT ${shortLeg.coin}</span>
+                      <span>${shortLeg.funding_apr_pct >= 0 ? '+' : ''}${shortLeg.funding_apr_pct}%</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500">Spread: ${shortLeg.spread_pct}% | Depth: $${((shortLeg.top5_depth_usd || 0) / 1000).toFixed(1)}k</span>
+                  </div>
+                </div>
+                <div class="text-[10px] text-slate-400 italic">50/50 Capital Yield: ${pair.capital_weighted_apr_pct}% APR</div>
+              </div>
+            `;
+          }).join('');
+        } else {
+          fundingArbList.innerHTML = `
+            <div class="text-[11px] text-slate-500 py-3 text-center italic bg-slate-900/40 rounded border border-slate-800/50">
+              0 pairs meet strict thresholds (&lt; -50% &amp; &gt; +100% APR with spread &le; 0.10% &amp; depth &ge; $10k). Surveillance active.
+            </div>
+          `;
+        }
+      }
+
       // Update position line on chart if active
       updateChartPositionLine(currentSymbol);
     }
@@ -796,6 +2097,16 @@
       initChart();
       selectSymbol('BTC');
       connectWebSocket();
+      loadClosedOrders();
+
+      // Unlock Web Audio API on first user interaction
+      const unlockAudio = () => {
+        getAudioContext();
+        window.removeEventListener('click', unlockAudio);
+        window.removeEventListener('keydown', unlockAudio);
+      };
+      window.addEventListener('click', unlockAudio);
+      window.addEventListener('keydown', unlockAudio);
     });
   </script>
 </body>
