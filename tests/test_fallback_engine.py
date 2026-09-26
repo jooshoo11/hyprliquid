@@ -53,3 +53,13 @@ def test_deterministic_prospects_generation():
     # Verify deterministic tag
     for coin, p in prospects.items():
         assert "[FALLBACK: RULE-BASED]" in p["reason"]
+
+
+def test_unified_engine_fallback_integration():
+    from src.engine.unified_engine import UnifiedEngine
+    engine = UnifiedEngine(paper=True)
+    assert hasattr(engine, "fallback_engine")
+    state = engine.get_state()
+    assert "fallback_status" in state
+    assert state["fallback_status"]["status"] == "HEALTHY"
+    assert state["fallback_status"]["is_fallback_active"] is False
