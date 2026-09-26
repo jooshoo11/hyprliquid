@@ -174,7 +174,9 @@ class OrderBookImbalance(Strategy):
         # Enforce official Hyperliquid exchange max leverage for this coin
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_notional = equity * max_lev
+        # Cap scalp notional to 2.0x equity to prevent astronomical sizing on tight tick stops
+        max_scalp_lev = min(float(max_lev), 2.0)
+        max_notional = equity * max_scalp_lev
         if (qty_val * entry_price) > max_notional:
             qty_val = max_notional / entry_price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))

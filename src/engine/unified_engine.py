@@ -62,6 +62,7 @@ from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
 from src.risk.portfolio_guard import PortfolioGuard
 from src.risk.trade_manager import TradeManager, TradeAction
 from src.risk.performance_analytics import PerformanceAnalytics
+from src.risk.fallback_engine import AIFallbackEngine
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.scanner.arbitrage_scanner import ArbitrageScanner
 from src.utils.instruments import get_coin_max_leverage
@@ -110,6 +111,7 @@ class UnifiedEngine:
             mae_loss_usd=-10.0,
         )
         self.analytics = PerformanceAnalytics()
+        self.fallback_engine = AIFallbackEngine()
 
         self.node: Optional[TradingNode] = None
         self.continuation_strat: Optional[TrendContinuationSMC] = None
@@ -146,9 +148,12 @@ class UnifiedEngine:
     def _update_ai_status(self, open_count: int = 0) -> None:
         """Update bridge/ai_status.json with live watchdog and prospector cadence."""
         try:
+            fb = self.fallback_engine.get_status_summary() if hasattr(self, "fallback_engine") else {}
             status_payload = {
-                "status": "HEALTHY",
-                "is_fallback_active": False,
+                "status": fb.get("status", "HEALTHY"),
+                "is_fallback_active": fb.get("is_fallback_active", False),
+                "last_error": fb.get("last_error"),
+                "fallback_count": fb.get("fallback_count", 0),
                 "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "prospector": {
                     "status": "ACTIVE",
@@ -479,35 +484,41 @@ class UnifiedEngine:
             "watchdog_interval": self.watchdog_interval,
             "next_prospector_scan": datetime.fromtimestamp(self._next_prospector_scan, timezone.utc).isoformat() if self._next_prospector_scan else None,
             "last_watchdog_audit": datetime.fromtimestamp(self._last_watchdog_audit, timezone.utc).isoformat() if self._last_watchdog_audit else None,
+            "fallback_status": self.fallback_engine.get_status_summary() if hasattr(self, "fallback_engine") else {},
         }
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
         """Natively and immediately close an open position across any strategy."""
-        coin_clean = coin.upper().split("-")[0].split(".")[0]
-        instr_id = InstrumentId(Symbol(f"{coin_clean}-USD-PERP"), Venue("HYPERLIQUID"))
+        coin_clean = coin.split("-")[0].split(".")[0].strip()
 
         if not self.node or not self.node.cache:
             return False
 
-        open_positions = [p for p in self.node.cache.positions_open() if not p.is_closed and p.instrument_id == instr_id]
+        open_positions = [
+            p for p in self.node.cache.positions_open()
+            if not p.is_closed and (
+                p.instrument_id.symbol.value.split("-")[0].lower() == coin_clean.lower()
+            )
+        ]
         if not open_positions:
             self.log(f"No active position found to close for {coin_clean}", "WARN")
             return False
 
         closed_any = False
         for pos in open_positions:
+            actual_coin = pos.instrument_id.symbol.value.split("-")[0]
             for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
                 if strat and strat.id == pos.strategy_id:
                     strat.close_position(pos)
                     closed_any = True
-                    self.log(f"Market close submitted for {coin_clean} via {strat.id} ({reason})", "CLOSE")
+                    self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via {strat.id} ({reason})", "CLOSE")
                     break
             if not closed_any:
                 fallback = self.funding_strat or self.continuation_strat
                 if fallback:
                     fallback.close_position(pos)
                     closed_any = True
-                    self.log(f"Market close submitted for {coin_clean} via fallback {fallback.id} ({reason})", "CLOSE")
+                    self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
 
             if closed_any:
                 entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
@@ -515,12 +526,12 @@ class UnifiedEngine:
                 side = "LONG" if pos.is_long else "SHORT"
                 strat_id = str(pos.strategy_id)
                 exit_px = entry_px
-                tracker = self.trade_manager.get_position(coin_clean)
+                tracker = self.trade_manager.get_position(actual_coin)
                 if tracker and tracker.current_price > 0:
                     exit_px = tracker.current_price
 
                 self.trade_manager.close_and_journal_position(
-                    coin=coin_clean,
+                    coin=actual_coin,
                     exit_price=exit_px,
                     reason=reason,
                     fallback_side=side,
@@ -531,11 +542,11 @@ class UnifiedEngine:
 
                 # Set 3-minute anti-churn cooldown
                 if hasattr(self, "guard") and self.guard:
-                    self.guard.set_cooldown(coin_clean, 180.0)
+                    self.guard.set_cooldown(actual_coin, 180.0)
                 if hasattr(self, "portfolio_guard") and self.portfolio_guard:
-                    self.portfolio_guard.set_cooldown(coin_clean, 180.0)
+                    self.portfolio_guard.set_cooldown(actual_coin, 180.0)
                 if hasattr(self, "trade_manager") and self.trade_manager:
-                    self.trade_manager.cooldown_tracker[coin_clean] = time.time() + 180.0
+                    self.trade_manager.cooldown_tracker[actual_coin] = time.time() + 180.0
 
                 # Dynamically adjust risk allocations based on updated trade performance
                 if hasattr(self, "guard") and self.guard:
@@ -831,6 +842,12 @@ class UnifiedEngine:
             now_ts = time.time()
             self._last_prospector_scan = now_ts
             self._next_prospector_scan = now_ts + self.prospector_interval
+
+            # Check auto-recovery for AI fallback engine
+            if hasattr(self, "fallback_engine") and self.fallback_engine:
+                if self.fallback_engine.check_auto_recovery():
+                    self.log("🛡️ [AI Fallback] Cooldown elapsed: recovered to HEALTHY AI mode.", "INFO")
+
             self._update_ai_status(open_count=len(self.get_open_positions()))
             self.log(f"🔍 [AI Prospector] Running {int(self.prospector_interval / 60)}-minute market scan #{self._prospector_scan_count} across top 50 perpetuals...", "INFO")
             try:
@@ -972,7 +989,20 @@ class UnifiedEngine:
                 )
 
             except Exception as e:
-                self.log(f"Prospector scan warning: {e}", "WARN")
+                err_str = str(e)
+                self.log(f"Prospector scan warning: {err_str}", "WARN")
+                if hasattr(self, "fallback_engine") and self.fallback_engine:
+                    self.fallback_engine.trigger_fallback(err_str)
+                    self.log(f"🛡️ [AI Fallback] Activated: generating deterministic rule-based quantitative prospects ({err_str}).", "TRIGGER")
+                    try:
+                        det_prospects = self.fallback_engine.generate_deterministic_prospects(self.info_client)
+                        if det_prospects:
+                            self.prospects = det_prospects
+                            self.guard.set_prospect_biases({c: p.get("bias", "NEUTRAL") for c, p in det_prospects.items()})
+                            self.log(f"🛡️ [AI Fallback] Successfully set {len(det_prospects)} deterministic rule-based prospects.", "INFO")
+                    except Exception as fb_err:
+                        self.log(f"Fallback generation error: {fb_err}", "ERROR")
+                self._update_ai_status(open_count=len(self.get_open_positions()))
 
             # Wait prospector_interval (15 minutes = 900s) or until stopped
             for _ in range(int(self.prospector_interval)):
