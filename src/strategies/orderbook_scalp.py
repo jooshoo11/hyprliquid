@@ -26,11 +26,11 @@ from src.utils.instruments import get_coin_max_leverage
 
 class OrderBookImbalanceConfig(StrategyConfig, kw_only=True):
     """Configuration for OrderBookImbalance scalper."""
-    skew_threshold: float = 1.5  # Bid/Ask depth ratio > 1.5
-    stop_ticks: int = 4  # 4-tick stop behind the wall
-    take_profit_ticks: int = 8  # 8-tick quick scalp target
+    skew_threshold: float = 3.5  # Bid/Ask depth ratio > 3.5 (genuine wall, avoids noise)
+    stop_ticks: int = 12  # 12-tick stop behind the wall
+    take_profit_ticks: int = 24  # 24-tick target (2:1 reward-to-risk)
     risk_per_trade_pct: float = 0.0075  # 0.75% equity risk
-    max_active_positions: int = 6
+    max_active_positions: int = 1  # Strictly 1 position max to prevent portfolio monopolization
     venue: str = "HYPERLIQUID"
 
 
@@ -90,9 +90,15 @@ class OrderBookImbalance(Strategy):
 
         tick_size = instrument.price_increment.as_double()
 
-        # Bid Wall: Imbalance Skew > 3.0 -> Buy in front of the wall
+        # Check AI prospect bias: do not take scalp against prospect bias
+        coin = str(instrument.id).split("-")[0].split(".")[0].upper()
+        p_bias = getattr(self.portfolio_guard, "prospect_biases", {}).get(coin) if self.portfolio_guard else None
+
+        # Bid Wall: Imbalance Skew >= 3.5 -> Buy in front of the wall
         bid_ask_skew = bid_size / ask_size
         if bid_ask_skew >= self.scalp_config.skew_threshold:
+            if p_bias == "SHORT":
+                return  # Skip BUY if AI Prospect bias is SHORT
             wall_px = tick.bid_price.as_double()
             entry_px = wall_px  # Post at best bid (maker)
             sl_px = wall_px - (self.scalp_config.stop_ticks * tick_size)
@@ -100,9 +106,11 @@ class OrderBookImbalance(Strategy):
             self._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, bid_ask_skew)
             return
 
-        # Ask Wall: Imbalance Skew > 3.0 -> Sell in front of the wall
+        # Ask Wall: Imbalance Skew >= 3.5 -> Sell in front of the wall
         ask_bid_skew = ask_size / bid_size
         if ask_bid_skew >= self.scalp_config.skew_threshold:
+            if p_bias == "LONG":
+                return  # Skip SELL if AI Prospect bias is LONG
             wall_px = tick.ask_price.as_double()
             entry_px = wall_px  # Post at best ask (maker)
             sl_px = wall_px + (self.scalp_config.stop_ticks * tick_size)

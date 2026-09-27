@@ -62,6 +62,13 @@ class PortfolioGuard:
         self.strategy_allocated_margin: Dict[str, float] = {}
         self.active_instrument_directions: Dict[str, OrderSide] = {}
         self.pending_orders: Dict[str, PendingOrderEntry] = {}
+        self.strategy_max_positions: Dict[str, int] = {
+            "OrderBookImbalance": 1,
+            "TrendContinuationSMC": 3,
+            "VwapOiMomentum": 3,
+            "HourlyFundingFade": 2,
+        }
+        self.strategy_open_positions: Dict[str, set] = {}
 
         # 24h Drawdown tracking
         self.daily_high_water_mark: Optional[float] = None
@@ -237,6 +244,13 @@ class PortfolioGuard:
             if effective_count >= self.max_total_open_positions:
                 return False, f"Max node positions ({self.max_total_open_positions}) reached."
 
+            # Per-strategy max open positions check (prevents scalper from monopolizing portfolio)
+            base_strat = strategy_name.split("-")[0]
+            max_strat_pos = self.strategy_max_positions.get(base_strat, self.strategy_max_positions.get(strategy_name, 4))
+            current_strat_pos = len(self.strategy_open_positions.get(base_strat, set()))
+            if current_strat_pos >= max_strat_pos:
+                return False, f"Strategy '{base_strat}' reached max position limit ({max_strat_pos})."
+
             # Enforce Hyperliquid official exchange max leverage per coin
             from src.utils.instruments import get_coin_max_leverage
             max_lev = get_coin_max_leverage(coin)
@@ -287,6 +301,10 @@ class PortfolioGuard:
             )
             self.active_instrument_directions[instr_str] = order.side
 
+            base_strat = strategy_name.split("-")[0]
+            self.strategy_open_positions.setdefault(base_strat, set()).add(instr_str)
+            self.strategy_open_positions.setdefault(strategy_name, set()).add(instr_str)
+
             entry = PendingOrderEntry(
                 order_id=order_id_str,
                 instrument_id=order.instrument_id,
@@ -306,6 +324,12 @@ class PortfolioGuard:
         """Release margin allocation and clear asset direction on position close."""
         instr_str = str(instrument_id)
         self.active_instrument_directions.pop(instr_str, None)
+
+        base_strat = strategy_name.split("-")[0]
+        if base_strat in self.strategy_open_positions:
+            self.strategy_open_positions[base_strat].discard(instr_str)
+        if strategy_name in self.strategy_open_positions:
+            self.strategy_open_positions[strategy_name].discard(instr_str)
 
         # Set 3-minute anti-churn cooldown on the closed coin
         coin = instr_str.split("-")[0].split(".")[0].upper()

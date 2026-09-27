@@ -177,3 +177,33 @@ def test_dynamic_sizing_multipliers_and_performance_status():
     assert status["TrendContinuationSMC"]["win_rate_pct"] == 75.0
     assert status["HourlyFundingFade"]["multiplier"] == 0.4
 
+
+def test_portfolio_guard_per_strategy_position_limit():
+    """Verify that OrderBookImbalance cannot exceed 1 position while other strategies can take multiple."""
+    guard = PortfolioGuard(max_total_open_positions=8)
+    guard.update_equity(1000.0)
+    inst_sol = InstrumentId(Symbol("SOL-USD-PERP"), Venue("HYPERLIQUID"))
+    inst_btc = InstrumentId(Symbol("BTC-USD-PERP"), Venue("HYPERLIQUID"))
+
+    # 1. OrderBookImbalance first position is approved
+    can_open, _ = guard.can_open_position("OrderBookImbalance", inst_sol, OrderSide.BUY, 50.0, 0)
+    assert can_open is True
+
+    # Register first position
+    order1 = _create_dummy_order("SOL-USD-PERP", OrderSide.BUY)
+    guard.register_order_submitted(order1, "OrderBookImbalance", 50.0)
+
+    # 2. Second OrderBookImbalance position is BLOCKED (capped at 1)
+    can_open_2, reason_2 = guard.can_open_position("OrderBookImbalance", inst_btc, OrderSide.BUY, 50.0, 1)
+    assert can_open_2 is False
+    assert "reached max position limit (1)" in reason_2
+
+    # 3. But TrendContinuationSMC can still open positions (up to 3)
+    can_open_smc, _ = guard.can_open_position("TrendContinuationSMC", inst_btc, OrderSide.BUY, 100.0, 1)
+    assert can_open_smc is True
+
+    # 4. Closing the OrderBookImbalance position frees the slot
+    guard.register_position_closed("OrderBookImbalance", inst_sol, 50.0)
+    can_open_again, _ = guard.can_open_position("OrderBookImbalance", inst_btc, OrderSide.BUY, 50.0, 1)
+    assert can_open_again is True
+

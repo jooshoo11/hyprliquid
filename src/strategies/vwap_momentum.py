@@ -160,7 +160,10 @@ class VwapOiMomentum(Strategy):
                     self.close_all_positions(instrument.id)
             return
 
-        # 2. Check Concurrency Limit
+        # 2. Check Concurrency Limit & Pending Orders
+        if len(self.cache.orders_open(instrument_id=instrument.id)) > 0:
+            return
+
         active_count = self.cache.positions_open_count()
         if active_count >= self.vwap_config.max_active_positions:
             return
@@ -201,10 +204,11 @@ class VwapOiMomentum(Strategy):
 
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin
+        # Enforce official Hyperliquid exchange max leverage for this coin, capped to 2.0x equity
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_notional = equity * max_lev
+        max_vwap_lev = min(float(max_lev), 2.0)
+        max_notional = equity * max_vwap_lev
         if (qty_val * price) > max_notional:
             qty_val = max_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))

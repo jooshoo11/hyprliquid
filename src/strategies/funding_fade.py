@@ -137,6 +137,10 @@ class HourlyFundingFade(Strategy):
             if not self.portfolio.is_flat(instrument.id):
                 return
 
+            # Prevent duplicate orders before previous order fills
+            if len(self.cache.orders_open(instrument_id=instrument.id)) > 0:
+                return
+
             if len(self.active_fades) >= self.fade_config.max_active_positions:
                 return
 
@@ -211,10 +215,11 @@ class HourlyFundingFade(Strategy):
 
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin
+        # Enforce official Hyperliquid exchange max leverage for this coin, capped to 2.0x equity
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_notional = equity * max_lev
+        max_fade_lev = min(float(max_lev), 2.0)
+        max_notional = equity * max_fade_lev
         if (qty_val * price) > max_notional:
             qty_val = max_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))

@@ -98,8 +98,8 @@ class UnifiedEngine:
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
 
         self.guard = PortfolioGuard(
-            max_strategy_equity_pct=25.0,
-            max_total_open_positions=10,
+            max_strategy_equity_pct=2.0,
+            max_total_open_positions=6,
             max_daily_drawdown_pct=0.20,
         )
         self.trade_manager = TradeManager(
@@ -144,6 +144,7 @@ class UnifiedEngine:
         self._last_prospector_scan = 0.0
         self._next_prospector_scan = 0.0
         self._last_watchdog_audit = 0.0
+        self._last_proactive_scalp_scan = 0.0
 
     def _update_ai_status(self, open_count: int = 0) -> None:
         """Update bridge/ai_status.json with live watchdog and prospector cadence."""
@@ -671,7 +672,7 @@ class UnifiedEngine:
                         # - Severe adverse depth wall (>6.0x skew against position)
                         if "OrderBookImbalance" in strat_name:
                             can_exit, hold_reason = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
-                            if can_exit and action.roi <= -0.8:
+                            if can_exit and action.roi <= -1.5 and asks_depth >= 20000 and bids_depth >= 20000:
                                 is_short_collapsed = (side == "SHORT" and asks_depth > 0 and (bids_depth / asks_depth) > 6.0)
                                 is_long_collapsed = (side == "LONG" and bids_depth > 0 and (asks_depth / bids_depth) > 6.0)
                                 if is_short_collapsed or is_long_collapsed:
@@ -756,16 +757,24 @@ class UnifiedEngine:
 
                 # 2. Proactive Autonomous Microstructure Scanner (High-Frequency Sentry)
                 # Evaluates L2 depth skew on top perpetuals to enter high-conviction orderbook scalps
+                # Strictly rate-limited to at most once per 120s and capped to max 1 concurrent scalp
+                now_ts = time.time()
+                open_scalps = [p for p in self.get_open_positions() if "OrderBook" in str(getattr(p, "strategy_id", ""))]
                 if (
                     self.scalp_strat
                     and self.node
                     and hasattr(self.node, "cache")
                     and self.node.cache
+                    and len(open_scalps) == 0
                     and len(self.get_open_positions()) < self.guard.max_total_open_positions
+                    and (now_ts - self._last_proactive_scalp_scan) >= 120.0
                 ):
+                    self._last_proactive_scalp_scan = now_ts
                     scan_coins = self.top_coins[:8] if self.top_coins else list(self.prospects.keys())[:8]
                     for sc_coin in scan_coins:
                         if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
+                            break
+                        if len([p for p in self.get_open_positions() if "OrderBook" in str(getattr(p, "strategy_id", ""))]) >= 1:
                             break
                         instr_key = f"{sc_coin}-USD-PERP.HYPERLIQUID"
                         instrument = self.scalp_strat.instruments_map.get(instr_key)
@@ -783,25 +792,27 @@ class UnifiedEngine:
                             if bids and asks and float(bids[0]["sz"]) > 0 and float(asks[0]["sz"]) > 0:
                                 b_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                                 a_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
-                                if b_depth > 0 and a_depth > 0:
+                                # Require substantial institutional book depth on both sides (>= $30k)
+                                if b_depth >= 30000 and a_depth >= 30000:
                                     tick_size = instrument.price_increment.as_double()
                                     skew_ratio = b_depth / a_depth
-                                    skew_threshold = getattr(self.scalp_strat.scalp_config, "skew_threshold", 1.5)
-                                    if skew_ratio >= skew_threshold:
+                                    skew_threshold = max(3.5, getattr(self.scalp_strat.scalp_config, "skew_threshold", 3.5))
+                                    p_bias = self.prospects.get(sc_coin, {}).get("bias")
+                                    if skew_ratio >= skew_threshold and p_bias != "SHORT":
                                         wall_px = float(bids[0]["px"])
                                         entry_px = wall_px
                                         sl_px = wall_px - (self.scalp_strat.scalp_config.stop_ticks * tick_size)
                                         tp_px = entry_px + (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
                                         self.scalp_strat._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, skew_ratio)
-                                        time.sleep(0.2)
-                                    elif (a_depth / b_depth) >= skew_threshold:
+                                        break
+                                    elif (a_depth / b_depth) >= skew_threshold and p_bias != "LONG":
                                         skew_rev = a_depth / b_depth
                                         wall_px = float(asks[0]["px"])
                                         entry_px = wall_px
                                         sl_px = wall_px + (self.scalp_strat.scalp_config.stop_ticks * tick_size)
                                         tp_px = entry_px - (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
                                         self.scalp_strat._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, skew_rev)
-                                        time.sleep(0.2)
+                                        break
 
                 # Also process any bridge commands if written externally
                 self._check_external_bridge_commands()
