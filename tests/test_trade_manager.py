@@ -908,3 +908,32 @@ def test_capital_rotation_candidate_selection(tmp_trade_manager):
     cand_duplicate = tm.find_capital_rotation_candidate("SEI", 0.95, max_positions=2, current_time=t0 + 400)
     assert cand_duplicate is None
 
+
+def test_atr_dynamic_trailing_stop(tmp_trade_manager):
+    """Test ATR-scaled dynamic trailing stop padding based on coin volatility."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+
+    # High volatility altcoin: atr_pct = 1.2% -> trailing distance should scale to 1.5 * 1.2 = 1.8%
+    tm.register_position("PEPE", "LONG", size=1000.0, entry_price=10.0, entry_time=t0, atr_pct=1.2)
+    pos = tm.get_position("PEPE")
+    assert pos is not None
+    assert pos.dynamic_trailing_distance_pct == 1.8
+
+    # Price moves up to +3.0% ROI ($10.30)
+    action1 = tm.update_position("PEPE", "LONG", size=1000.0, entry_price=10.0, mark_price=10.30, current_time=t0 + 100, atr_pct=1.2)
+    assert action1.action == "HOLD"
+    assert pos.trailing_stop_triggered is True
+    # Stop price should be 10.30 * (1 - 0.018) = 10.1146
+    assert pytest.approx(pos.stop_price, 0.01) == 10.1146
+
+    # Price pulls back to 10.15 (still above 10.1146) -> Should HOLD
+    action2 = tm.update_position("PEPE", "LONG", size=1000.0, entry_price=10.0, mark_price=10.15, current_time=t0 + 120, atr_pct=1.2)
+    assert action2.action == "HOLD"
+
+    # Price pulls back to 10.10 (below 10.1146, held > min_holding_seconds) -> Should CLOSE
+    action3 = tm.update_position("PEPE", "LONG", size=1000.0, entry_price=10.0, mark_price=10.10, current_time=t0 + 130, atr_pct=1.2)
+    assert action3.action == "CLOSE"
+    assert action3.should_close is True
+    assert "Trail: 1.8%" in action3.reason
+

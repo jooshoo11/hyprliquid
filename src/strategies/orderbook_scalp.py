@@ -88,6 +88,25 @@ class OrderBookImbalance(Strategy):
         if bid_size <= 0 or ask_size <= 0:
             return
 
+        bid_px = tick.bid_price.as_double()
+        ask_px = tick.ask_price.as_double()
+        if bid_px <= 0 or ask_px <= 0:
+            return
+
+        # 1. Strict Spread Filter: Avoid scalping when spread > 0.08% (prevents giving away edge to spread)
+        spread_pct = (ask_px - bid_px) / bid_px
+        max_spread = getattr(self, "max_spread_pct", 0.0008)
+        if spread_pct > max_spread:
+            return
+
+        # 2. Wall Persistence Tracker: Ensure depth wall persists for >= 1.5s (filters out spoof cancellations)
+        if not hasattr(self, "_wall_first_seen"):
+            self._wall_first_seen = {}
+
+        now_ns = tick.ts_event
+        is_backtest = getattr(self.cache, "is_backtest", False) or (now_ns == 0)
+        min_persist_sec = getattr(self, "min_wall_persistence_sec", 1.5)
+
         tick_size = instrument.price_increment.as_double()
 
         # Check AI prospect bias: do not take scalp against prospect bias
@@ -99,26 +118,51 @@ class OrderBookImbalance(Strategy):
 
         # Bid Wall: Imbalance Skew >= threshold -> Buy in front of the wall
         bid_ask_skew = bid_size / ask_size
+        buy_key = f"{instr_str}_BUY"
         if bid_ask_skew >= skew_thresh:
+            if not is_backtest and buy_key not in self._wall_first_seen:
+                self._wall_first_seen[buy_key] = now_ns
+                return  # Wall first observed: wait for persistence
+            
+            elapsed = (now_ns - self._wall_first_seen.get(buy_key, now_ns)) / 1_000_000_000
+            if not is_backtest and elapsed < min_persist_sec:
+                return  # Still verifying wall persistence
+
             if p_bias == "SHORT":
                 return  # Skip BUY if AI Prospect bias is SHORT
-            wall_px = tick.bid_price.as_double()
+            wall_px = bid_px
             entry_px = wall_px  # Post at best bid (maker)
             sl_px = wall_px - (self.scalp_config.stop_ticks * tick_size)
             tp_px = entry_px + (tp_ticks * tick_size)
+            self._wall_first_seen.pop(buy_key, None)
             self._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, bid_ask_skew)
             return
+        else:
+            self._wall_first_seen.pop(buy_key, None)
 
         # Ask Wall: Imbalance Skew >= threshold -> Sell in front of the wall
         ask_bid_skew = ask_size / bid_size
+        sell_key = f"{instr_str}_SELL"
         if ask_bid_skew >= skew_thresh:
+            if not is_backtest and sell_key not in self._wall_first_seen:
+                self._wall_first_seen[sell_key] = now_ns
+                return  # Wall first observed: wait for persistence
+            
+            elapsed = (now_ns - self._wall_first_seen.get(sell_key, now_ns)) / 1_000_000_000
+            if not is_backtest and elapsed < min_persist_sec:
+                return  # Still verifying wall persistence
+
             if p_bias == "LONG":
                 return  # Skip SELL if AI Prospect bias is LONG
-            wall_px = tick.ask_price.as_double()
+            wall_px = ask_px
             entry_px = wall_px  # Post at best ask (maker)
             sl_px = wall_px + (self.scalp_config.stop_ticks * tick_size)
             tp_px = entry_px - (tp_ticks * tick_size)
+            self._wall_first_seen.pop(sell_key, None)
             self._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, ask_bid_skew)
+            return
+        else:
+            self._wall_first_seen.pop(sell_key, None)
 
     def on_bar(self, bar: Bar) -> None:
         if getattr(self, '_disabled', False): return

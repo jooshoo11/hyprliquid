@@ -66,6 +66,7 @@ class HourlyFundingFade(Strategy):
         self.instruments_map: Dict[str, Instrument] = {}
         self.active_fades: Dict[str, FundingFadePosition] = {}
         self.current_funding_rates: Dict[str, float] = {}
+        self.prev_funding_rates: Dict[str, float] = {}
 
     def on_start(self) -> None:
         """Subscribe to 5M bars for designated instruments."""
@@ -135,6 +136,15 @@ class HourlyFundingFade(Strategy):
                     self._exit_fade(instrument, "Post-Settlement Time Window Exit")
                     return
 
+            # Early exit on funding normalization: take profit early if extreme funding has collapsed
+            cur_funding = self.current_funding_rates.get(instr_str, 0.0)
+            if fade_pos.side == OrderSide.SELL and cur_funding > 0 and cur_funding <= 25.0:
+                self._exit_fade(instrument, f"Funding Normalized: {cur_funding:+.1f}% APR (Early Profit Realized)")
+                return
+            elif fade_pos.side == OrderSide.BUY and cur_funding < 0 and cur_funding >= -10.0:
+                self._exit_fade(instrument, f"Funding Normalized: {cur_funding:+.1f}% APR (Early Profit Realized)")
+                return
+
         # 2. Check Pre-Settlement Entry between :48 and :52
         if self.fade_config.entry_window_start_min <= minute <= self.fade_config.entry_window_end_min:
             if not self.portfolio.is_flat(instrument.id):
@@ -189,13 +199,18 @@ class HourlyFundingFade(Strategy):
                 ret = (close_px - bar.open.as_double()) / bar.open.as_double()
                 funding_apr = ret * 24 * 365 * 0.1
 
-            # Extreme positive funding: FADE crowded longs -> SHORT
+            # Funding velocity check: do not fight an accelerating funding spike
+            prev_funding = self.prev_funding_rates.get(instr_str, funding_apr)
+            self.prev_funding_rates[instr_str] = funding_apr
+            funding_velocity = funding_apr - prev_funding
+
+            # Extreme positive funding: FADE crowded longs -> SHORT (confirm funding velocity has stabilized <= +25% APR/5m)
             min_thresh = getattr(self, "dynamic_min_apr", self.fade_config.min_funding_apr_threshold)
-            if funding_apr >= min_thresh:
+            if funding_apr >= min_thresh and funding_velocity <= 25.0:
                 self._enter_fade(instrument, OrderSide.SELL, close_px, minute, hour, funding_apr)
 
-            # Extreme negative funding: FADE crowded shorts -> LONG
-            elif funding_apr <= -min_thresh:
+            # Extreme negative funding: FADE crowded shorts -> LONG (confirm downward funding spike has stabilized >= -25% APR/5m)
+            elif funding_apr <= -min_thresh and funding_velocity >= -25.0:
                 self._enter_fade(instrument, OrderSide.BUY, close_px, minute, hour, funding_apr)
 
     def _enter_fade(

@@ -49,6 +49,8 @@ class PositionTracker:
     breakeven_triggered: bool = False
     trailing_stop_triggered: bool = False
     stop_price: Optional[float] = None
+    atr_pct: float = 0.0  # Coin-specific volatility / ATR percentage
+    dynamic_trailing_distance_pct: Optional[float] = None
 
     # Current snapshot
     current_price: float = 0.0
@@ -171,6 +173,7 @@ class TradeManager:
         entry_price: float,
         strategy: str = "Unknown",
         entry_time: Optional[float] = None,
+        atr_pct: Optional[float] = None,
     ) -> PositionTracker:
         """Register or reset an active position for tracking."""
         key = self._get_key(coin)
@@ -185,6 +188,9 @@ class TradeManager:
                 strategy=strategy,
                 last_update_time=now,
             )
+            if atr_pct is not None and atr_pct > 0:
+                tracker.atr_pct = float(atr_pct)
+                tracker.dynamic_trailing_distance_pct = round(max(0.5, min(2.5, 1.5 * tracker.atr_pct)), 2)
             self.active_positions[key] = tracker
             return tracker
 
@@ -210,6 +216,7 @@ class TradeManager:
         entry_time: Optional[float] = None,
         current_time: Optional[float] = None,
         exit_signal: Optional[str] = None,
+        atr_pct: Optional[float] = None,
     ) -> TradeAction:
         """
         Update position with the latest mark price, recalculate metrics and watermarks,
@@ -240,6 +247,10 @@ class TradeManager:
                     tracker.strategy = strategy
                 if entry_time is not None:
                     tracker.entry_time = entry_time
+
+            if atr_pct is not None and atr_pct > 0:
+                tracker.atr_pct = float(atr_pct)
+                tracker.dynamic_trailing_distance_pct = round(max(0.5, min(2.5, 1.5 * tracker.atr_pct)), 2)
 
             # Update current price and timestamp
             mark_price = float(mark_price)
@@ -325,11 +336,12 @@ class TradeManager:
                     )
 
             # Rule 3: Trailing stop
-            # When ROI >= +2.0%, trails 0.75% behind peak mark price
+            # When ROI >= +2.0%, trails behind peak mark price (dynamic ATR or configured default)
             if tracker.peak_roi >= self.trailing_roi_pct:
                 tracker.trailing_stop_triggered = True
+                trail_dist = tracker.dynamic_trailing_distance_pct if tracker.dynamic_trailing_distance_pct is not None else self.trailing_distance_pct
                 if tracker.side == "LONG":
-                    trail_stop = tracker.peak_price * (1.0 - (self.trailing_distance_pct / 100.0))
+                    trail_stop = tracker.peak_price * (1.0 - (trail_dist / 100.0))
                     if tracker.stop_price is None:
                         tracker.stop_price = trail_stop
                     else:
@@ -352,7 +364,7 @@ class TradeManager:
                             )
                         reason = (
                             f"Trailing stop triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
-                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {self.trailing_distance_pct}%)"
+                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
                         )
                         return TradeAction(
                             action="CLOSE",
@@ -367,7 +379,7 @@ class TradeManager:
                             stop_price=tracker.stop_price,
                         )
                 else:  # SHORT
-                    trail_stop = tracker.peak_price * (1.0 + (self.trailing_distance_pct / 100.0))
+                    trail_stop = tracker.peak_price * (1.0 + (trail_dist / 100.0))
                     if tracker.stop_price is None:
                         tracker.stop_price = trail_stop
                     else:
@@ -390,7 +402,7 @@ class TradeManager:
                             )
                         reason = (
                             f"Trailing stop triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
-                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {self.trailing_distance_pct}%)"
+                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
                         )
                         return TradeAction(
                             action="CLOSE",
@@ -941,6 +953,8 @@ class TradeManager:
                     "pnl": round(tracker.current_pnl, 2),
                     "breakeven_triggered": tracker.breakeven_triggered,
                     "trailing_stop_triggered": tracker.trailing_stop_triggered,
+                    "trailing_distance_pct": tracker.dynamic_trailing_distance_pct or self.trailing_distance_pct,
+                    "atr_pct": round(tracker.atr_pct, 2),
                     "duration_seconds": dur,
                     "entry_time": tracker.entry_time,
                 }

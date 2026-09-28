@@ -14,6 +14,7 @@ Verifies:
 
 from decimal import Decimal
 from typing import Tuple, Any
+from unittest.mock import MagicMock
 import datetime
 import pytest
 
@@ -116,3 +117,106 @@ def test_vwap_oi_momentum_calculation():
     assert state.vwap > 0.0
     assert state.session_high >= 114.0
     assert len(state.oi_deltas) > 0
+    assert state.cvd > 0.0  # Bars had close > open, CVD should be positive
+    assert state.get_recent_cvd_trend(n=3) > 0.0
+
+
+def test_orderbook_spread_and_wall_persistence():
+    """Verify OrderBookImbalance filters out wide spreads and requires wall persistence."""
+    engine, inst = _setup_engine("TEST-ENG-OB")
+    guard = PortfolioGuard()
+    strat = OrderBookImbalance(
+        config=OrderBookImbalanceConfig(venue="HYPERLIQUID", skew_threshold=3.0),
+        portfolio_guard=guard,
+    )
+    engine.add_strategy(strat)
+    strat.instruments_map[str(inst.id)] = inst
+    strat._execute_scalp = MagicMock()
+
+    # Test 1: Wide spread should be rejected (> 0.08%)
+    tick_wide = QuoteTick(
+        instrument_id=inst.id,
+        bid_price=Price(100.0, 2),
+        ask_price=Price(100.20, 2),  # 0.20% spread > 0.08%
+        bid_size=Quantity(1000.0, 2),
+        ask_size=Quantity(100.0, 2),  # 10x skew
+        ts_event=1_000_000_000,
+        ts_init=1_000_000_000,
+    )
+    strat.on_quote_tick(tick_wide)
+    # Order should not have been submitted due to wide spread
+    assert strat._execute_scalp.call_count == 0
+
+    # Test 2: Tight spread with first seen wall (persistence check)
+    tick_tight1 = QuoteTick(
+        instrument_id=inst.id,
+        bid_price=Price(100.0, 2),
+        ask_price=Price(100.02, 2),  # 0.02% spread <= 0.08%
+        bid_size=Quantity(1000.0, 2),
+        ask_size=Quantity(100.0, 2),  # 10x skew
+        ts_event=2_000_000_000,
+        ts_init=2_000_000_000,
+    )
+    strat.on_quote_tick(tick_tight1)
+    # First time seen: wall timestamp recorded in _wall_first_seen, no execution yet
+    buy_key = f"{str(inst.id)}_BUY"
+    assert buy_key in strat._wall_first_seen
+    assert strat._execute_scalp.call_count == 0
+
+    # Test 3: Same wall after 2.0s (> 1.5s persistence threshold)
+    tick_tight2 = QuoteTick(
+        instrument_id=inst.id,
+        bid_price=Price(100.0, 2),
+        ask_price=Price(100.02, 2),
+        bid_size=Quantity(1000.0, 2),
+        ask_size=Quantity(100.0, 2),
+        ts_event=4_000_000_000,  # 2.0s later
+        ts_init=4_000_000_000,
+    )
+    strat.on_quote_tick(tick_tight2)
+    assert strat._execute_scalp.call_count == 1
+
+
+def test_funding_normalization_exit():
+    """Verify HourlyFundingFade triggers early exit when extreme funding normalizes."""
+    guard = PortfolioGuard()
+    strat = HourlyFundingFade(
+        config=HourlyFundingFadeConfig(venue="HYPERLIQUID"),
+        portfolio_guard=guard,
+    )
+    inst = get_hyperliquid_perp("SOL", sz_decimals=2, px_decimals=2)
+    instr_str = str(inst.id)
+    strat.instruments_map[instr_str] = inst
+
+    from src.strategies.funding_fade import FundingFadePosition
+    fade_pos = FundingFadePosition(
+        side=OrderSide.SELL,
+        entry_price=100.0,
+        high_water_mark=100.0,
+        entry_minute=45,
+        entry_hour=1,
+        trailing_stop_pct=0.012,
+    )
+    strat.active_fades[instr_str] = fade_pos
+    # Current funding normalized from +100% down to +15%
+    strat.current_funding_rates[instr_str] = 15.0
+
+    strat._exit_fade = MagicMock()
+
+    bar_type = get_bar_type("SOL", "5m")
+    bar = Bar(
+        bar_type=bar_type,
+        open=Price(100.0, 2),
+        high=Price(100.1, 2),
+        low=Price(99.9, 2),
+        close=Price(100.0, 2),
+        volume=Quantity(100.0, 2),
+        ts_event=1_700_000_000_000_000_000,
+        ts_init=1_700_000_000_000_000_000,
+    )
+    strat.on_bar(bar)
+    # _exit_fade should have been called with funding normalized reason
+    assert strat._exit_fade.call_count == 1
+    call_reason = strat._exit_fade.call_args[0][1]
+    assert "Funding Normalized" in call_reason
+

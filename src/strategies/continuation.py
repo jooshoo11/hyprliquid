@@ -289,9 +289,15 @@ class TrendContinuationSMC(Strategy):
                     state.zone_in_play = target_zone
 
             if target_zone:
-                # MSS: 5M candle close breaks previous 5M swing fractal
-                if state.recent_swing_high and close_px > state.recent_swing_high:
-                    self._execute_long_entry(bar, state, target_zone)
+                eq_level = (target_zone.high + target_zone.low) / 2.0
+                open_px = bar.open.as_double()
+                # 1. Equilibrium Bidding on Demand Rejection Wick (entering at discount before breakout)
+                is_rejection_wick = (close_px >= eq_level) and (low_px <= target_zone.high) and (close_px >= open_px)
+                # 2. Classic MSS Breakout confirmation
+                is_mss_breakout = bool(state.recent_swing_high and close_px > state.recent_swing_high)
+
+                if is_rejection_wick or is_mss_breakout:
+                    self._execute_long_entry(bar, state, target_zone, is_equilibrium_discount=is_rejection_wick)
 
         # Bearish Continuation Trigger
         elif trend == "BEARISH":
@@ -315,9 +321,15 @@ class TrendContinuationSMC(Strategy):
                     state.zone_in_play = target_zone
 
             if target_zone:
-                # MSS: 5M candle close breaks previous 5M swing low fractal
-                if state.recent_swing_low and close_px < state.recent_swing_low:
-                    self._execute_short_entry(bar, state, target_zone)
+                eq_level = (target_zone.high + target_zone.low) / 2.0
+                open_px = bar.open.as_double()
+                # 1. Equilibrium Bidding on Supply Rejection Wick (entering at premium before breakdown)
+                is_rejection_wick = (close_px <= eq_level) and (high_px >= target_zone.low) and (close_px <= open_px)
+                # 2. Classic MSS Breakdown confirmation
+                is_mss_breakdown = bool(state.recent_swing_low and close_px < state.recent_swing_low)
+
+                if is_rejection_wick or is_mss_breakdown:
+                    self._execute_short_entry(bar, state, target_zone, is_equilibrium_discount=is_rejection_wick)
 
     def _update_5m_swing_points(self, state: SMCInstrumentState) -> None:
         """Detect swing fractal highs and lows from recent 5M bars using SMC."""
@@ -353,7 +365,7 @@ class TrendContinuationSMC(Strategy):
             state.recent_swing_low = lows.loc[last_low, 'Level']
             state.recent_swing_wick_low = df.loc[last_low, 'low']
 
-    def _execute_long_entry(self, bar: Bar, state: SMCInstrumentState, zone: Zone) -> None:
+    def _execute_long_entry(self, bar: Bar, state: SMCInstrumentState, zone: Zone, is_equilibrium_discount: bool = False) -> None:
         """1% equity risk bracket order with STOP_MARKET below the 5M swing wick."""
         instrument = self.instruments_map.get(str(state.instrument_id))
         if not instrument:
@@ -419,8 +431,9 @@ class TrendContinuationSMC(Strategy):
         tp_price_obj = instrument.make_price(Decimal(str(round(tp_price, instrument.price_precision))))
         sl_price_obj = instrument.make_price(Decimal(str(round(sl_price, instrument.price_precision))))
 
+        tag = "[EQUILIBRIUM DISCOUNT]" if is_equilibrium_discount else "[MSS BREAKOUT]"
         self.log.info(
-            f"🟢 TrendContinuationSMC LONG {state.instrument_id}: Qty={quantity} @ ~{entry_px:.4f} | "
+            f"🟢 TrendContinuationSMC LONG {tag} {state.instrument_id}: Qty={quantity} @ ~{entry_px:.4f} | "
             f"SL={sl_price:.4f} (isTrigger=True) | TP={tp_price:.4f}"
         )
 
@@ -447,7 +460,7 @@ class TrendContinuationSMC(Strategy):
         except Exception as e:
             self.log.error(f"Failed long bracket order: {e}")
 
-    def _execute_short_entry(self, bar: Bar, state: SMCInstrumentState, zone: Zone) -> None:
+    def _execute_short_entry(self, bar: Bar, state: SMCInstrumentState, zone: Zone, is_equilibrium_discount: bool = False) -> None:
         """1% equity risk bracket order with STOP_MARKET above the 5M swing wick."""
         instrument = self.instruments_map.get(str(state.instrument_id))
         if not instrument:
@@ -513,8 +526,9 @@ class TrendContinuationSMC(Strategy):
         tp_price_obj = instrument.make_price(Decimal(str(round(tp_price, instrument.price_precision))))
         sl_price_obj = instrument.make_price(Decimal(str(round(sl_price, instrument.price_precision))))
 
+        tag = "[EQUILIBRIUM PREMIUM]" if is_equilibrium_discount else "[MSS BREAKDOWN]"
         self.log.info(
-            f"🔴 TrendContinuationSMC SHORT {state.instrument_id}: Qty={quantity} @ ~{entry_px:.4f} | "
+            f"🔴 TrendContinuationSMC SHORT {tag} {state.instrument_id}: Qty={quantity} @ ~{entry_px:.4f} | "
             f"SL={sl_price:.4f} (isTrigger=True) | TP={tp_price:.4f}"
         )
 

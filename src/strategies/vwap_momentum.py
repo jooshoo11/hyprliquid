@@ -38,6 +38,8 @@ class SessionVwapState:
 
     last_oi: float = 0.0
     oi_deltas: List[float] = field(default_factory=list)
+    cvd: float = 0.0
+    recent_deltas: List[float] = field(default_factory=list)
     prev_close: Optional[float] = None
 
     bar_records: List[Dict] = field(default_factory=list)
@@ -48,6 +50,8 @@ class SessionVwapState:
         self.vwap = initial_price
         self.session_high = initial_price
         self.session_low = initial_price
+        self.cvd = 0.0
+        self.recent_deltas.clear()
 
     def update(self, bar: Bar, current_oi: Optional[float] = None) -> None:
         dt = datetime.datetime.fromtimestamp(bar.ts_event / 1_000_000_000, tz=datetime.timezone.utc)
@@ -86,6 +90,20 @@ class SessionVwapState:
             self.oi_deltas.append(est_delta)
             if len(self.oi_deltas) > 50:
                 self.oi_deltas.pop(0)
+
+        # Track Cumulative Volume Delta (CVD)
+        bar_range = max(1e-8, bar.high.as_double() - bar.low.as_double())
+        bar_delta = vol * ((bar.close.as_double() - bar.open.as_double()) / bar_range)
+        self.cvd += bar_delta
+        self.recent_deltas.append(bar_delta)
+        if len(self.recent_deltas) > 30:
+            self.recent_deltas.pop(0)
+
+    def get_recent_cvd_trend(self, n: int = 3) -> float:
+        """Sum of last n bar deltas. Positive indicates aggressive buyers, negative indicates aggressive sellers."""
+        if not self.recent_deltas:
+            return 0.0
+        return sum(self.recent_deltas[-n:])
 
     def get_oi_z_score(self) -> float:
         if len(self.oi_deltas) < 10:
@@ -175,12 +193,14 @@ class VwapOiMomentum(Strategy):
             return
 
         oi_threshold = getattr(self, "dynamic_oi_zscore_threshold", self.vwap_config.oi_zscore_threshold)
-        # 3. Long Signal: Price crosses above VWAP with OI expansion > threshold
-        if prev_close <= vwap and close_px > vwap and oi_z > oi_threshold:
+        cvd_trend = state.get_recent_cvd_trend(n=3)
+
+        # 3. Long Signal: Price crosses above VWAP with OI expansion > threshold AND positive CVD (buyers initiating)
+        if prev_close <= vwap and close_px > vwap and oi_z > oi_threshold and cvd_trend >= 0:
             self._enter_momentum(instrument, OrderSide.BUY, close_px, vwap, oi_z)
 
-        # 4. Short Signal: Price crosses below VWAP with OI expansion > threshold
-        elif prev_close >= vwap and close_px < vwap and oi_z > oi_threshold:
+        # 4. Short Signal: Price crosses below VWAP with OI expansion > threshold AND negative CVD (sellers initiating)
+        elif prev_close >= vwap and close_px < vwap and oi_z > oi_threshold and cvd_trend <= 0:
             self._enter_momentum(instrument, OrderSide.SELL, close_px, vwap, oi_z)
 
     def _enter_momentum(

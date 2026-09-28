@@ -145,6 +145,7 @@ class UnifiedEngine:
         self._paper_starting_balance = 100.0
         self._paper_starting_equity = 100.0
         self._paper_realized_pnl = 0.0
+        self.coin_atr_pct: Dict[str, float] = {}
         self._prospector_scan_count = 0
         self._last_prospector_scan = 0.0
         self._next_prospector_scan = 0.0
@@ -703,6 +704,7 @@ class UnifiedEngine:
                             asks_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
                         # 2. Update TradeManager FIRST so position is tracked with correct entry time and price
+                        coin_atr = self.coin_atr_pct.get(coin, 0.8)
                         action = self.trade_manager.update_position(
                             coin=coin,
                             side=side,
@@ -711,6 +713,7 @@ class UnifiedEngine:
                             mark_price=cur_px,
                             strategy=strat_name,
                             entry_time=entry_time,
+                            atr_pct=coin_atr,
                         )
 
                         # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
@@ -988,7 +991,11 @@ class UnifiedEngine:
             return False
 
         equity = self.get_account_cash()
-        risk_usd = equity * 0.01  # 1.0% equity risk
+        base_risk_usd = equity * 0.01  # 1.0% equity risk
+        coin_vol = self.coin_atr_pct.get(coin, 1.0)
+        # Inverse-volatility scaling: normalize risk across high-beta vs low-beta tokens
+        vol_scalar = max(0.6, min(1.4, 1.0 / coin_vol))
+        risk_usd = base_risk_usd * vol_scalar
         qty_val = risk_usd / risk_per_unit
 
         max_lev = get_coin_max_leverage(coin)
@@ -1082,6 +1089,7 @@ class UnifiedEngine:
                 funding = float(ctx.get("funding", 0.0)) * 24 * 365 * 100.0
                 vol_24h = float(ctx.get("dayNtlVlm", 0.0))
                 change_24h = ((px - prev_px) / prev_px * 100) if prev_px > 0 else 0.0
+                self.coin_atr_pct[name] = max(0.6, min(3.0, abs(change_24h) * 0.25 + 0.6))
                 records.append({
                     "coin": name, "price": px, "funding_apr": funding,
                     "vol_24h": vol_24h, "change_24h": change_24h,
