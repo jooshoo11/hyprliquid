@@ -80,6 +80,14 @@ class PortfolioGuard:
         self.prospect_biases: Dict[str, str] = {}
         self.cooldown_tracker: Dict[str, float] = {}
         self.reentry_cooldown_seconds: float = 30.0  # 30 seconds anti-churn cooldown
+        self.current_regime: Optional[str] = None
+        self.regime_tweaks: List[str] = []
+
+    def set_market_regime(self, regime: str, tweaks: Optional[List[str]] = None) -> None:
+        """Update active macro market regime and dynamic strategy adaptations."""
+        with self._lock:
+            self.current_regime = str(regime).strip()
+            self.regime_tweaks = list(tweaks or [])
 
     def update_equity(self, equity: float) -> None:
         """Update portfolio equity and evaluate 24-hour drawdown circuit breaker."""
@@ -315,6 +323,17 @@ class PortfolioGuard:
                         return False, f"AI Prospect bias for {coin} is LONG; rejecting {side.name} entry."
                     elif prospect_bias == "SHORT" and side != OrderSide.SELL:
                         return False, f"AI Prospect bias for {coin} is SHORT; rejecting {side.name} entry."
+
+            # Directional Regime Filter: Prevent counter-trend bleeding in macro trending regimes
+            if self.current_regime and "OrderBook" not in strategy_name and "Scalp" not in strategy_name:
+                side_is_buy = (side == OrderSide.BUY) or (str(side).upper() in ("BUY", "LONG"))
+                is_major_benchmark = coin in ("BTC", "ETH")
+                if self.current_regime == "BEAR_MARKET_FLUSH":
+                    if side_is_buy and not is_major_benchmark:
+                        return False, f"Directional Regime Filter: Altcoin LONG on {coin} blocked during BEAR_MARKET_FLUSH."
+                elif self.current_regime == "BULL_MOMENTUM_EXPANSION":
+                    if not side_is_buy and not is_major_benchmark:
+                        return False, f"Directional Regime Filter: Altcoin SHORT on {coin} blocked during BULL_MOMENTUM_EXPANSION."
 
             effective_count = current_open_positions_count + self._pending_approvals
             if effective_count >= self.max_total_open_positions:

@@ -52,6 +52,7 @@ class PositionTracker:
     atr_pct: float = 0.0  # Coin-specific volatility / ATR percentage
     dynamic_trailing_distance_pct: Optional[float] = None
     take_profit_roi_pct: Optional[float] = None  # Profit target %
+    breakeven_roi_pct: Optional[float] = None    # Dynamic breakeven threshold %
 
     # Current snapshot
     current_price: float = 0.0
@@ -227,6 +228,7 @@ class TradeManager:
         exit_signal: Optional[str] = None,
         atr_pct: Optional[float] = None,
         take_profit_roi_pct: Optional[float] = None,
+        breakeven_roi_pct: Optional[float] = None,
     ) -> TradeAction:
         """
         Update position with the latest mark price, recalculate metrics and watermarks,
@@ -246,6 +248,8 @@ class TradeManager:
                     entry_time=now if entry_time is None else entry_time,
                     strategy=strategy,
                     last_update_time=now,
+                    take_profit_roi_pct=take_profit_roi_pct if take_profit_roi_pct is not None else self.take_profit_roi_pct,
+                    breakeven_roi_pct=breakeven_roi_pct,
                 )
                 self.active_positions[key] = tracker
             else:
@@ -264,6 +268,9 @@ class TradeManager:
 
             if take_profit_roi_pct is not None and take_profit_roi_pct > 0:
                 tracker.take_profit_roi_pct = float(take_profit_roi_pct)
+
+            if breakeven_roi_pct is not None and breakeven_roi_pct > 0:
+                tracker.breakeven_roi_pct = float(breakeven_roi_pct)
 
             # Update current price and timestamp
             mark_price = float(mark_price)
@@ -460,8 +467,9 @@ class TradeManager:
                         )
 
             # Rule 4: Breakeven ratchet
-            # When ROI >= +1.0%, sets stop at +0.1% (covering taker fee)
-            if tracker.peak_roi >= self.breakeven_roi_pct:
+            # Dynamically triggers at +0.75% in chop/flush or +1.0% baseline, sets stop at +0.1% (covering taker fee)
+            be_thresh = getattr(tracker, "breakeven_roi_pct", None) or self.breakeven_roi_pct
+            if tracker.peak_roi >= be_thresh:
                 tracker.breakeven_triggered = True
                 if tracker.side == "LONG":
                     be_stop = tracker.entry_price * (1.0 + (self.breakeven_stop_roi_pct / 100.0))

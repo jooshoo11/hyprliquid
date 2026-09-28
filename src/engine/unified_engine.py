@@ -709,11 +709,23 @@ class UnifiedEngine:
                             bids_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                             asks_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
-                        # 2. Update TradeManager FIRST so position is tracked with correct entry time and price
+                        # 2. Update TradeManager FIRST with asymmetric TP and dynamic breakeven ratchet
                         coin_atr = self.coin_atr_pct.get(coin, 0.8)
                         reg = getattr(getattr(self, "regime_manager", None), "current_regime", None)
                         reg_name = reg.regime if reg else "CHOPPY_MEAN_REVERTING_RANGE"
-                        tp_target = 2.0 if reg_name in ("CHOPPY_MEAN_REVERTING_RANGE", "BEAR_MARKET_FLUSH") else 3.5
+                        if reg_name == "BEAR_MARKET_FLUSH":
+                            tp_target = 2.5 if side == "SHORT" else 1.2
+                            be_roi = 0.75
+                        elif reg_name == "BULL_MOMENTUM_EXPANSION":
+                            tp_target = 3.5 if side == "LONG" else 1.2
+                            be_roi = 1.0
+                        elif reg_name == "CHOPPY_MEAN_REVERTING_RANGE":
+                            tp_target = 1.6
+                            be_roi = 0.75
+                        else:
+                            tp_target = 2.0
+                            be_roi = 1.0
+
                         action = self.trade_manager.update_position(
                             coin=coin,
                             side=side,
@@ -724,6 +736,7 @@ class UnifiedEngine:
                             entry_time=entry_time,
                             atr_pct=coin_atr,
                             take_profit_roi_pct=tp_target,
+                            breakeven_roi_pct=be_roi,
                         )
 
                         # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
@@ -979,15 +992,28 @@ class UnifiedEngine:
         sl_px = float(prospect.get("stop_loss", 0.0))
         tp_px = float(prospect.get("take_profit", 0.0))
 
+        reg = getattr(getattr(self, "regime_manager", None), "current_regime", None)
+        reg_name = reg.regime if reg else "CHOPPY_MEAN_REVERTING_RANGE"
+
+        # Sync regime to PortfolioGuard
+        if hasattr(self, "guard") and hasattr(self.guard, "set_market_regime"):
+            self.guard.set_market_regime(reg_name)
+
         if sl_px <= 0 or tp_px <= 0:
-            reg = getattr(getattr(self, "regime_manager", None), "current_regime", None)
-            reg_name = reg.regime if reg else "CHOPPY_MEAN_REVERTING_RANGE"
-            if reg_name == "CHOPPY_MEAN_REVERTING_RANGE":
-                l_tp, l_sl, s_tp, s_sl = 1.022, 0.985, 0.978, 1.015
+            if reg_name == "BEAR_MARKET_FLUSH":
+                # In bear flush: short TP 2.5%, tight SL 1.5%; longs quick scalp 1.2%, tight SL 1.5%
+                l_tp, l_sl = 1.012, 0.985
+                s_tp, s_sl = 0.975, 1.015
             elif reg_name == "BULL_MOMENTUM_EXPANSION":
-                l_tp, l_sl, s_tp, s_sl = 1.060, 0.980, 0.960, 1.020
+                # In bull expansion: long TP 4.5%, SL 2.0%; shorts tight scalp 1.2%
+                l_tp, l_sl = 1.045, 0.980
+                s_tp, s_sl = 0.988, 1.015
+            elif reg_name == "CHOPPY_MEAN_REVERTING_RANGE":
+                l_tp, l_sl = 1.016, 0.985
+                s_tp, s_sl = 0.984, 1.015
             else:
-                l_tp, l_sl, s_tp, s_sl = 1.035, 0.980, 0.965, 1.020
+                l_tp, l_sl = 1.025, 0.980
+                s_tp, s_sl = 0.975, 1.020
 
             if side == OrderSide.BUY:
                 sl_px = round(mark_px * l_sl, instrument.price_precision)
@@ -1005,7 +1031,14 @@ class UnifiedEngine:
         coin_vol = self.coin_atr_pct.get(coin, 1.0)
         # Inverse-volatility scaling: normalize risk across high-beta vs low-beta tokens
         vol_scalar = max(0.6, min(1.4, 1.0 / coin_vol))
-        risk_usd = base_risk_usd * vol_scalar
+
+        # Directional scaling: half risk on counter-trend benchmark positions
+        is_counter_trend = (reg_name == "BEAR_MARKET_FLUSH" and bias == "LONG") or \
+                           (reg_name == "BULL_MOMENTUM_EXPANSION" and bias == "SHORT")
+        if is_counter_trend:
+            risk_usd = base_risk_usd * 0.5 * vol_scalar
+        else:
+            risk_usd = base_risk_usd * vol_scalar
         qty_val = risk_usd / risk_per_unit
 
         # Strict single-position notional cap: max 35% total equity ($35 max on $100 account)
@@ -1168,25 +1201,31 @@ class UnifiedEngine:
                 self.sentinel_thoughts.pop(0)
 
             # Dynamic TP and SL multipliers adapted to prevailing market regime
-            if regime_info.regime == "CHOPPY_MEAN_REVERTING_RANGE":
-                long_tp_mult = 1.022
+            if regime_info.regime == "BEAR_MARKET_FLUSH":
+                # In bear flush: shorts have wide TP (2.5%) and tight SL (1.5%); longs quick scalp (1.2%)
+                long_tp_mult = 1.012
                 long_sl_mult = 0.985
-                short_tp_mult = 0.978
+                short_tp_mult = 0.975
+                short_sl_mult = 1.015
+            elif regime_info.regime == "CHOPPY_MEAN_REVERTING_RANGE":
+                long_tp_mult = 1.018
+                long_sl_mult = 0.985
+                short_tp_mult = 0.982
                 short_sl_mult = 1.015
             elif regime_info.regime == "BULL_MOMENTUM_EXPANSION":
-                long_tp_mult = 1.060
+                long_tp_mult = 1.050
                 long_sl_mult = 0.980
-                short_tp_mult = 0.960
-                short_sl_mult = 1.020
+                short_tp_mult = 0.988
+                short_sl_mult = 1.015
             elif regime_info.regime == "NEGATIVE_FUNDING_SHORT_SQUEEZE":
                 long_tp_mult = 1.050
                 long_sl_mult = 0.982
-                short_tp_mult = 0.970
-                short_sl_mult = 1.020
+                short_tp_mult = 0.985
+                short_sl_mult = 1.015
             else:
-                long_tp_mult = 1.035
+                long_tp_mult = 1.025
                 long_sl_mult = 0.980
-                short_tp_mult = 0.965
+                short_tp_mult = 0.975
                 short_sl_mult = 1.020
 
             prospects_list = []
@@ -1215,7 +1254,12 @@ class UnifiedEngine:
                     })
 
             # 2. Spot-Led Long Momentum (Clean Volume with Healthy Baseline Funding)
-            longs = df.filter((pl.col("change_24h") > 1.5) & (pl.col("funding_apr") < 35.0)).sort("vol_24h", descending=True).head(5)
+            # In BEAR_MARKET_FLUSH, strictly restrict long candidates to major benchmark assets (BTC, ETH)
+            if regime_info.regime == "BEAR_MARKET_FLUSH":
+                longs = df.filter((pl.col("coin").is_in(["BTC", "ETH"])) & (pl.col("change_24h") > 0.5)).sort("vol_24h", descending=True).head(2)
+            else:
+                longs = df.filter((pl.col("change_24h") > 1.5) & (pl.col("funding_apr") < 35.0)).sort("vol_24h", descending=True).head(5)
+
             for row in longs.iter_rows(named=True):
                 c = row["coin"]
                 if c not in selected_coins:
@@ -1238,7 +1282,9 @@ class UnifiedEngine:
                     })
 
             # 2.5 Bearish Breakdown Continuations (Negative Momentum in Flush/Choppy Regimes)
-            breakdowns = df.filter((pl.col("change_24h") < -1.5) & (pl.col("vol_24h") > 1_000_000)).sort("change_24h", descending=False).head(5)
+            breakdown_limit = 8 if regime_info.regime == "BEAR_MARKET_FLUSH" else 5
+            breakdown_filter = (pl.col("change_24h") < -1.0) & (pl.col("vol_24h") > 1_000_000)
+            breakdowns = df.filter(breakdown_filter).sort("change_24h", descending=False).head(breakdown_limit)
             for row in breakdowns.iter_rows(named=True):
                 c = row["coin"]
                 if c not in selected_coins:
@@ -1270,9 +1316,9 @@ class UnifiedEngine:
                         funding_apr = float(row["funding_apr"])
                         chg = float(row["change_24h"])
                         if regime_info.regime == "BEAR_MARKET_FLUSH":
-                            bias = "SHORT" if chg < 0 or funding_apr > 25.0 else "LONG"
+                            bias = "SHORT"  # Strict short alignment in bear flush
                         elif regime_info.regime == "BULL_MOMENTUM_EXPANSION":
-                            bias = "LONG" if chg > 0 or funding_apr < 20.0 else "SHORT"
+                            bias = "LONG"   # Strict long alignment in bull expansion
                         else:
                             bias = "SHORT" if funding_apr > 30.0 or chg < -1.0 else "LONG"
                         prospects_list.append({
@@ -1295,6 +1341,7 @@ class UnifiedEngine:
             self.prospects = {p["coin"]: p for p in prospects_list}
             biases = {p["coin"]: p["bias"] for p in prospects_list}
             self.guard.set_prospect_biases(biases)
+            self.guard.set_market_regime(regime_info.regime, applied_tweaks)
 
             # Feed live funding rates directly into funding strategy actor
             if hasattr(self, "funding_strat") and self.funding_strat:
