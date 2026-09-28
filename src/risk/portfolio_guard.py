@@ -45,7 +45,7 @@ class PortfolioGuard:
     def __init__(
         self,
         max_strategy_equity_pct: float = 0.40,  # Max 40% margin per strategy
-        max_total_open_positions: int = 8,      # Max 8 concurrent positions across node
+        max_total_open_positions: int = 3,      # Max 3 concurrent positions across node
         max_daily_drawdown_pct: float = 0.20,   # 20% daily drawdown circuit breaker
         default_order_timeout_secs: float = 300.0,
     ) -> None:
@@ -237,6 +237,13 @@ class PortfolioGuard:
             self.strategy_open_positions.clear()
             self.strategy_allocated_margin.clear()
             self.active_instrument_directions.clear()
+            now_ms = int(time.time() * 1000)
+            open_instruments = {str(getattr(p, "instrument_id", p)) for p in open_positions}
+            self.pending_orders = {
+                oid: entry for oid, entry in self.pending_orders.items()
+                if str(entry.instrument_id) not in open_instruments
+                and (now_ms - entry.submitted_time_ms) < (entry.timeout_seconds * 1000)
+            }
             for p in open_positions:
                 try:
                     i_str = str(getattr(p, "instrument_id", p))
@@ -335,14 +342,16 @@ class PortfolioGuard:
                     if not side_is_buy and not is_major_benchmark:
                         return False, f"Directional Regime Filter: Altcoin SHORT on {coin} blocked during BULL_MOMENTUM_EXPANSION."
 
-            effective_count = current_open_positions_count + self._pending_approvals
+            active_pending_count = len(self.pending_orders)
+            effective_count = current_open_positions_count + self._pending_approvals + active_pending_count
             if effective_count >= self.max_total_open_positions:
-                return False, f"Max node positions ({self.max_total_open_positions}) reached."
+                return False, f"Max node positions ({self.max_total_open_positions}) reached (Active: {current_open_positions_count}, Pending: {active_pending_count + self._pending_approvals})."
 
             # Per-strategy max open positions check (prevents scalper from monopolizing portfolio)
             base_strat = strategy_name.split("-")[0]
-            max_strat_pos = self.strategy_max_positions.get(base_strat, self.strategy_max_positions.get(strategy_name, 4))
-            current_strat_pos = len(self.strategy_open_positions.get(base_strat, set()))
+            max_strat_pos = self.strategy_max_positions.get(base_strat, self.strategy_max_positions.get(strategy_name, 2))
+            strat_pending = sum(1 for e in self.pending_orders.values() if e.strategy_id.split("-")[0] == base_strat)
+            current_strat_pos = len(self.strategy_open_positions.get(base_strat, set())) + strat_pending
             if current_strat_pos >= max_strat_pos:
                 return False, f"Strategy '{base_strat}' reached max position limit ({max_strat_pos})."
 
@@ -430,6 +439,12 @@ class PortfolioGuard:
             self.strategy_open_positions[base_strat].discard(instr_str)
         if strategy_name in self.strategy_open_positions:
             self.strategy_open_positions[strategy_name].discard(instr_str)
+
+        # Clear any pending orders for this instrument
+        self.pending_orders = {
+            oid: entry for oid, entry in self.pending_orders.items()
+            if str(entry.instrument_id) != instr_str
+        }
 
         # Set 3-minute anti-churn cooldown on the closed coin
         coin = instr_str.split("-")[0].split(".")[0].upper()

@@ -101,7 +101,7 @@ class UnifiedEngine:
 
         self.guard = PortfolioGuard(
             max_strategy_equity_pct=2.0,
-            max_total_open_positions=6,
+            max_total_open_positions=3,
             max_daily_drawdown_pct=0.20,
         )
         self.trade_manager = TradeManager(
@@ -112,6 +112,7 @@ class UnifiedEngine:
             trailing_distance_pct=0.75,
             mae_roi_pct=-2.5,
             mae_loss_usd=-10.0,
+            max_positions=3,
         )
         self.analytics = PerformanceAnalytics()
         self.fallback_engine = AIFallbackEngine()
@@ -351,6 +352,30 @@ class UnifiedEngine:
         except Exception:
             pass
         return []
+
+    def get_5m_rsi(self, coin: str, period: int = 14) -> Optional[float]:
+        """Fetch recent 5m klines and compute 14-period RSI to detect oversold/overbought exhaustion."""
+        try:
+            now_ms = int(time.time() * 1000)
+            start_ms = now_ms - (period + 12) * 5 * 60 * 1000
+            klines = self.info_client.get_historical_klines(coin, "5m", start_time_ms=start_ms, end_time_ms=now_ms)
+            if not klines or len(klines) < period + 1:
+                return None
+            closes = [float(k["c"]) for k in klines]
+            diffs = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+            gains = [d if d > 0 else 0.0 for d in diffs]
+            losses = [-d if d < 0 else 0.0 for d in diffs]
+            avg_gain = sum(gains[:period]) / period
+            avg_loss = sum(losses[:period]) / period
+            for i in range(period, len(diffs)):
+                avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+                avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+            if avg_loss == 0:
+                return 100.0
+            rs = avg_gain / avg_loss
+            return 100.0 - (100.0 / (1.0 + rs))
+        except Exception:
+            return None
 
     def get_account_cash(self) -> float:
         """Fetch current cash balance from portfolio."""
@@ -989,6 +1014,36 @@ class UnifiedEngine:
         if mark_px <= 0:
             return False
 
+        # Microstructure Exhaustion Gate: Block shorting into oversold bottoms or longing into overbought tops
+        rsi_5m = self.get_5m_rsi(coin)
+        if rsi_5m is not None:
+            if bias == "SHORT" and rsi_5m < 32.0:
+                self.log(
+                    f"⚠️ [Exhaustion Gate] Blocked SHORT {coin}: 5m RSI is deeply oversold ({rsi_5m:.1f} < 32). "
+                    f"Preventing bottom-wick short entry; waiting for relief bounce.",
+                    "TRIGGER",
+                )
+                self.log_missed_opportunity(
+                    coin=coin,
+                    strategy=strat_name,
+                    reason=f"Exhaustion Gate: 5m RSI deeply oversold ({rsi_5m:.1f} < 32)",
+                    metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
+                )
+                return False
+            elif bias == "LONG" and rsi_5m > 68.0:
+                self.log(
+                    f"⚠️ [Exhaustion Gate] Blocked LONG {coin}: 5m RSI is deeply overbought ({rsi_5m:.1f} > 68). "
+                    f"Preventing top-wick long entry; waiting for pullback.",
+                    "TRIGGER",
+                )
+                self.log_missed_opportunity(
+                    coin=coin,
+                    strategy=strat_name,
+                    reason=f"Exhaustion Gate: 5m RSI deeply overbought ({rsi_5m:.1f} > 68)",
+                    metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
+                )
+                return False
+
         sl_px = float(prospect.get("stop_loss", 0.0))
         tp_px = float(prospect.get("take_profit", 0.0))
 
@@ -1099,10 +1154,8 @@ class UnifiedEngine:
             "TRIGGER"
         )
 
-        if side == OrderSide.BUY:
-            entry_px = round(mark_px * 1.002, instrument.price_precision)
-        else:
-            entry_px = round(mark_px * 0.998, instrument.price_precision)
+        # Microstructure-optimized entry: fill at mark price without paying 20 bps taker crossing penalty
+        entry_px = round(mark_px, instrument.price_precision)
         entry_price_obj = instrument.make_price(Decimal(str(entry_px)))
 
         try:
@@ -1388,9 +1441,15 @@ class UnifiedEngine:
             )
 
             # 4. Proactively execute top high-conviction prospects (Conviction >= 85)
-            for p in sorted(prospects_list, key=lambda x: x.get("conviction_score", 0), reverse=True):
+            # Prioritize Hourly Funding Fade (proven +$2.42 net pnl alpha) over raw trend breakdowns
+            def prospect_priority_key(x):
+                is_funding = 1 if "Funding" in x.get("strategy", "") else 0
+                return (is_funding, x.get("conviction_score", 0))
+
+            for p in sorted(prospects_list, key=prospect_priority_key, reverse=True):
                 if p.get("conviction_score", 0) >= 85:
-                    if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
+                    open_and_pending = len(self.get_open_positions()) + len(getattr(self.guard, "pending_orders", {}))
+                    if open_and_pending >= self.guard.max_total_open_positions:
                         if p.get("conviction_score", 0) >= 88:
                             rotation_cand = self.find_capital_rotation_candidate(p.get("coin", ""), conviction_score=p.get("conviction_score", 0))
                             if rotation_cand:
@@ -1401,7 +1460,8 @@ class UnifiedEngine:
                                 )
                                 self.close_position(coin_to_close, reason=rot_reason)
                                 time.sleep(0.5)
-                        if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
+                        open_and_pending = len(self.get_open_positions()) + len(getattr(self.guard, "pending_orders", {}))
+                        if open_and_pending >= self.guard.max_total_open_positions:
                             continue
                     self.execute_prospect_entry(p)
 

@@ -128,7 +128,7 @@ class TradeManager:
         taker_fee_pct: float = 0.035,           # Hyperliquid standard 3.5 bps per side
         min_holding_seconds: float = 90.0,      # Minimum holding duration before non-emergency exits
         reentry_cooldown_seconds: float = 180.0,# Cooldown after closing before re-entering (3 mins)
-        max_positions: int = 10,                # Max portfolio positions for capital rotation
+        max_positions: int = 3,                 # Max portfolio positions for capital rotation
         take_profit_roi_pct: Optional[float] = None, # Hard Take-Profit target: e.g. +2.0% to +3.5% ROI
         extended_hold_hours: float = 2.0,       # Extended hold duration: > 2.0 hours
         extended_hold_roi_pct: float = 1.5,     # Extended hold profit lock: >= +1.5% ROI
