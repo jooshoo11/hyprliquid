@@ -94,27 +94,30 @@ class OrderBookImbalance(Strategy):
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         p_bias = getattr(self.portfolio_guard, "prospect_biases", {}).get(coin) if self.portfolio_guard else None
 
-        # Bid Wall: Imbalance Skew >= 3.5 -> Buy in front of the wall
+        skew_thresh = getattr(self, "dynamic_skew_threshold", self.scalp_config.skew_threshold)
+        tp_ticks = getattr(self, "dynamic_take_profit_ticks", self.scalp_config.take_profit_ticks)
+
+        # Bid Wall: Imbalance Skew >= threshold -> Buy in front of the wall
         bid_ask_skew = bid_size / ask_size
-        if bid_ask_skew >= self.scalp_config.skew_threshold:
+        if bid_ask_skew >= skew_thresh:
             if p_bias == "SHORT":
                 return  # Skip BUY if AI Prospect bias is SHORT
             wall_px = tick.bid_price.as_double()
             entry_px = wall_px  # Post at best bid (maker)
             sl_px = wall_px - (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px + (self.scalp_config.take_profit_ticks * tick_size)
+            tp_px = entry_px + (tp_ticks * tick_size)
             self._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, bid_ask_skew)
             return
 
-        # Ask Wall: Imbalance Skew >= 3.5 -> Sell in front of the wall
+        # Ask Wall: Imbalance Skew >= threshold -> Sell in front of the wall
         ask_bid_skew = ask_size / bid_size
-        if ask_bid_skew >= self.scalp_config.skew_threshold:
+        if ask_bid_skew >= skew_thresh:
             if p_bias == "LONG":
                 return  # Skip SELL if AI Prospect bias is LONG
             wall_px = tick.ask_price.as_double()
             entry_px = wall_px  # Post at best ask (maker)
             sl_px = wall_px + (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px - (self.scalp_config.take_profit_ticks * tick_size)
+            tp_px = entry_px - (tp_ticks * tick_size)
             self._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, ask_bid_skew)
 
     def on_bar(self, bar: Bar) -> None:

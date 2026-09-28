@@ -130,6 +130,9 @@ class VwapOiMomentum(Strategy):
             self.states[instr_str] = SessionVwapState()
             self.subscribe_bars(BarType.from_str(f"{instr_str}-5-MINUTE-LAST-EXTERNAL"))
 
+            if not getattr(self.cache, "is_backtest", False):
+                self.subscribe_quote_ticks(instrument.id)
+
     def on_bar(self, bar: Bar) -> None:
         """Evaluate session VWAP crossover and OI expansion."""
         instr_str = str(bar.bar_type.instrument_id)
@@ -171,12 +174,13 @@ class VwapOiMomentum(Strategy):
         if prev_close is None:
             return
 
-        # 3. Long Signal: Price crosses above VWAP with OI expansion > 2.0 std dev
-        if prev_close <= vwap and close_px > vwap and oi_z > self.vwap_config.oi_zscore_threshold:
+        oi_threshold = getattr(self, "dynamic_oi_zscore_threshold", self.vwap_config.oi_zscore_threshold)
+        # 3. Long Signal: Price crosses above VWAP with OI expansion > threshold
+        if prev_close <= vwap and close_px > vwap and oi_z > oi_threshold:
             self._enter_momentum(instrument, OrderSide.BUY, close_px, vwap, oi_z)
 
-        # 4. Short Signal: Price crosses below VWAP with OI expansion > 2.0 std dev
-        elif prev_close >= vwap and close_px < vwap and oi_z > self.vwap_config.oi_zscore_threshold:
+        # 4. Short Signal: Price crosses below VWAP with OI expansion > threshold
+        elif prev_close >= vwap and close_px < vwap and oi_z > oi_threshold:
             self._enter_momentum(instrument, OrderSide.SELL, close_px, vwap, oi_z)
 
     def _enter_momentum(

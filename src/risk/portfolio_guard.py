@@ -117,6 +117,20 @@ class PortfolioGuard:
                 return self.strategy_allocation_caps[base_name]
             return self.baseline_strategy_equity_pct
 
+    def set_strategy_allocation_cap(self, strategy_name: str, cap: float) -> None:
+        """Dynamically set the margin allocation cap multiplier (e.g. 1.5 = 150% margin) for a strategy."""
+        with self._lock:
+            self.strategy_allocation_caps[strategy_name] = float(cap)
+            base_name = strategy_name.split("-")[0]
+            self.strategy_allocation_caps[base_name] = float(cap)
+
+    def set_strategy_max_positions(self, strategy_name: str, max_pos: int) -> None:
+        """Dynamically set the maximum concurrent open positions allowed for a strategy."""
+        with self._lock:
+            self.strategy_max_positions[strategy_name] = int(max_pos)
+            base_name = strategy_name.split("-")[0]
+            self.strategy_max_positions[base_name] = int(max_pos)
+
     def update_dynamic_allocations(
         self,
         closed_trades: List[Dict[str, Any]],
@@ -209,6 +223,21 @@ class PortfolioGuard:
         with self._lock:
             return dict(self.strategy_performance_stats)
 
+    def sync_open_positions(self, open_positions: List[Any]) -> None:
+        """Synchronize internal strategy open positions tracker with actual ground-truth open positions."""
+        with self._lock:
+            self.strategy_open_positions.clear()
+            for p in open_positions:
+                try:
+                    i_str = str(getattr(p, "instrument_id", p))
+                    s_raw = str(getattr(p, "strategy_id", ""))
+                    b_strat = s_raw.split("-")[0] if s_raw else "TrendContinuationSMC"
+                    self.strategy_open_positions.setdefault(b_strat, set()).add(i_str)
+                    if s_raw:
+                        self.strategy_open_positions.setdefault(s_raw, set()).add(i_str)
+                except Exception:
+                    pass
+
     def can_open_position(
         self,
         strategy_name: str,
@@ -216,8 +245,24 @@ class PortfolioGuard:
         side: OrderSide,
         proposed_notional_usd: float,
         current_open_positions_count: int,
+        open_positions: Optional[List[Any]] = None,
     ) -> Tuple[bool, str]:
         with self._lock:
+            if open_positions is not None:
+                self.strategy_open_positions.clear()
+                for p in open_positions:
+                    try:
+                        i_str = str(getattr(p, "instrument_id", p))
+                        s_raw = str(getattr(p, "strategy_id", ""))
+                        b_strat = s_raw.split("-")[0] if s_raw else "TrendContinuationSMC"
+                        self.strategy_open_positions.setdefault(b_strat, set()).add(i_str)
+                        if s_raw:
+                            self.strategy_open_positions.setdefault(s_raw, set()).add(i_str)
+                    except Exception:
+                        pass
+            elif current_open_positions_count == 0:
+                self.strategy_open_positions.clear()
+
             if self.is_circuit_breaker_triggered:
                 return False, f"Trading halted: 24h drawdown breached 2% limit."
 
@@ -363,7 +408,13 @@ class PortfolioGuard:
 
     def acknowledge_order_cancelled(self, order_id_str: str) -> None:
         """Remove cancelled order from pending tracker."""
-        entry = self.pending_orders.pop(order_id_str, None)
-        if entry:
-            instr_str = str(entry.instrument_id)
-            self.active_instrument_directions.pop(instr_str, None)
+        with self._lock:
+            entry = self.pending_orders.pop(order_id_str, None)
+            if entry:
+                instr_str = str(entry.instrument_id)
+                self.active_instrument_directions.pop(instr_str, None)
+                base_strat = entry.strategy_id.split("-")[0]
+                if base_strat in self.strategy_open_positions:
+                    self.strategy_open_positions[base_strat].discard(instr_str)
+                if entry.strategy_id in self.strategy_open_positions:
+                    self.strategy_open_positions[entry.strategy_id].discard(instr_str)

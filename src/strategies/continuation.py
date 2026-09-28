@@ -123,6 +123,9 @@ class TrendContinuationSMC(Strategy):
             self.subscribe_bars(BarType.from_str(f"{instr_id}-30-MINUTE-LAST-EXTERNAL"))
             self.subscribe_bars(BarType.from_str(f"{instr_id}-5-MINUTE-LAST-EXTERNAL"))
 
+            if not getattr(self.cache, "is_backtest", False):
+                self.subscribe_quote_ticks(instrument.id)
+
     def on_bar(self, bar: Bar) -> None:
         """Route incoming bars to respective timeframe logic."""
         instr_str = str(bar.bar_type.instrument_id)
@@ -385,7 +388,8 @@ class TrendContinuationSMC(Strategy):
         if (qty_val * entry_px) > max_notional:
             qty_val = max_notional / entry_px
 
-        tp_price = entry_px + (self.trend_config.reward_to_risk_ratio * risk_per_unit)
+        rr = getattr(self, "dynamic_rr_ratio", self.trend_config.reward_to_risk_ratio)
+        tp_price = entry_px + (rr * risk_per_unit)
 
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:
@@ -478,7 +482,8 @@ class TrendContinuationSMC(Strategy):
         if (qty_val * entry_px) > max_notional:
             qty_val = max_notional / entry_px
 
-        tp_price = entry_px - (self.trend_config.reward_to_risk_ratio * risk_per_unit)
+        rr = getattr(self, "dynamic_rr_ratio", self.trend_config.reward_to_risk_ratio)
+        tp_price = entry_px - (rr * risk_per_unit)
 
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:

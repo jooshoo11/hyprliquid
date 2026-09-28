@@ -81,11 +81,13 @@ class HyperliquidInfoClient:
             self.network = os.getenv("HYPERLIQUID_NETWORK", "mainnet")
 
         default_url = constants.TESTNET_API_URL if self.network == "testnet" else constants.MAINNET_API_URL
-        # Use Chainstack private RPC to completely bypass public rate limits!
-        self.base_url = os.getenv(
-            "CHAINSTACK_HYPERCORE_RPC_URL",
-            default_url
-        )
+        # Use Chainstack private RPC if valid token provided; ignore demo placeholder
+        chainstack_url = os.getenv("CHAINSTACK_HYPERCORE_RPC_URL", "").strip()
+        if chainstack_url and "demo" not in chainstack_url and "chainstack.com" in chainstack_url:
+            self.base_url = chainstack_url
+        else:
+            self.base_url = default_url
+
         if not self.base_url.endswith("/info"):
             self.api_url = f"{self.base_url.rstrip('/')}/info"
         else:
@@ -93,8 +95,7 @@ class HyperliquidInfoClient:
         import requests
         self._session = requests.Session()
         from hyperliquid.info import Info
-        info_base_url = default_url if ("demo" in self.base_url) else self.base_url
-        self._info = Info(info_base_url, skip_ws=True)
+        self._info = Info(self.base_url, skip_ws=True)
 
     def _resolve_meta_cache_path(self) -> str:
         """Resolve path to catalog/mcp_meta_cache.json."""
@@ -139,22 +140,22 @@ class HyperliquidInfoClient:
         return meta
 
     def get_meta_and_asset_ctxs(self) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        """Fetch universe definitions and real-time asset contexts with a 5-second in-memory cache."""
+        """Fetch universe definitions and real-time asset contexts with a 10-second in-memory cache."""
         import time
         if not hasattr(self, "_cached_meta_ctx"):
             self._cached_meta_ctx = None
             self._cached_meta_ctx_time = 0
             
-        if time.monotonic() - self._cached_meta_ctx_time < 5.0 and self._cached_meta_ctx:
+        if time.monotonic() - self._cached_meta_ctx_time < 10.0 and self._cached_meta_ctx:
             return self._cached_meta_ctx[0], self._cached_meta_ctx[1]
             
         try:
-            resp = self._session.post(self.api_url, json={"type": "metaAndAssetCtxs"}, timeout=10)
+            resp = self._session.post(self.api_url, json={"type": "metaAndAssetCtxs"}, timeout=5)
             if resp.status_code != 200 and "chainstack" in self.api_url:
                 fallback_url = (
                     constants.TESTNET_API_URL if self.network == "testnet" else constants.MAINNET_API_URL
                 ) + "/info"
-                resp = self._session.post(fallback_url, json={"type": "metaAndAssetCtxs"}, timeout=10)
+                resp = self._session.post(fallback_url, json={"type": "metaAndAssetCtxs"}, timeout=5)
 
             if resp.status_code == 200:
                 data = resp.json()

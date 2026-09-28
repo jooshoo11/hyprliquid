@@ -91,6 +91,9 @@ class HourlyFundingFade(Strategy):
             # Default estimated annualized funding rate
             self.current_funding_rates[instr_str] = 0.0
 
+            if not getattr(self.cache, "is_backtest", False):
+                self.subscribe_quote_ticks(instrument.id)
+
     def update_funding_rate(self, instrument_id_str: str, apr: float) -> None:
         """Allow live external feed or scanner to update hourly funding rate APR."""
         self.current_funding_rates[instrument_id_str] = apr
@@ -186,12 +189,13 @@ class HourlyFundingFade(Strategy):
                 ret = (close_px - bar.open.as_double()) / bar.open.as_double()
                 funding_apr = ret * 24 * 365 * 0.1
 
-            # Extreme positive funding (> +80% APR): FADE crowded longs -> SHORT
-            if funding_apr >= self.fade_config.min_funding_apr_threshold:
+            # Extreme positive funding: FADE crowded longs -> SHORT
+            min_thresh = getattr(self, "dynamic_min_apr", self.fade_config.min_funding_apr_threshold)
+            if funding_apr >= min_thresh:
                 self._enter_fade(instrument, OrderSide.SELL, close_px, minute, hour, funding_apr)
 
-            # Extreme negative funding (< -80% APR): FADE crowded shorts -> LONG
-            elif funding_apr <= -self.fade_config.min_funding_apr_threshold:
+            # Extreme negative funding: FADE crowded shorts -> LONG
+            elif funding_apr <= -min_thresh:
                 self._enter_fade(instrument, OrderSide.BUY, close_px, minute, hour, funding_apr)
 
     def _enter_fade(

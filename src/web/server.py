@@ -98,6 +98,7 @@ def load_json_file(path: str, default: Any = None) -> Any:
 
 
 DAILY_PNL_REPORT_PATH = os.path.join(REPO_ROOT, "reports", "daily_pnl.md")
+MARKET_REGIME_PATH = os.path.join(REPO_ROOT, "bridge", "market_regime.json")
 
 
 def normalize_strategy(strat_raw: Any, coin: str = "", default_idx: int = 0) -> str:
@@ -323,6 +324,8 @@ def get_live_state() -> Dict[str, Any]:
         if "est_funding_carry" not in state:
             state["est_funding_carry"] = float(state.get("total_funding_carry", 0.0))
         state["analytics"] = performance_analytics.get_metrics()
+        if "market_regime" not in state or not state["market_regime"]:
+            state["market_regime"] = load_json_file(MARKET_REGIME_PATH, {})
         funding_rates = {}
         for p in prospects_list:
             c = p.get("coin", "").upper()
@@ -506,26 +509,35 @@ def get_live_state() -> Dict[str, Any]:
         "prospects": prospects_list,
         "funding_arbitrage": funding_pairs,
         "funding_arbitrage_summary": funding_arb_data,
+        "market_regime": load_json_file(MARKET_REGIME_PATH, {}),
         "paper_state": paper_state,
         "pending_ai_commands": pending_cmds,
         "sentinel_thoughts": generate_sentinel_thoughts(positions),
     }
 
 
+@app.get("/api/market_regime")
+def api_market_regime():
+    """Fetch current macro market regime and dynamic strategy adaptations."""
+    if _active_engine and hasattr(_active_engine, "regime_manager") and _active_engine.regime_manager.current_regime:
+        return _active_engine.regime_manager.current_regime.to_dict()
+    return load_json_file(MARKET_REGIME_PATH, {})
+
+
 @app.get("/api/reports/analytics")
-async def api_reports_analytics():
+def api_reports_analytics():
     """Return quantitative performance analytics metrics."""
     return {"status": "SUCCESS", "analytics": performance_analytics.get_metrics()}
 
 
 @app.get("/api/state")
-async def api_state():
+def api_state():
     """Fetch current system state snapshot."""
     return get_live_state()
 
 
 @app.get("/api/orders/history")
-async def api_orders_history():
+def api_orders_history():
     """
     Return active positions and closed order history.
     Response: {"open_positions": [...], "closed_trades": [...]}
@@ -605,7 +617,7 @@ async def api_orders_history():
 
 
 @app.get("/api/missed_opportunities")
-async def api_missed_opportunities():
+def api_missed_opportunities():
     """
     Return list of missed trade setups and retrospective audit from trade_manager
     or reports/decision_journal.jsonl.

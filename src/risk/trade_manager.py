@@ -188,6 +188,17 @@ class TradeManager:
             self.active_positions[key] = tracker
             return tracker
 
+    def sync_active_positions(self, current_open_coins: Any) -> List[str]:
+        """Prune any phantom positions in trade_manager that are no longer open in engine."""
+        normalized_current = {PositionTracker._normalize_coin(c) for c in current_open_coins}
+        pruned = []
+        with self._lock:
+            for coin_key in list(self.active_positions.keys()):
+                if coin_key not in normalized_current:
+                    self.active_positions.pop(coin_key, None)
+                    pruned.append(coin_key)
+        return pruned
+
     def update_position(
         self,
         coin: str,

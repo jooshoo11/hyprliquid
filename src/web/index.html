@@ -491,7 +491,49 @@
 
       <!-- RIGHT 1 COLUMN: AI PROSPECTOR & L2 DEPTH RADAR -->
       <div class="flex flex-col gap-5">
-        
+
+        <!-- AUTONOMOUS MARKET REGIME & DYNAMIC TWEAKS CARD -->
+        <div class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col">
+          <div class="flex items-center justify-between pb-2.5 border-b border-slate-800/80">
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-earth-americas text-indigo-400 text-sm"></i>
+              <span class="font-bold text-xs text-white tracking-wide uppercase">Market Regime &amp; 15m Dynamic Tweaks</span>
+            </div>
+            <span id="regime-badge" class="text-[10px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-700/50 mono font-bold">ANALYZING</span>
+          </div>
+
+          <div class="mt-3 flex flex-col gap-2">
+            <!-- Breadth, 24h Change, Carry Stats -->
+            <div class="grid grid-cols-3 gap-2 text-center text-xs mono">
+              <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+                <span class="text-[9px] text-slate-500 font-semibold block uppercase">Breadth</span>
+                <span id="regime-breadth" class="font-bold text-slate-200">--%</span>
+              </div>
+              <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+                <span class="text-[9px] text-slate-500 font-semibold block uppercase">Avg 24h</span>
+                <span id="regime-avg-chg" class="font-bold text-slate-200">--%</span>
+              </div>
+              <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+                <span class="text-[9px] text-slate-500 font-semibold block uppercase">Avg Carry</span>
+                <span id="regime-funding" class="font-bold text-slate-200">--% APR</span>
+              </div>
+            </div>
+
+            <!-- Sentiment / Regime Summary -->
+            <div id="regime-sentiment" class="text-[11px] text-slate-300 italic bg-slate-950/60 p-2 rounded-lg border border-slate-800/50">
+              Evaluating cross-asset breadth and aggregate carry across top 50 perpetuals...
+            </div>
+
+            <!-- Active Strategy Tweaks -->
+            <div class="mt-1">
+              <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block mb-1">Active Regime Adaptations:</span>
+              <ul id="regime-tweaks-list" class="space-y-1 text-[11px] text-slate-300">
+                <li class="flex items-start gap-1.5"><i class="fa-solid fa-sliders text-indigo-400 text-[10px] mt-0.5"></i> <span>Initializing strategy parameters...</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
         <!-- TOP 10 AI PROSPECTS -->
         <div class="bg-[#0f172a] border border-slate-800 rounded-xl p-4 shadow-xl flex flex-col flex-1">
           <div class="flex items-center justify-between pb-3 border-b border-slate-800/80">
@@ -1661,6 +1703,7 @@
         if (cat.includes('AUDIT')) catStyle = 'bg-emerald-950 text-emerald-300 border-emerald-800/60';
         else if (cat.includes('RISK')) catStyle = 'bg-rose-950 text-rose-300 border-rose-800/60';
         else if (cat.includes('SCREEN')) catStyle = 'bg-indigo-950 text-indigo-300 border-indigo-800/60';
+        else if (cat.includes('REGIME')) catStyle = 'bg-indigo-950 text-indigo-200 border-indigo-600/70';
         else if (cat.includes('MISSED')) catStyle = 'bg-amber-950 text-amber-300 border-amber-800/60';
 
         const status = t.status || 'NORMAL';
@@ -1671,6 +1714,7 @@
         else if (status === 'MONITORING') statusStyle = 'text-cyan-400 border-cyan-800 bg-cyan-950/60';
 
         const coinBadge = t.coin ? `<span class="px-1.5 py-0.2 rounded bg-slate-800 text-cyan-300 border border-slate-700 font-bold">${t.coin}</span>` : '';
+        const bodyContent = t.thought || t.text || '';
 
         return `
           <div class="p-2.5 rounded-lg bg-slate-900/80 hover:bg-slate-800/60 border border-slate-800/70 transition-all flex flex-col gap-1">
@@ -1682,7 +1726,7 @@
               </div>
               <span class="px-2 py-0.2 rounded border text-[10px] font-semibold ${statusStyle}">${status}</span>
             </div>
-            <p class="text-slate-200 text-xs leading-relaxed font-mono mt-0.5">${t.thought || ''}</p>
+            <p class="text-slate-200 text-xs leading-relaxed font-mono mt-0.5">${bodyContent}</p>
           </div>
         `;
       }).join('');
@@ -2085,6 +2129,54 @@
               0 pairs meet strict thresholds (&lt; -50% &amp; &gt; +100% APR with spread &le; 0.10% &amp; depth &ge; $10k). Surveillance active.
             </div>
           `;
+        }
+      // 6. Autonomous Market Regime & 15m Dynamic Strategy Tweaks
+      const regime = data.market_regime;
+      if (regime && (regime.regime || regime.sentiment)) {
+        const regimeBadge = document.getElementById('regime-badge');
+        const breadthEl = document.getElementById('regime-breadth');
+        const avgChgEl = document.getElementById('regime-avg-chg');
+        const fundingEl = document.getElementById('regime-funding');
+        const sentimentEl = document.getElementById('regime-sentiment');
+        const tweaksList = document.getElementById('regime-tweaks-list');
+
+        if (regimeBadge) {
+          const regName = regime.regime || 'CHOPPY_MEAN_REVERTING_RANGE';
+          regimeBadge.textContent = regName.replace(/_/g, ' ');
+          if (regName === 'BULL_MOMENTUM_EXPANSION') {
+            regimeBadge.className = 'text-[10px] px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 mono font-bold shadow-sm';
+          } else if (regName === 'BEAR_MARKET_FLUSH') {
+            regimeBadge.className = 'text-[10px] px-2 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-700/60 mono font-bold shadow-sm';
+          } else if (regName === 'OVERHEATED_CROWDED_LONGS') {
+            regimeBadge.className = 'text-[10px] px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-700/60 mono font-bold shadow-sm';
+          } else if (regName === 'NEGATIVE_FUNDING_SHORT_SQUEEZE') {
+            regimeBadge.className = 'text-[10px] px-2 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-700/60 mono font-bold shadow-sm';
+          } else {
+            regimeBadge.className = 'text-[10px] px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 mono font-bold shadow-sm';
+          }
+        }
+
+        if (breadthEl && regime.breadth_pct !== undefined) {
+          breadthEl.textContent = `${regime.breadth_pct.toFixed(0)}%`;
+          breadthEl.className = `font-bold ${regime.breadth_pct >= 60 ? 'text-emerald-400' : (regime.breadth_pct <= 40 ? 'text-rose-400' : 'text-slate-200')}`;
+        }
+        if (avgChgEl && regime.avg_change_24h !== undefined) {
+          const chg = parseFloat(regime.avg_change_24h || 0);
+          avgChgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%`;
+          avgChgEl.className = `font-bold ${chg >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+        }
+        if (fundingEl && regime.avg_funding_apr !== undefined) {
+          const apr = parseFloat(regime.avg_funding_apr || 0);
+          fundingEl.textContent = `${apr >= 0 ? '+' : ''}${apr.toFixed(1)}% APR`;
+          fundingEl.className = `font-bold ${apr > 30 ? 'text-amber-400' : (apr < 0 ? 'text-purple-400' : 'text-emerald-400')}`;
+        }
+        if (sentimentEl && regime.sentiment) {
+          sentimentEl.textContent = regime.sentiment;
+        }
+        if (tweaksList && regime.active_tweaks && regime.active_tweaks.length > 0) {
+          tweaksList.innerHTML = regime.active_tweaks.map(t => `
+            <li class="flex items-start gap-1.5 leading-snug"><i class="fa-solid fa-sliders text-indigo-400 text-[10px] mt-0.5 shrink-0"></i> <span>${t}</span></li>
+          `).join('');
         }
       }
 
