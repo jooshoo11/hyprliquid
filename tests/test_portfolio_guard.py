@@ -207,3 +207,46 @@ def test_portfolio_guard_per_strategy_position_limit():
     can_open_again, _ = guard.can_open_position("OrderBookImbalance", inst_btc, OrderSide.BUY, 50.0, 1)
     assert can_open_again is True
 
+
+def test_ground_truth_margin_sync():
+    """Verify sync_open_positions recalculates allocated margin directly from actual positions."""
+    from unittest.mock import MagicMock
+    from nautilus_trader.model.objects import Quantity, Price
+
+    guard = PortfolioGuard(max_strategy_equity_pct=1.0)
+    guard.update_equity(100.0)
+
+    # Simulate 1 open position for TrendContinuationSMC
+    pos1 = MagicMock()
+    pos1.instrument_id = InstrumentId(Symbol("SOL-USD-PERP"), Venue("HYPERLIQUID"))
+    pos1.strategy_id = "TrendContinuationSMC-000"
+    pos1.is_long = True
+    pos1.quantity = Quantity(0.2, 2)
+    pos1.avg_px_open = Price(100.0, 2)
+
+    guard.sync_open_positions([pos1])
+
+    # Allocated margin for TrendContinuationSMC should accurately equal $20.0
+    assert pytest.approx(guard.strategy_allocated_margin["TrendContinuationSMC"], 0.01) == 20.0
+
+    # Syncing with an empty list should immediately clear allocated margin (zero leakage)
+    guard.sync_open_positions([])
+    assert len(guard.strategy_allocated_margin) == 0
+
+
+def test_single_position_notional_cap():
+    """Verify that orders exceeding 40% equity cap are rejected by PortfolioGuard."""
+    guard = PortfolioGuard()
+    guard.update_equity(100.0)
+    inst = InstrumentId(Symbol("ETH-USD-PERP"), Venue("HYPERLIQUID"))
+
+    # $35 notional (35% equity) is allowed
+    can_open, _ = guard.can_open_position("TrendContinuationSMC", inst, OrderSide.BUY, 35.0, 0)
+    assert can_open is True
+
+    # $50 notional (50% equity > 40% cap) is rejected
+    can_open_large, reason = guard.can_open_position("TrendContinuationSMC", inst, OrderSide.BUY, 50.0, 0)
+    assert can_open_large is False
+    assert "exceeds max single position cap 40%" in reason
+
+

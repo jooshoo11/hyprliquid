@@ -224,9 +224,11 @@ class PortfolioGuard:
             return dict(self.strategy_performance_stats)
 
     def sync_open_positions(self, open_positions: List[Any]) -> None:
-        """Synchronize internal strategy open positions tracker with actual ground-truth open positions."""
+        """Synchronize internal strategy open positions tracker AND ground-truth allocated margin."""
         with self._lock:
             self.strategy_open_positions.clear()
+            self.strategy_allocated_margin.clear()
+            self.active_instrument_directions.clear()
             for p in open_positions:
                 try:
                     i_str = str(getattr(p, "instrument_id", p))
@@ -235,6 +237,33 @@ class PortfolioGuard:
                     self.strategy_open_positions.setdefault(b_strat, set()).add(i_str)
                     if s_raw:
                         self.strategy_open_positions.setdefault(s_raw, set()).add(i_str)
+
+                    # Ground-truth direction tracking
+                    if hasattr(p, "is_long"):
+                        self.active_instrument_directions[i_str] = OrderSide.BUY if p.is_long else OrderSide.SELL
+                    elif hasattr(p, "side"):
+                        self.active_instrument_directions[i_str] = OrderSide.BUY if str(p.side).upper() in ("BUY", "LONG") else OrderSide.SELL
+
+                    # Ground-truth notional calculation
+                    qty_val = 0.0
+                    px_val = 0.0
+                    if hasattr(p, "quantity"):
+                        qty_val = p.quantity.as_double() if hasattr(p.quantity, "as_double") else float(p.quantity)
+                    elif hasattr(p, "size"):
+                        qty_val = float(p.size)
+
+                    if hasattr(p, "avg_px_open") and p.avg_px_open:
+                        px_val = p.avg_px_open.as_double() if hasattr(p.avg_px_open, "as_double") else float(p.avg_px_open)
+                    elif hasattr(p, "entry_price"):
+                        px_val = float(p.entry_price)
+                    elif hasattr(p, "mark_price"):
+                        px_val = float(p.mark_price)
+
+                    notional = abs(qty_val * px_val)
+                    if notional > 0:
+                        self.strategy_allocated_margin[b_strat] = self.strategy_allocated_margin.get(b_strat, 0.0) + notional
+                        if s_raw:
+                            self.strategy_allocated_margin[s_raw] = self.strategy_allocated_margin.get(s_raw, 0.0) + notional
                 except Exception:
                     pass
 
@@ -249,7 +278,7 @@ class PortfolioGuard:
     ) -> Tuple[bool, str]:
         with self._lock:
             if open_positions is not None:
-                self.strategy_open_positions.clear()
+                # Re-sync ground-truth state before evaluation
                 for p in open_positions:
                     try:
                         i_str = str(getattr(p, "instrument_id", p))
@@ -262,6 +291,8 @@ class PortfolioGuard:
                         pass
             elif current_open_positions_count == 0:
                 self.strategy_open_positions.clear()
+                self.strategy_allocated_margin.clear()
+                self.active_instrument_directions.clear()
 
             if self.is_circuit_breaker_triggered:
                 return False, f"Trading halted: 24h drawdown breached 2% limit."
@@ -303,9 +334,14 @@ class PortfolioGuard:
             if proposed_notional_usd > (max_coin_notional * 1.01):
                 return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
 
+            # Enforce single position notional cap (max 40% of total equity)
+            max_single_notional = self.current_equity * 0.40
+            if proposed_notional_usd > (max_single_notional * 1.05):
+                return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap 40% (${max_single_notional:,.2f})."
+
             cap = self.get_strategy_allocation_cap(strategy_name)
             max_allowed_margin = self.current_equity * cap
-            current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, 0.0)
+            current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, self.strategy_allocated_margin.get(base_strat, 0.0))
             if (current_strategy_margin + proposed_notional_usd) > max_allowed_margin:
                 if not hasattr(self, "_log_cooldown"):
                     self._log_cooldown = {}

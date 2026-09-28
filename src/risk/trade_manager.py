@@ -51,6 +51,7 @@ class PositionTracker:
     stop_price: Optional[float] = None
     atr_pct: float = 0.0  # Coin-specific volatility / ATR percentage
     dynamic_trailing_distance_pct: Optional[float] = None
+    take_profit_roi_pct: Optional[float] = None  # Profit target %
 
     # Current snapshot
     current_price: float = 0.0
@@ -127,6 +128,9 @@ class TradeManager:
         min_holding_seconds: float = 90.0,      # Minimum holding duration before non-emergency exits
         reentry_cooldown_seconds: float = 180.0,# Cooldown after closing before re-entering (3 mins)
         max_positions: int = 10,                # Max portfolio positions for capital rotation
+        take_profit_roi_pct: Optional[float] = None, # Hard Take-Profit target: e.g. +2.0% to +3.5% ROI
+        extended_hold_hours: float = 2.0,       # Extended hold duration: > 2.0 hours
+        extended_hold_roi_pct: float = 1.5,     # Extended hold profit lock: >= +1.5% ROI
     ) -> None:
         self.reports_dir = reports_dir or os.path.join(REPO_ROOT, "reports")
         self.daily_pnl_file = daily_pnl_file or os.path.join(self.reports_dir, "daily_pnl.md")
@@ -146,6 +150,9 @@ class TradeManager:
         self.min_holding_seconds = min_holding_seconds
         self.reentry_cooldown_seconds = reentry_cooldown_seconds
         self.max_positions = max_positions
+        self.take_profit_roi_pct = take_profit_roi_pct
+        self.extended_hold_hours = extended_hold_hours
+        self.extended_hold_roi_pct = extended_hold_roi_pct
 
         self.active_positions: Dict[str, PositionTracker] = {}
         self._journaled_trade_keys: set = set()
@@ -174,6 +181,7 @@ class TradeManager:
         strategy: str = "Unknown",
         entry_time: Optional[float] = None,
         atr_pct: Optional[float] = None,
+        take_profit_roi_pct: Optional[float] = None,
     ) -> PositionTracker:
         """Register or reset an active position for tracking."""
         key = self._get_key(coin)
@@ -187,6 +195,7 @@ class TradeManager:
                 entry_time=now,
                 strategy=strategy,
                 last_update_time=now,
+                take_profit_roi_pct=take_profit_roi_pct if take_profit_roi_pct is not None else self.take_profit_roi_pct,
             )
             if atr_pct is not None and atr_pct > 0:
                 tracker.atr_pct = float(atr_pct)
@@ -217,10 +226,11 @@ class TradeManager:
         current_time: Optional[float] = None,
         exit_signal: Optional[str] = None,
         atr_pct: Optional[float] = None,
+        take_profit_roi_pct: Optional[float] = None,
     ) -> TradeAction:
         """
         Update position with the latest mark price, recalculate metrics and watermarks,
-        and evaluate risk rules (MAE, trailing stop, breakeven ratchet, stagnant exit, min holding period).
+        and evaluate risk rules (MAE, Take Profit, trailing stop, breakeven ratchet, stagnant exit, min holding period).
         """
         key = self._get_key(coin)
         now = time.time() if current_time is None else current_time
@@ -251,6 +261,9 @@ class TradeManager:
             if atr_pct is not None and atr_pct > 0:
                 tracker.atr_pct = float(atr_pct)
                 tracker.dynamic_trailing_distance_pct = round(max(0.5, min(2.5, 1.5 * tracker.atr_pct)), 2)
+
+            if take_profit_roi_pct is not None and take_profit_roi_pct > 0:
+                tracker.take_profit_roi_pct = float(take_profit_roi_pct)
 
             # Update current price and timestamp
             mark_price = float(mark_price)
@@ -326,6 +339,35 @@ class TradeManager:
                         action="CLOSE",
                         should_close=True,
                         reason=exit_signal,
+                        coin=tracker.coin,
+                        side=tracker.side,
+                        roi=roi,
+                        pnl=pnl,
+                        current_price=mark_price,
+                        peak_price=tracker.peak_price,
+                        stop_price=tracker.stop_price,
+                    )
+
+            # Rule 2.5: Take Profit Target Lock & Extended Hold Profit Banking
+            # Banks profit immediately when ROI >= take_profit_roi_pct or when position held > extended_hold_hours with >= extended_hold_roi_pct
+            tp_target = getattr(tracker, "take_profit_roi_pct", None) or self.take_profit_roi_pct
+            is_extended_profit = (duration_seconds >= (self.extended_hold_hours * 3600.0) and roi >= self.extended_hold_roi_pct)
+            if (tp_target is not None and roi >= tp_target) or is_extended_profit:
+                if duration_seconds >= self.min_holding_seconds:
+                    if is_extended_profit and (tp_target is None or roi < tp_target):
+                        reason = (
+                            f"Extended hold profit lock: open {duration_seconds / 3600.0:.1f}h (> {self.extended_hold_hours}h) "
+                            f"with ROI {roi:+.2f}% >= {self.extended_hold_roi_pct:.1f}% (+${pnl:+.2f} banked)"
+                        )
+                    else:
+                        reason = (
+                            f"Take Profit target reached: ROI {roi:+.2f}% >= {tp_target:.1f}% "
+                            f"(+${pnl:+.2f} banked)"
+                        )
+                    return TradeAction(
+                        action="CLOSE",
+                        should_close=True,
+                        reason=reason,
                         coin=tracker.coin,
                         side=tracker.side,
                         roi=roi,
@@ -955,6 +997,7 @@ class TradeManager:
                     "trailing_stop_triggered": tracker.trailing_stop_triggered,
                     "trailing_distance_pct": tracker.dynamic_trailing_distance_pct or self.trailing_distance_pct,
                     "atr_pct": round(tracker.atr_pct, 2),
+                    "take_profit_roi_pct": getattr(tracker, "take_profit_roi_pct", self.take_profit_roi_pct),
                     "duration_seconds": dur,
                     "entry_time": tracker.entry_time,
                 }

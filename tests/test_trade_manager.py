@@ -937,3 +937,44 @@ def test_atr_dynamic_trailing_stop(tmp_trade_manager):
     assert action3.should_close is True
     assert "Trail: 1.8%" in action3.reason
 
+
+def test_take_profit_target_exit(tmp_trade_manager):
+    """Test Rule 2.5: Immediate take profit banking when ROI >= take_profit_roi_pct."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+
+    # Register position with a 2.0% Take Profit target
+    tm.register_position("SOL", "LONG", size=10.0, entry_price=100.0, entry_time=t0, take_profit_roi_pct=2.0)
+
+    # Price moves to +1.5% ROI (not yet at TP, held > 90s) -> Should HOLD (or ratchet breakeven)
+    action1 = tm.update_position("SOL", "LONG", size=10.0, entry_price=100.0, mark_price=101.5, current_time=t0 + 100)
+    assert action1.action == "HOLD"
+
+    # Price hits +2.2% ROI (exceeds 2.0% TP) -> Should CLOSE and bank profit
+    action2 = tm.update_position("SOL", "LONG", size=10.0, entry_price=100.0, mark_price=102.2, current_time=t0 + 105)
+    assert action2.action == "CLOSE"
+    assert action2.should_close is True
+    assert "Take Profit target reached: ROI +2.20%" in action2.reason
+
+
+def test_extended_hold_profit_exit(tmp_trade_manager):
+    """Test Rule 2.5: Extended hold profit lock when position held > 2h with ROI >= 1.5%."""
+    tm = tmp_trade_manager
+    tm.extended_hold_hours = 2.0
+    tm.extended_hold_roi_pct = 1.5
+    t0 = 1000.0
+
+    # Register position with default 3.0% TP
+    tm.register_position("ETH", "LONG", size=1.0, entry_price=3000.0, entry_time=t0, take_profit_roi_pct=3.0)
+
+    # Position open for 1 hour with +1.8% ROI -> Should HOLD (under 2 hours)
+    action1 = tm.update_position("ETH", "LONG", size=1.0, entry_price=3000.0, mark_price=3054.0, current_time=t0 + 3600)
+    assert action1.action == "HOLD"
+
+    # Position open for 2.5 hours with +1.8% ROI (>= 1.5% profit threshold) -> Should CLOSE to prevent round-trip
+    action2 = tm.update_position("ETH", "LONG", size=1.0, entry_price=3000.0, mark_price=3054.0, current_time=t0 + 9000)
+    assert action2.action == "CLOSE"
+    assert action2.should_close is True
+    assert "Extended hold profit lock" in action2.reason
+
+

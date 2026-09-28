@@ -592,6 +592,12 @@ class UnifiedEngine:
                 # Set 3-minute anti-churn cooldown
                 if hasattr(self, "guard") and self.guard:
                     self.guard.set_cooldown(actual_coin, 180.0)
+                    self.guard.register_position_closed(
+                        strategy_name=strat_id,
+                        instrument_id=pos.instrument_id,
+                        freed_notional_usd=abs(qty * entry_px),
+                    )
+                    self.guard.sync_open_positions(self.get_open_positions())
                 if hasattr(self, "portfolio_guard") and self.portfolio_guard:
                     self.portfolio_guard.set_cooldown(actual_coin, 180.0)
                 if hasattr(self, "trade_manager") and self.trade_manager:
@@ -705,6 +711,9 @@ class UnifiedEngine:
 
                         # 2. Update TradeManager FIRST so position is tracked with correct entry time and price
                         coin_atr = self.coin_atr_pct.get(coin, 0.8)
+                        reg = getattr(getattr(self, "regime_manager", None), "current_regime", None)
+                        reg_name = reg.regime if reg else "CHOPPY_MEAN_REVERTING_RANGE"
+                        tp_target = 2.0 if reg_name in ("CHOPPY_MEAN_REVERTING_RANGE", "BEAR_MARKET_FLUSH") else 3.5
                         action = self.trade_manager.update_position(
                             coin=coin,
                             side=side,
@@ -714,6 +723,7 @@ class UnifiedEngine:
                             strategy=strat_name,
                             entry_time=entry_time,
                             atr_pct=coin_atr,
+                            take_profit_roi_pct=tp_target,
                         )
 
                         # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
@@ -998,8 +1008,8 @@ class UnifiedEngine:
         risk_usd = base_risk_usd * vol_scalar
         qty_val = risk_usd / risk_per_unit
 
-        max_lev = get_coin_max_leverage(coin)
-        max_notional = equity * min(float(max_lev), 2.0)
+        # Strict single-position notional cap: max 35% total equity ($35 max on $100 account)
+        max_notional = equity * 0.35
         if (qty_val * mark_px) > max_notional:
             qty_val = max_notional / mark_px
 
@@ -1021,8 +1031,31 @@ class UnifiedEngine:
             open_positions=open_pos,
         )
         if not can_trade:
-            self.log(f"PortfolioGuard skipped prospect {coin} {bias}: {reason}", "INFO")
-            return False
+            # If high conviction (>= 88), attempt capital rotation of a stagnant position
+            if score >= 88:
+                rotation_cand = self.find_capital_rotation_candidate(coin, conviction_score=score)
+                if rotation_cand:
+                    coin_to_close, rot_reason = rotation_cand
+                    self.log(
+                        f"🔄 [Capital Rotation] Closing stagnant position {coin_to_close} to rotate capital into {coin} ({rot_reason})",
+                        "TRIGGER",
+                    )
+                    if self.close_position(coin_to_close, reason=rot_reason):
+                        time.sleep(0.5)
+                        open_pos = self.get_open_positions()
+                        self.guard.sync_open_positions(open_pos)
+                        can_trade, reason = self.guard.can_open_position(
+                            strategy_name=strat_name,
+                            instrument_id=instrument.id,
+                            side=side,
+                            proposed_notional_usd=notional_usd,
+                            current_open_positions_count=len(open_pos),
+                            open_positions=open_pos,
+                        )
+
+            if not can_trade:
+                self.log(f"PortfolioGuard skipped prospect {coin} {bias}: {reason}", "INFO")
+                return False
 
         tp_price_obj = instrument.make_price(Decimal(str(round(tp_px, instrument.price_precision))))
         sl_price_obj = instrument.make_price(Decimal(str(round(sl_px, instrument.price_precision))))
@@ -1204,6 +1237,29 @@ class UnifiedEngine:
                         "rationale": f"Spot-led accumulation: +{chg:.1f}% 24h on ${row['vol_24h']/1e6:.1f}M vol; healthy baseline funding (+{funding_apr:.1f}% APR).",
                     })
 
+            # 2.5 Bearish Breakdown Continuations (Negative Momentum in Flush/Choppy Regimes)
+            breakdowns = df.filter((pl.col("change_24h") < -1.5) & (pl.col("vol_24h") > 1_000_000)).sort("change_24h", descending=False).head(5)
+            for row in breakdowns.iter_rows(named=True):
+                c = row["coin"]
+                if c not in selected_coins:
+                    selected_coins.add(c)
+                    px = float(row["price"])
+                    funding_apr = float(row["funding_apr"])
+                    chg = float(row["change_24h"])
+                    prospects_list.append({
+                        "coin": c,
+                        "bias": "SHORT",
+                        "conviction_score": min(94, int(82 + abs(chg))),
+                        "strategy": "SMC Trend Breakdown",
+                        "mark_price": px,
+                        "target_entry": round(px * 1.006, 4),
+                        "stop_loss": round(px * short_sl_mult, 4),
+                        "take_profit": round(px * short_tp_mult, 4),
+                        "funding_apr_pct": funding_apr,
+                        "volume_24h_usd": float(row["vol_24h"]),
+                        "rationale": f"Bear market breakdown: {chg:+.1f}% 24h drop on ${row['vol_24h']/1e6:.1f}M vol; heavy distribution.",
+                    })
+
             # 3. Fill remaining slots up to 10 with highest volume leaders
             if len(prospects_list) < 10:
                 for row in df.iter_rows(named=True):
@@ -1213,7 +1269,12 @@ class UnifiedEngine:
                         px = float(row["price"])
                         funding_apr = float(row["funding_apr"])
                         chg = float(row["change_24h"])
-                        bias = "SHORT" if funding_apr > 40.0 else "LONG"
+                        if regime_info.regime == "BEAR_MARKET_FLUSH":
+                            bias = "SHORT" if chg < 0 or funding_apr > 25.0 else "LONG"
+                        elif regime_info.regime == "BULL_MOMENTUM_EXPANSION":
+                            bias = "LONG" if chg > 0 or funding_apr < 20.0 else "SHORT"
+                        else:
+                            bias = "SHORT" if funding_apr > 30.0 or chg < -1.0 else "LONG"
                         prospects_list.append({
                             "coin": c,
                             "bias": bias,
@@ -1283,7 +1344,18 @@ class UnifiedEngine:
             for p in sorted(prospects_list, key=lambda x: x.get("conviction_score", 0), reverse=True):
                 if p.get("conviction_score", 0) >= 85:
                     if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
-                        break
+                        if p.get("conviction_score", 0) >= 88:
+                            rotation_cand = self.find_capital_rotation_candidate(p.get("coin", ""), conviction_score=p.get("conviction_score", 0))
+                            if rotation_cand:
+                                coin_to_close, rot_reason = rotation_cand
+                                self.log(
+                                    f"🔄 [Capital Rotation] Closing stagnant position {coin_to_close} to rotate capital into {p.get('coin', '')} ({rot_reason})",
+                                    "TRIGGER",
+                                )
+                                self.close_position(coin_to_close, reason=rot_reason)
+                                time.sleep(0.5)
+                        if len(self.get_open_positions()) >= self.guard.max_total_open_positions:
+                            continue
                     self.execute_prospect_entry(p)
 
         except Exception as e:
