@@ -998,31 +998,41 @@
     }
 
     function updateChartPositionLine(coin) {
-      if (entryPriceLine && candleSeries) {
-        candleSeries.removePriceLine(entryPriceLine);
-        entryPriceLine = null;
-      }
+      try {
+        if (entryPriceLine && candleSeries) {
+          candleSeries.removePriceLine(entryPriceLine);
+          entryPriceLine = null;
+        }
 
-      const match = livePositions.find(p => p.coin.toUpperCase() === coin.toUpperCase());
-      const posTag = document.getElementById('chart-pos-tag');
+        const coinClean = String(coin || '').toUpperCase().trim();
+        if (!coinClean) return;
 
-      if (match && candleSeries) {
-        const isLong = match.side === 'LONG';
-        entryPriceLine = candleSeries.createPriceLine({
-          price: match.entry_price,
-          color: isLong ? '#10b981' : '#f43f5e',
-          lineWidth: 2,
-          lineStyle: LightweightCharts.LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `${match.side} ENTRY: $${match.entry_price}`,
-        });
+        const match = (livePositions || []).find(p => String(p && (p.coin || p.symbol) || '').toUpperCase().trim() === coinClean);
+        const posTag = document.getElementById('chart-pos-tag');
 
-        const strat = match.strategy || 'SMC Trend';
-        posTag.classList.remove('hidden');
-        posTag.className = `text-xs px-2 py-0.5 rounded border mono font-bold flex items-center gap-1.5 ${isLong ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' : 'bg-rose-950/60 text-rose-400 border-rose-800/60'}`;
-        posTag.innerHTML = `<span>${match.side} ${match.size} @ $${match.entry_price}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700 font-normal">[${strat}]</span>`;
-      } else {
-        posTag.classList.add('hidden');
+        if (match && candleSeries) {
+          const isLong = (match.side || 'LONG').toUpperCase() === 'LONG';
+          const ep = parseFloat(match.entry_price || match.entry || 0);
+          entryPriceLine = candleSeries.createPriceLine({
+            price: ep,
+            color: isLong ? '#10b981' : '#f43f5e',
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${match.side || 'POS'} ENTRY: $${ep}`,
+          });
+
+          const strat = match.strategy || 'SMC Trend';
+          if (posTag) {
+            posTag.classList.remove('hidden');
+            posTag.className = `text-xs px-2 py-0.5 rounded border mono font-bold flex items-center gap-1.5 ${isLong ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800/60' : 'bg-rose-950/60 text-rose-400 border-rose-800/60'}`;
+            posTag.innerHTML = `<span>${match.side || 'POS'} ${match.size} @ $${ep}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-900/90 text-slate-300 border border-slate-700 font-normal">[${strat}]</span>`;
+          }
+        } else if (posTag) {
+          posTag.classList.add('hidden');
+        }
+      } catch (err) {
+        console.warn("updateChartPositionLine error:", err);
       }
     }
 
@@ -1506,34 +1516,44 @@
     let isInitialStateLoaded = false;
 
     function detectTradeEvents(newPositions) {
-      const currentMap = new Map();
-      (newPositions || []).forEach(p => currentMap.set(p.coin.toUpperCase(), p));
+      try {
+        const currentMap = new Map();
+        (newPositions || []).forEach(p => {
+          if (!p) return;
+          const coin = String(p.coin || p.symbol || '').toUpperCase().trim();
+          if (coin) currentMap.set(coin, p);
+        });
 
-      if (!isInitialStateLoaded) {
+        if (!isInitialStateLoaded) {
+          previousPositionMap = currentMap;
+          isInitialStateLoaded = true;
+          return;
+        }
+
+        // Check for newly opened positions
+        currentMap.forEach((pos, coin) => {
+          if (!previousPositionMap.has(coin)) {
+            playFillChime();
+            const strat = pos.strategy || 'AI Strategy';
+            const sz = parseFloat(pos.size || 0).toLocaleString();
+            const px = pos.entry_price || pos.entry || 0;
+            showToast(`Position Opened: ${coin} ${pos.side || 'LONG'} [${strat}] size ${sz} @ $${px}`, 'execution', 'TRADE FILLED');
+          }
+        });
+
+        // Check for closed positions
+        previousPositionMap.forEach((pos, coin) => {
+          if (!currentMap.has(coin)) {
+            playCloseChime();
+            const strat = pos.strategy || 'AI Strategy';
+            showToast(`Position Closed: ${coin} [${strat}]`, 'info', 'TRADE CLOSED');
+          }
+        });
+
         previousPositionMap = currentMap;
-        isInitialStateLoaded = true;
-        return;
+      } catch (err) {
+        console.warn("detectTradeEvents error:", err);
       }
-
-      // Check for newly opened positions
-      currentMap.forEach((pos, coin) => {
-        if (!previousPositionMap.has(coin)) {
-          playFillChime();
-          const strat = pos.strategy || 'AI Strategy';
-          showToast(`Position Opened: ${coin} ${pos.side} [${strat}] size ${parseFloat(pos.size).toLocaleString()} @ $${pos.entry_price}`, 'execution', 'TRADE FILLED');
-        }
-      });
-
-      // Check for closed positions
-      previousPositionMap.forEach((pos, coin) => {
-        if (!currentMap.has(coin)) {
-          playCloseChime();
-          const strat = pos.strategy || 'AI Strategy';
-          showToast(`Position Closed: ${coin} [${strat}]`, 'info', 'TRADE CLOSED');
-        }
-      });
-
-      previousPositionMap = currentMap;
     }
 
     // --- FLATTEN ALL Modal & Execution ---
@@ -1550,11 +1570,14 @@
         confirmBtn.disabled = false;
         confirmBtn.classList.remove('opacity-50', 'cursor-not-allowed');
         summaryEl.innerHTML = livePositions.map(p => {
-          const isLong = p.side === 'LONG';
+          const coin = String((p && (p.coin || p.symbol)) || 'UNKNOWN').toUpperCase();
+          const side = String((p && p.side) || 'LONG').toUpperCase();
+          const isLong = side === 'LONG';
           const sideColor = isLong ? 'text-emerald-400' : 'text-rose-400';
-          const strat = p.strategy || 'SMC Trend';
+          const strat = (p && p.strategy) || 'SMC Trend';
+          const sz = parseFloat((p && p.size) || 0).toLocaleString();
           return `<div class="flex items-center justify-between py-1 border-b border-slate-800/60 last:border-0">
-            <span><strong class="text-white">${p.coin}</strong> <span class="${sideColor}">[${p.side}]</span> size ${parseFloat(p.size).toLocaleString()}</span>
+            <span><strong class="text-white">${coin}</strong> <span class="${sideColor}">[${side}]</span> size ${sz}</span>
             <span class="text-slate-400 text-[10px] mono">[${strat}]</span>
           </div>`;
         }).join('');
@@ -1639,31 +1662,64 @@
       showToast("Triggering AI Prospector scan across top 50 perpetuals...", "info", "PROSPECTOR SCAN");
     }
 
+    let wsInstance = null;
+    let wsConnected = false;
+
+    // Fetch Live State via REST (Immediate load & fallback)
+    async function fetchLiveState() {
+      try {
+        const resp = await fetch('/api/state');
+        if (resp.ok) {
+          const data = await resp.json();
+          updateCockpitUI(data);
+        }
+      } catch (err) {
+        console.warn("REST state fetch error:", err);
+      }
+    }
+
     // Connect WebSocket
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsInstance = ws;
 
-      ws.onopen = () => {
-        document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-emerald-400 inline-block';
-        document.getElementById('ws-status').textContent = 'CONNECTED';
-      };
+        ws.onopen = () => {
+          wsConnected = true;
+          const ind = document.getElementById('ws-indicator');
+          const stat = document.getElementById('ws-status');
+          if (ind) ind.className = 'w-2 h-2 rounded-full bg-emerald-400 inline-block';
+          if (stat) stat.textContent = 'CONNECTED';
+        };
 
-      ws.onclose = () => {
-        document.getElementById('ws-indicator').className = 'w-2 h-2 rounded-full bg-rose-500 inline-block pulse-live';
-        document.getElementById('ws-status').textContent = 'RECONNECTING';
-        setTimeout(connectWebSocket, 2000);
-      };
+        ws.onclose = () => {
+          wsConnected = false;
+          const ind = document.getElementById('ws-indicator');
+          const stat = document.getElementById('ws-status');
+          if (ind) ind.className = 'w-2 h-2 rounded-full bg-rose-500 inline-block pulse-live';
+          if (stat) stat.textContent = 'RECONNECTING';
+          setTimeout(connectWebSocket, 2000);
+        };
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          updateCockpitUI(data);
-        } catch (e) {
-          console.error("WS Parse Error:", e);
-        }
-      };
+        ws.onerror = (err) => {
+          console.warn("WebSocket encounter error, relying on REST fallback:", err);
+          fetchLiveState();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            updateCockpitUI(data);
+          } catch (e) {
+            console.error("WS Parse Error:", e);
+          }
+        };
+      } catch (err) {
+        console.warn("WebSocket initialization failed, retrying in 3s:", err);
+        setTimeout(connectWebSocket, 3000);
+      }
     }
 
     // --- 10s AI SENTINEL LOGIC STREAM ---
@@ -1972,27 +2028,87 @@
         pnlBadge.textContent = 'DRAWDOWN';
       }
 
+      // 1b. Quant Performance Analytics
+      const metrics = data.performance_metrics || data.analytics || {};
+      const totalTrades = metrics.total_trades || 0;
+      const winCount = metrics.winning_trades || 0;
+      const lossCount = metrics.losing_trades || 0;
+      const winRate = metrics.win_rate_pct !== undefined ? metrics.win_rate_pct : 0.0;
+      const pf = metrics.profit_factor !== undefined ? metrics.profit_factor : 0.0;
+      const sharpe = metrics.sharpe_ratio !== undefined ? metrics.sharpe_ratio : 0.0;
+      const expectancy = metrics.expectancy_usd !== undefined ? metrics.expectancy_usd : 0.0;
+      const totalNet = metrics.total_net_pnl !== undefined ? metrics.total_net_pnl : 0.0;
+      const grossPnl = metrics.total_gross_pnl !== undefined ? metrics.total_gross_pnl : 0.0;
+      const feesPaid = metrics.total_fees_paid !== undefined ? metrics.total_fees_paid : (data.total_fees_paid || 0.0);
+
+      const tradeCountEl = document.getElementById('analytics-trade-count');
+      if (tradeCountEl) {
+        tradeCountEl.innerHTML = `Trades: <strong class="text-white">${totalTrades}</strong>`;
+      }
+      const winLossEl = document.getElementById('analytics-win-loss');
+      if (winLossEl) {
+        winLossEl.innerHTML = `W/L: <strong class="text-emerald-400">${winCount}</strong> / <strong class="text-rose-400">${lossCount}</strong>`;
+      }
+
+      const winRateEl = document.getElementById('quant-win-rate');
+      if (winRateEl) {
+        winRateEl.textContent = `${winRate.toFixed(1)}%`;
+        winRateEl.className = `text-xl font-bold mono ${winRate >= 50.0 ? 'text-emerald-400' : 'text-amber-400'}`;
+      }
+
+      const pfEl = document.getElementById('quant-profit-factor');
+      if (pfEl) {
+        pfEl.textContent = pf.toFixed(2);
+        pfEl.className = `text-xl font-bold mono ${pf >= 1.5 ? 'text-cyan-400' : (pf >= 1.0 ? 'text-emerald-400' : 'text-amber-400')}`;
+      }
+
+      const sharpeEl = document.getElementById('quant-sharpe-ratio');
+      if (sharpeEl) {
+        sharpeEl.textContent = sharpe.toFixed(2);
+        sharpeEl.className = `text-xl font-bold mono ${sharpe >= 1.0 ? 'text-indigo-400' : (sharpe >= 0.0 ? 'text-slate-300' : 'text-rose-400')}`;
+      }
+
+      const expEl = document.getElementById('quant-expectancy');
+      if (expEl) {
+        expEl.textContent = `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(2)}`;
+        expEl.className = `text-xl font-bold mono ${expectancy >= 0 ? 'text-purple-400' : 'text-rose-400'}`;
+      }
+
+      const netPnlEl = document.getElementById('quant-total-net-pnl');
+      if (netPnlEl) {
+        netPnlEl.textContent = `${totalNet >= 0 ? '+' : ''}$${totalNet.toFixed(2)}`;
+        netPnlEl.className = `text-xl font-bold mono ${totalNet >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      }
+
+      const grossSubEl = document.getElementById('quant-gross-sub');
+      if (grossSubEl) {
+        grossSubEl.textContent = `Gross: $${grossPnl.toFixed(2)} | Fees: $${feesPaid.toFixed(2)}`;
+      }
+
       // 2. Positions Table with Strategy Attribution Badges & Anti-Churn Timer
       const posTableBody = document.getElementById('positions-table-body');
       const activeBadge = document.getElementById('tab-active-count');
       if (activeBadge) activeBadge.textContent = positions.length;
 
       if (posTableBody) {
-        if (positions.length === 0) {
+        if (!positions || positions.length === 0) {
           posTableBody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-slate-500 italic">No open positions. Scanning markets...</td></tr>`;
         } else {
           posTableBody.innerHTML = positions.map(pos => {
-            const isLong = pos.side === 'LONG';
-            const pnlVal = parseFloat(pos.unrealized_pnl || 0.0);
+            const coin = String(pos.coin || pos.symbol || 'UNKNOWN').toUpperCase().trim();
+            const isLong = String(pos.side || 'LONG').toUpperCase() === 'LONG';
+            const pnlVal = parseFloat(pos.unrealized_pnl !== undefined ? pos.unrealized_pnl : (pos.pnl || 0.0));
             const pnlColor = pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
             const sideBadge = isLong
               ? '<span class="px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-bold">LONG 🟢</span>'
               : '<span class="px-2 py-0.5 rounded bg-rose-950/80 text-rose-400 border border-rose-800 font-bold">SHORT 🔴</span>';
 
-            const entryPx = parseFloat(pos.entry_price || 0.0);
-            const entryFmt = entryPx >= 1 ? entryPx.toFixed(2) : entryPx.toFixed(4);
+            const entryPx = parseFloat(pos.entry_price || pos.entry || 0.0);
+            const entryFmt = entryPx >= 1 ? entryPx.toFixed(2) : (entryPx > 0 ? entryPx.toFixed(4) : '0.00');
             const sizeVal = parseFloat(pos.size || 0.0).toLocaleString();
-            const roiEst = (entryPx > 0) ? ((pnlVal / (entryPx * parseFloat(pos.size || 1))) * 100).toFixed(2) : '0.00';
+            const roiEst = (pos.roi_pct !== undefined && pos.roi_pct !== null)
+              ? parseFloat(pos.roi_pct).toFixed(2)
+              : ((entryPx > 0 && parseFloat(pos.size || 0) > 0) ? ((pnlVal / (entryPx * parseFloat(pos.size || 1))) * 100).toFixed(2) : '0.00');
             const stratBadge = getStrategyBadge(pos.strategy);
 
             // Anti-churn timer calculation (if within first 90 seconds)
@@ -2001,8 +2117,8 @@
               remSeconds = pos.anti_churn_remaining;
             } else if (pos.duration_seconds !== undefined && pos.duration_seconds < 90) {
               remSeconds = 90 - pos.duration_seconds;
-            } else if (data.anti_churn_status && data.anti_churn_status[pos.coin]) {
-              const ac = data.anti_churn_status[pos.coin];
+            } else if (data.anti_churn_status && (data.anti_churn_status[coin] || data.anti_churn_status[pos.coin])) {
+              const ac = data.anti_churn_status[coin] || data.anti_churn_status[pos.coin];
               remSeconds = typeof ac === 'object' ? (ac.remaining_seconds || 0) : ac;
             }
 
@@ -2012,9 +2128,9 @@
 
             return `
               <tr class="hover:bg-slate-800/40 transition-colors">
-                <td class="py-3 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${pos.coin}')">
+                <td class="py-3 px-3 font-bold text-white cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${coin}')">
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="flex items-center"><i class="fa-solid fa-circle-dot text-[9px] text-cyan-400 mr-1.5"></i>${pos.coin}</span>
+                    <span class="flex items-center"><i class="fa-solid fa-circle-dot text-[9px] text-cyan-400 mr-1.5"></i>${coin}</span>
                     ${antiChurnBadge}
                   </div>
                 </td>
@@ -2025,7 +2141,7 @@
                 <td class="py-3 px-3 font-bold ${pnlColor}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</td>
                 <td class="py-3 px-3 ${pnlColor}">${roiEst}%</td>
                 <td class="py-3 px-3 text-right whitespace-nowrap">
-                  <button onclick="closeTrade('${pos.coin}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800 px-2.5 py-1 rounded text-xs font-semibold transition-all active:scale-95">
+                  <button onclick="closeTrade('${coin}')" class="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800 px-2.5 py-1 rounded text-xs font-semibold transition-all active:scale-95">
                     Close
                   </button>
                 </td>
@@ -2035,18 +2151,21 @@
         }
       }
 
-    // 3. Symbol Pills (Active Trades + BTC, ETH, SOL)
+      // 3. Symbol Pills (Active Trades + BTC, ETH, SOL)
       const pillsContainer = document.getElementById('chart-symbol-pills');
-      const activeCoins = [...new Set([...positions.map(p => p.coin), 'BTC', 'ETH', 'SOL'])];
-      pillsContainer.innerHTML = activeCoins.map(coin => {
-        const isSelected = coin.toUpperCase() === currentSymbol.toUpperCase();
-        const hasPos = positions.some(p => p.coin.toUpperCase() === coin.toUpperCase());
-        const badge = hasPos ? '● ' : '';
-        const cls = isSelected
-          ? 'bg-cyan-900 text-cyan-200 border-cyan-500 font-bold'
-          : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800';
-        return `<button onclick="selectSymbol('${coin}')" class="${cls} border px-2.5 py-0.5 rounded text-xs mono transition-colors">${badge}${coin}</button>`;
-      }).join('');
+      if (pillsContainer) {
+        const rawCoins = (positions || []).map(p => (p && (p.coin || p.symbol)) ? String(p.coin || p.symbol).toUpperCase() : '').filter(Boolean);
+        const activeCoins = [...new Set([...rawCoins, 'BTC', 'ETH', 'SOL'])];
+        pillsContainer.innerHTML = activeCoins.map(coin => {
+          const isSelected = coin.toUpperCase() === currentSymbol.toUpperCase();
+          const hasPos = (positions || []).some(p => String(p && (p.coin || p.symbol) || '').toUpperCase() === coin.toUpperCase());
+          const badge = hasPos ? '● ' : '';
+          const cls = isSelected
+            ? 'bg-cyan-900 text-cyan-200 border-cyan-500 font-bold'
+            : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800';
+          return `<button onclick="selectSymbol('${coin}')" class="${cls} border px-2.5 py-0.5 rounded text-xs mono transition-colors">${badge}${coin}</button>`;
+        }).join('');
+      }
 
       // 4. AI Prospects List
       const prospectsList = document.getElementById('prospects-list');
@@ -2130,6 +2249,8 @@
             </div>
           `;
         }
+      }
+
       // 6. Autonomous Market Regime & 15m Dynamic Strategy Tweaks
       const regime = data.market_regime;
       if (regime && (regime.regime || regime.sentiment)) {
@@ -2188,8 +2309,19 @@
     window.addEventListener('DOMContentLoaded', () => {
       initChart();
       selectSymbol('BTC');
+      fetchLiveState(); // Immediate REST fetch for 0ms initial render!
       connectWebSocket();
       loadClosedOrders();
+
+      // Continuous fallback: if WebSocket drops or stalls, REST polling keeps state fresh
+      setInterval(() => {
+        if (!wsConnected) {
+          fetchLiveState();
+        }
+      }, 3500);
+
+      // Periodic refresh for closed orders and trade history every 15s
+      setInterval(loadClosedOrders, 15000);
 
       // Unlock Web Audio API on first user interaction
       const unlockAudio = () => {
