@@ -109,7 +109,10 @@ class MarketRegimeManager:
                 "Completely suppressing short funding fades",
                 "VWAP/OI breakout allocation expanded to 2.5x",
             ]
-        elif breadth_pct >= 65.0 and avg_change_24h > 1.2:
+        elif (
+            (breadth_pct >= 60.0 and avg_change_24h > 1.0)
+            or (self.current_regime and self.current_regime.regime == "BULL_MOMENTUM_EXPANSION" and breadth_pct >= 55.0 and avg_change_24h > 0.5)
+        ):
             regime = "BULL_MOMENTUM_EXPANSION"
             sentiment = (
                 f"Broad-Based Bull Expansion ({breadth_pct:.0f}% green, avg +{avg_change_24h:.1f}% 24h). "

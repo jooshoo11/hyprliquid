@@ -49,10 +49,12 @@ class PortfolioGuard:
         max_daily_drawdown_pct: float = 0.20,   # 20% daily drawdown circuit breaker
         default_order_timeout_secs: float = 300.0,
         max_single_position_equity_pct: Optional[float] = 0.40,
+        allow_pyramiding: bool = True,
     ) -> None:
         self.max_strategy_equity_pct = max_strategy_equity_pct
         self.baseline_strategy_equity_pct = max_strategy_equity_pct
         self.max_single_position_equity_pct = max_single_position_equity_pct
+        self.allow_pyramiding = allow_pyramiding
         self.strategy_allocation_caps: Dict[str, float] = {}
         self.strategy_sizing_multipliers: Dict[str, float] = {}
         self.strategy_performance_stats: Dict[str, Dict[str, Any]] = {}
@@ -391,8 +393,16 @@ class PortfolioGuard:
 
             instr_str = str(instrument_id)
             existing_side = self.active_instrument_directions.get(instr_str)
-            if existing_side is not None and existing_side != side:
-                return False, f"Collision detected: opposing order on {instr_str} ({existing_side} exists)."
+            if existing_side is not None:
+                if existing_side != side:
+                    return False, f"Collision detected: opposing order on {instr_str} ({existing_side} exists)."
+                elif not self.allow_pyramiding:
+                    return False, f"Anti-pyramiding: Position already active on {instr_str} ({existing_side.name}). Stacking blocked."
+
+            if not self.allow_pyramiding:
+                active_coins = {i_s.split("-")[0].split(".")[0].upper() for i_s in self.active_instrument_directions.keys()}
+                if coin in active_coins:
+                    return False, f"Anti-pyramiding: Position already active on coin {coin}. Stacking blocked."
 
             self._pending_approvals += 1
             return True, "Approved"

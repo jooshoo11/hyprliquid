@@ -274,4 +274,26 @@ def test_coin_specific_max_leverage_enforcement():
     assert "exceeds Hyperliquid max leverage for BTC (40x" in reason_btc
 
 
+def test_anti_pyramiding_enforcement():
+    """Verify that multiple positions on the same coin are blocked when allow_pyramiding=False."""
+    guard = PortfolioGuard(max_strategy_equity_pct=3.0, allow_pyramiding=False)
+    guard.update_equity(100.0)
+    inst_ena = InstrumentId(Symbol("ENA-USD-PERP"), Venue("HYPERLIQUID"))
+
+    # Initial order allowed
+    can_open_first, _ = guard.can_open_position("TrendContinuationSMC", inst_ena, OrderSide.SELL, 35.0, 0)
+    assert can_open_first is True
+
+    # Register active SELL order on ENA
+    order = _create_dummy_order("ENA-USD-PERP", OrderSide.SELL)
+    guard.register_order_submitted(order, "TrendContinuationSMC", 35.0)
+
+    # Second order on ENA in the same direction MUST be blocked by anti-pyramiding
+    can_open_second, reason_second = guard.can_open_position("TrendContinuationSMC", inst_ena, OrderSide.SELL, 35.0, 1)
+    assert can_open_second is False
+    assert "Anti-pyramiding" in reason_second
+    assert "Position already active on ENA" in reason_second
+
+
+
 

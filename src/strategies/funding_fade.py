@@ -234,11 +234,11 @@ class HourlyFundingFade(Strategy):
 
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin
+        # Enforce official Hyperliquid exchange max leverage for this coin capped to 75% equity notional
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
         max_fade_lev = float(max_lev)
-        max_notional = equity * max_fade_lev
+        max_notional = min(equity * max_fade_lev, equity * 0.75)
         if (qty_val * price) > max_notional:
             qty_val = max_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))

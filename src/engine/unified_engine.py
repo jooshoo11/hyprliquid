@@ -100,10 +100,11 @@ class UnifiedEngine:
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
 
         self.guard = PortfolioGuard(
-            max_strategy_equity_pct=40.0,
+            max_strategy_equity_pct=3.0,
             max_total_open_positions=3,
             max_daily_drawdown_pct=0.20,
-            max_single_position_equity_pct=None,
+            max_single_position_equity_pct=0.75,
+            allow_pyramiding=False,
         )
         self.guard.reentry_cooldown_seconds = 1800.0  # 30 minutes anti-churn
         self.trade_manager = TradeManager(
@@ -1099,9 +1100,9 @@ class UnifiedEngine:
             risk_usd = base_risk_usd * vol_scalar
         qty_val = risk_usd / risk_per_unit
 
-        # Enforce coin-specific exchange max leverage allowance
+        # Enforce calibrated symmetrical single-position notional cap: max 75% equity notional ($75 on $100 account)
         coin_max_lev = get_coin_max_leverage(coin)
-        max_notional = equity * coin_max_lev
+        max_notional = min(equity * coin_max_lev, equity * 0.75)
         if (qty_val * mark_px) > max_notional:
             qty_val = max_notional / mark_px
 
@@ -1339,7 +1340,13 @@ class UnifiedEngine:
                     })
 
             # 2.5 Bearish Breakdown Continuations (Negative Momentum in Flush/Choppy Regimes)
-            breakdown_limit = 8 if regime_info.regime == "BEAR_MARKET_FLUSH" else 5
+            # Suppress altcoin breakdown shorts during macro Bull Momentum Expansion
+            if regime_info.regime == "BULL_MOMENTUM_EXPANSION":
+                breakdown_limit = 0
+            elif regime_info.regime == "BEAR_MARKET_FLUSH":
+                breakdown_limit = 8
+            else:
+                breakdown_limit = 3
             breakdown_filter = (pl.col("change_24h") < -1.0) & (pl.col("vol_24h") > 1_000_000)
             breakdowns = df.filter(breakdown_filter).sort("change_24h", descending=False).head(breakdown_limit)
             for row in breakdowns.iter_rows(named=True):
@@ -1444,14 +1451,14 @@ class UnifiedEngine:
                 "INFO",
             )
 
-            # 4. Proactively execute top high-conviction prospects (Conviction >= 85)
+            # 4. Proactively execute top high-conviction prospects (Conviction >= 88)
             # Prioritize Hourly Funding Fade (proven +$2.42 net pnl alpha) over raw trend breakdowns
             def prospect_priority_key(x):
                 is_funding = 1 if "Funding" in x.get("strategy", "") else 0
                 return (is_funding, x.get("conviction_score", 0))
 
             for p in sorted(prospects_list, key=prospect_priority_key, reverse=True):
-                if p.get("conviction_score", 0) >= 85:
+                if p.get("conviction_score", 0) >= 88:
                     open_and_pending = len(self.get_open_positions()) + len(getattr(self.guard, "pending_orders", {}))
                     if open_and_pending >= self.guard.max_total_open_positions:
                         # Only consider capital rotation if candidate prospect has exceptional conviction (>= 92)
