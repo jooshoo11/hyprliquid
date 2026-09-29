@@ -104,10 +104,11 @@ class UnifiedEngine:
             max_total_open_positions=3,
             max_daily_drawdown_pct=0.20,
         )
+        self.guard.reentry_cooldown_seconds = 1800.0  # 30 minutes anti-churn
         self.trade_manager = TradeManager(
-            min_holding_seconds=60.0,
-            reentry_cooldown_seconds=60.0,
-            breakeven_roi_pct=1.0,
+            min_holding_seconds=120.0,
+            reentry_cooldown_seconds=1800.0,  # 30 minutes anti-churn
+            breakeven_roi_pct=0.75,
             trailing_roi_pct=1.6,
             trailing_distance_pct=0.75,
             mae_roi_pct=-2.5,
@@ -614,9 +615,9 @@ class UnifiedEngine:
                     fallback_strategy=strat_id,
                 )
 
-                # Set 3-minute anti-churn cooldown
+                # Set 30-minute anti-churn cooldown
                 if hasattr(self, "guard") and self.guard:
-                    self.guard.set_cooldown(actual_coin, 180.0)
+                    self.guard.set_cooldown(actual_coin, 1800.0)
                     self.guard.register_position_closed(
                         strategy_name=strat_id,
                         instrument_id=pos.instrument_id,
@@ -624,9 +625,9 @@ class UnifiedEngine:
                     )
                     self.guard.sync_open_positions(self.get_open_positions())
                 if hasattr(self, "portfolio_guard") and self.portfolio_guard:
-                    self.portfolio_guard.set_cooldown(actual_coin, 180.0)
+                    self.portfolio_guard.set_cooldown(actual_coin, 1800.0)
                 if hasattr(self, "trade_manager") and self.trade_manager:
-                    self.trade_manager.cooldown_tracker[actual_coin] = time.time() + 180.0
+                    self.trade_manager.cooldown_tracker[actual_coin] = time.time() + 1800.0
 
                 # Dynamically adjust risk allocations based on updated trade performance
                 if hasattr(self, "guard") and self.guard:
@@ -679,6 +680,7 @@ class UnifiedEngine:
             new_prospect_coin=new_prospect_coin,
             new_prospect_conviction_score=conviction_score,
             max_positions=self.guard.max_total_open_positions,
+            min_duration_seconds=2700.0,  # 45 minutes breathing room: allow trades to develop!
         )
 
     def get_performance_metrics(self) -> Dict[str, Any]:
@@ -1450,7 +1452,9 @@ class UnifiedEngine:
                 if p.get("conviction_score", 0) >= 85:
                     open_and_pending = len(self.get_open_positions()) + len(getattr(self.guard, "pending_orders", {}))
                     if open_and_pending >= self.guard.max_total_open_positions:
-                        if p.get("conviction_score", 0) >= 88:
+                        # Only consider capital rotation if candidate prospect has exceptional conviction (>= 92)
+                        # and existing position has had at least 45 minutes to develop towards TP/SL
+                        if p.get("conviction_score", 0) >= 92:
                             rotation_cand = self.find_capital_rotation_candidate(p.get("coin", ""), conviction_score=p.get("conviction_score", 0))
                             if rotation_cand:
                                 coin_to_close, rot_reason = rotation_cand

@@ -667,8 +667,8 @@ class TradeManager:
 
         with self._lock:
             limit = max_positions if max_positions is not None else self.max_positions
-            # Check if at or near max positions: at least (limit - 1) positions open
-            if len(self.active_positions) < max(1, limit - 1):
+            # Check if portfolio is completely full (at capacity)
+            if len(self.active_positions) < limit:
                 return None
 
             # Do not rotate into a coin already actively held

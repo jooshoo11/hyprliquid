@@ -122,16 +122,43 @@ class MarketRegimeManager:
                 "Funding Fade entry threshold raised to +80% APR (avoid fighting trend)",
             ]
         elif breadth_pct <= 35.0 and avg_change_24h < -1.2:
-            regime = "BEAR_MARKET_FLUSH"
-            sentiment = (
-                f"Broad-Based Bear Flush ({breadth_pct:.0f}% green, avg {avg_change_24h:.1f}% 24h). "
-                f"Heavy selling pressure across universe."
-            )
-            tweaks = [
-                "SMC Trend Continuation restricted to short setups and high-conviction (>92) longs",
-                "Funding Fade prioritized for oversold bounces",
-                "Tightening position risk to preserve capital",
-            ]
+            # Check if major benchmark (BTC/ETH) has stabilized or turned positive
+            btc_change = None
+            eth_change = None
+            if "coin" in df_top_50.columns:
+                btc_rows = df_top_50.filter(pl.col("coin") == "BTC")
+                eth_rows = df_top_50.filter(pl.col("coin") == "ETH")
+                if len(btc_rows) > 0:
+                    btc_change = float(btc_rows["change_24h"][0])
+                if len(eth_rows) > 0:
+                    eth_change = float(eth_rows["change_24h"][0])
+
+            # If ETH or BTC has turned positive, the market is stabilizing out of a flush
+            is_stabilizing = (btc_change is not None and btc_change > 0.0) or (eth_change is not None and eth_change > 0.0)
+
+            if is_stabilizing:
+                regime = "CHOPPY_MEAN_REVERTING_RANGE"
+                sentiment = (
+                    f"Macro Stabilization ({breadth_pct:.0f}% green, avg {avg_change_24h:+.1f}% 24h, "
+                    f"BTC {btc_change:+.1f}%, ETH {eth_change:+.1f}%). "
+                    f"Major benchmarks stabilizing; flush transitioning into range consolidation."
+                )
+                tweaks = [
+                    "Funding Fade prioritized for two-way carry mean reversion (max 2 positions)",
+                    "Restricting aggressive momentum shorts; waiting for confirmed breakdown pullbacks",
+                    "Profit targets set to 1.8 R:R with dynamic breakeven ratchet",
+                ]
+            else:
+                regime = "BEAR_MARKET_FLUSH"
+                sentiment = (
+                    f"Broad-Based Bear Flush ({breadth_pct:.0f}% green, avg {avg_change_24h:.1f}% 24h). "
+                    f"Heavy selling pressure across universe."
+                )
+                tweaks = [
+                    "SMC Trend Continuation restricted to short setups and high-conviction (>92) longs",
+                    "Funding Fade prioritized for oversold bounces",
+                    "Tightening position risk to preserve capital",
+                ]
         else:
             regime = "CHOPPY_MEAN_REVERTING_RANGE"
             sentiment = (
