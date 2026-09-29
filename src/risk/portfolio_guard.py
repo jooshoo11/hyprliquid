@@ -374,9 +374,15 @@ class PortfolioGuard:
                     return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap {pct_lbl} (${max_single_notional:,.2f})."
 
             cap = self.get_strategy_allocation_cap(strategy_name)
-            max_allowed_margin = self.current_equity * cap
+            if cap <= 1.0:
+                max_allowed_margin = self.current_equity * cap
+            else:
+                # When cap is expressed as position multiplier (e.g. 2.5x positions), scale by trade slot size at max leverage
+                slot_notional = (self.current_equity / float(max(1, self.max_total_open_positions))) * max_lev
+                max_allowed_margin = cap * slot_notional
+
             current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, self.strategy_allocated_margin.get(base_strat, 0.0))
-            if (current_strategy_margin + proposed_notional_usd) > max_allowed_margin:
+            if (current_strategy_margin + proposed_notional_usd) > (max_allowed_margin * 1.05):
                 if not hasattr(self, "_log_cooldown"):
                     self._log_cooldown = {}
                 now = time.time()
@@ -385,7 +391,7 @@ class PortfolioGuard:
                     return False, "SILENT_BLOCK"
                 self._log_cooldown[key] = now
                 
-                pct_str = f"{int(cap * 100)}%" if cap <= 1.0 else f"{int(cap)}x"
+                pct_str = f"{int(cap * 100)}%" if cap <= 1.0 else f"{cap:.1f}x"
                 return False, (
                     f"Strategy '{strategy_name}' exceeds {pct_str} allocation limit "
                     f"(${current_strategy_margin + proposed_notional_usd:,.2f} > ${max_allowed_margin:,.2f})."
