@@ -334,7 +334,7 @@ class PortfolioGuard:
                         return False, f"AI Prospect bias for {coin} is SHORT; rejecting {side.name} entry."
 
             # Directional Regime Filter: Prevent counter-trend bleeding in macro trending regimes
-            if self.current_regime and "OrderBook" not in strategy_name and "Scalp" not in strategy_name:
+            if self.current_regime:
                 side_is_buy = (side == OrderSide.BUY) or (str(side).upper() in ("BUY", "LONG"))
                 is_major_benchmark = coin in ("BTC", "ETH")
                 if self.current_regime == "BEAR_MARKET_FLUSH":

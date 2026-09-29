@@ -220,7 +220,8 @@ class OrderBookImbalance(Strategy):
         if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
             sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
         risk_usd = equity * self.scalp_config.risk_per_trade_pct * sizing_mult
-        risk_per_unit = abs(entry_price - sl_price)
+        min_risk_per_unit = entry_price * 0.0075  # Minimum 0.75% stop distance floor to prevent astronomical sizing on tight tick spreads
+        risk_per_unit = max(abs(entry_price - sl_price), min_risk_per_unit)
         if risk_per_unit <= 0:
             return
 
