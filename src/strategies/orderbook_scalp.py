@@ -216,24 +216,15 @@ class OrderBookImbalance(Strategy):
     ) -> None:
         """Submit passive bracket order in front of resting wall."""
         equity = self._get_account_equity()
-        sizing_mult = 1.0
-        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
-            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
-        risk_usd = equity * self.scalp_config.risk_per_trade_pct * sizing_mult
-        min_risk_per_unit = entry_price * 0.0075  # Minimum 0.75% stop distance floor to prevent astronomical sizing on tight tick spreads
-        risk_per_unit = max(abs(entry_price - sl_price), min_risk_per_unit)
-        if risk_per_unit <= 0:
+        if equity <= 0 or entry_price <= 0:
             return
 
-        qty_val = risk_usd / risk_per_unit
-        
-        # Enforce official Hyperliquid exchange max leverage for this coin capped to 75% equity notional
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
+        margin_allocated = equity / max_positions
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = get_coin_max_leverage(coin)
-        max_scalp_lev = float(max_lev)
-        max_notional = min(equity * max_scalp_lev, equity * 0.75)
-        if (qty_val * entry_price) > max_notional:
-            qty_val = max_notional / entry_price
+        max_lev = float(get_coin_max_leverage(coin))
+        target_notional = margin_allocated * max_lev
+        qty_val = target_notional / entry_price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:
             return

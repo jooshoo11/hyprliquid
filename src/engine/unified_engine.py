@@ -100,10 +100,10 @@ class UnifiedEngine:
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
 
         self.guard = PortfolioGuard(
-            max_strategy_equity_pct=3.0,
+            max_strategy_equity_pct=50.0,
             max_total_open_positions=3,
             max_daily_drawdown_pct=0.20,
-            max_single_position_equity_pct=0.75,
+            max_single_position_equity_pct=None,
             allow_pyramiding=False,
         )
         self.guard.reentry_cooldown_seconds = 1800.0  # 30 minutes anti-churn
@@ -1086,25 +1086,15 @@ class UnifiedEngine:
             return False
 
         equity = self.get_account_cash()
-        base_risk_usd = equity * 0.01  # 1.0% equity risk
-        coin_vol = self.coin_atr_pct.get(coin, 1.0)
-        # Inverse-volatility scaling: normalize risk across high-beta vs low-beta tokens
-        vol_scalar = max(0.6, min(1.4, 1.0 / coin_vol))
+        if equity <= 0 or mark_px <= 0:
+            return False
 
-        # Directional scaling: half risk on counter-trend benchmark positions
-        is_counter_trend = (reg_name == "BEAR_MARKET_FLUSH" and bias == "LONG") or \
-                           (reg_name == "BULL_MOMENTUM_EXPANSION" and bias == "SHORT")
-        if is_counter_trend:
-            risk_usd = base_risk_usd * 0.5 * vol_scalar
-        else:
-            risk_usd = base_risk_usd * vol_scalar
-        qty_val = risk_usd / risk_per_unit
-
-        # Enforce calibrated symmetrical single-position notional cap: max 75% equity notional ($75 on $100 account)
-        coin_max_lev = get_coin_max_leverage(coin)
-        max_notional = min(equity * coin_max_lev, equity * 0.75)
-        if (qty_val * mark_px) > max_notional:
-            qty_val = max_notional / mark_px
+        # User allocation: 33.3% of total balance per trade (3 max coins) at coin's maximum exchange leverage
+        max_positions = float(self.guard.max_total_open_positions or 3)
+        margin_allocated = equity / max_positions
+        coin_max_lev = float(get_coin_max_leverage(coin))
+        target_notional = margin_allocated * coin_max_lev
+        qty_val = target_notional / mark_px
 
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:

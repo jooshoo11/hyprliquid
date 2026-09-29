@@ -386,19 +386,15 @@ class TrendContinuationSMC(Strategy):
             return
 
         equity = self._get_account_equity()
-        sizing_mult = 1.0
-        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
-            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
-        risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
-        qty_val = risk_usd / risk_per_unit
-        
-        # Enforce official Hyperliquid exchange max leverage for this coin capped to 75% equity notional
+        if equity <= 0 or entry_px <= 0:
+            return
+
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
+        margin_allocated = equity / max_positions
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = get_coin_max_leverage(coin)
-        max_continuation_lev = float(max_lev)
-        max_notional = min(equity * max_continuation_lev, equity * 0.75)
-        if (qty_val * entry_px) > max_notional:
-            qty_val = max_notional / entry_px
+        max_lev = float(get_coin_max_leverage(coin))
+        target_notional = margin_allocated * max_lev
+        qty_val = target_notional / entry_px
 
         rr = getattr(self, "dynamic_rr_ratio", self.trend_config.reward_to_risk_ratio)
         tp_price = entry_px + (rr * risk_per_unit)
@@ -481,19 +477,15 @@ class TrendContinuationSMC(Strategy):
             return
 
         equity = self._get_account_equity()
-        sizing_mult = 1.0
-        if self.portfolio_guard and hasattr(self.portfolio_guard, "get_strategy_sizing_multiplier"):
-            sizing_mult = self.portfolio_guard.get_strategy_sizing_multiplier(self.__class__.__name__)
-        risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
-        qty_val = risk_usd / risk_per_unit
-        
-        # Enforce official Hyperliquid exchange max leverage for this coin capped to 75% equity notional
+        if equity <= 0 or entry_px <= 0:
+            return
+
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
+        margin_allocated = equity / max_positions
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = get_coin_max_leverage(coin)
-        max_continuation_lev = float(max_lev)
-        max_notional = min(equity * max_continuation_lev, equity * 0.75)
-        if (qty_val * entry_px) > max_notional:
-            qty_val = max_notional / entry_px
+        max_lev = float(get_coin_max_leverage(coin))
+        target_notional = margin_allocated * max_lev
+        qty_val = target_notional / entry_px
 
         rr = getattr(self, "dynamic_rr_ratio", self.trend_config.reward_to_risk_ratio)
         tp_price = entry_px - (rr * risk_per_unit)
