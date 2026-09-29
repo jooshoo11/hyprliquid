@@ -250,3 +250,28 @@ def test_single_position_notional_cap():
     assert "exceeds max single position cap 40%" in reason
 
 
+def test_coin_specific_max_leverage_enforcement():
+    """Verify that orders exceeding official Hyperliquid max leverage for a coin are rejected."""
+    guard = PortfolioGuard(max_strategy_equity_pct=50.0, max_single_position_equity_pct=None)
+    guard.update_equity(100.0)
+
+    # USELESS max leverage is 3.0x -> max allowed notional is $300 (with 1.01 buffer: $303)
+    inst_useless = InstrumentId(Symbol("USELESS-USD-PERP"), Venue("HYPERLIQUID"))
+    can_open_ok, _ = guard.can_open_position("TrendContinuationSMC", inst_useless, OrderSide.BUY, 250.0, 0)
+    assert can_open_ok is True
+
+    can_open_fail, reason = guard.can_open_position("TrendContinuationSMC", inst_useless, OrderSide.BUY, 350.0, 0)
+    assert can_open_fail is False
+    assert "exceeds Hyperliquid max leverage for USELESS (3x" in reason
+
+    # BTC max leverage is 40.0x -> max allowed notional is $4,000
+    inst_btc = InstrumentId(Symbol("BTC-USD-PERP"), Venue("HYPERLIQUID"))
+    can_open_btc_ok, _ = guard.can_open_position("TrendContinuationSMC", inst_btc, OrderSide.BUY, 3500.0, 0)
+    assert can_open_btc_ok is True
+
+    can_open_btc_fail, reason_btc = guard.can_open_position("TrendContinuationSMC", inst_btc, OrderSide.BUY, 4500.0, 0)
+    assert can_open_btc_fail is False
+    assert "exceeds Hyperliquid max leverage for BTC (40x" in reason_btc
+
+
+

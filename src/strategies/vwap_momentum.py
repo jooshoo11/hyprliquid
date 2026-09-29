@@ -228,10 +228,10 @@ class VwapOiMomentum(Strategy):
 
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin, capped to 2.0x equity
+        # Enforce official Hyperliquid exchange max leverage for this coin
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_vwap_lev = min(float(max_lev), 2.0)
+        max_vwap_lev = float(max_lev)
         max_notional = equity * max_vwap_lev
         if (qty_val * price) > max_notional:
             qty_val = max_notional / price

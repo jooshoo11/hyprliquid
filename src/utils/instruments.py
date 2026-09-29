@@ -146,6 +146,11 @@ def get_hyperliquid_perp(
     maker_fee = Decimal("-0.0001")
     taker_fee = Decimal("0.00035")
 
+    # Hyperliquid official leverage margins (margin_init = 1 / max_leverage)
+    max_lev = get_coin_max_leverage(coin)
+    margin_init = Decimal(str(round(1.0 / max(1.0, max_lev), 6)))
+    margin_maint = Decimal(str(round(0.5 / max(1.0, max_lev), 6)))
+
     price_inc = Decimal(f"1e-{px_decimals}") if px_decimals > 0 else Decimal("1")
     size_inc = Decimal(f"1e-{sz_decimals}") if sz_decimals > 0 else Decimal("1")
 
@@ -159,6 +164,8 @@ def get_hyperliquid_perp(
         multiplier=Quantity(1, 0),
         size_precision=sz_decimals,
         size_increment=Quantity(size_inc, sz_decimals),
+        margin_init=margin_init,
+        margin_maint=margin_maint,
         maker_fee=maker_fee,
         taker_fee=taker_fee,
         ts_event=0,

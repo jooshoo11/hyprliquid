@@ -100,9 +100,10 @@ class UnifiedEngine:
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
 
         self.guard = PortfolioGuard(
-            max_strategy_equity_pct=2.0,
+            max_strategy_equity_pct=40.0,
             max_total_open_positions=3,
             max_daily_drawdown_pct=0.20,
+            max_single_position_equity_pct=None,
         )
         self.guard.reentry_cooldown_seconds = 1800.0  # 30 minutes anti-churn
         self.trade_manager = TradeManager(
@@ -1098,8 +1099,9 @@ class UnifiedEngine:
             risk_usd = base_risk_usd * vol_scalar
         qty_val = risk_usd / risk_per_unit
 
-        # Strict single-position notional cap: max 35% total equity ($35 max on $100 account)
-        max_notional = equity * 0.35
+        # Enforce coin-specific exchange max leverage allowance
+        coin_max_lev = get_coin_max_leverage(coin)
+        max_notional = equity * coin_max_lev
         if (qty_val * mark_px) > max_notional:
             qty_val = max_notional / mark_px
 

@@ -392,10 +392,10 @@ class TrendContinuationSMC(Strategy):
         risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin, capped to 2.0x equity
+        # Enforce official Hyperliquid exchange max leverage for this coin
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_continuation_lev = min(float(max_lev), 2.0)
+        max_continuation_lev = float(max_lev)
         max_notional = equity * max_continuation_lev
         if (qty_val * entry_px) > max_notional:
             qty_val = max_notional / entry_px
@@ -487,10 +487,10 @@ class TrendContinuationSMC(Strategy):
         risk_usd = equity * self.trend_config.risk_per_trade_pct * sizing_mult
         qty_val = risk_usd / risk_per_unit
         
-        # Enforce official Hyperliquid exchange max leverage for this coin, capped to 2.0x equity
+        # Enforce official Hyperliquid exchange max leverage for this coin
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = get_coin_max_leverage(coin)
-        max_continuation_lev = min(float(max_lev), 2.0)
+        max_continuation_lev = float(max_lev)
         max_notional = equity * max_continuation_lev
         if (qty_val * entry_px) > max_notional:
             qty_val = max_notional / entry_px

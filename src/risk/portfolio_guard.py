@@ -48,9 +48,11 @@ class PortfolioGuard:
         max_total_open_positions: int = 3,      # Max 3 concurrent positions across node
         max_daily_drawdown_pct: float = 0.20,   # 20% daily drawdown circuit breaker
         default_order_timeout_secs: float = 300.0,
+        max_single_position_equity_pct: Optional[float] = 0.40,
     ) -> None:
         self.max_strategy_equity_pct = max_strategy_equity_pct
         self.baseline_strategy_equity_pct = max_strategy_equity_pct
+        self.max_single_position_equity_pct = max_single_position_equity_pct
         self.strategy_allocation_caps: Dict[str, float] = {}
         self.strategy_sizing_multipliers: Dict[str, float] = {}
         self.strategy_performance_stats: Dict[str, Dict[str, Any]] = {}
@@ -362,10 +364,12 @@ class PortfolioGuard:
             if proposed_notional_usd > (max_coin_notional * 1.01):
                 return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
 
-            # Enforce single position notional cap (max 40% of total equity)
-            max_single_notional = self.current_equity * 0.40
-            if proposed_notional_usd > (max_single_notional * 1.05):
-                return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap 40% (${max_single_notional:,.2f})."
+            # Enforce single position notional cap (if configured)
+            if self.max_single_position_equity_pct is not None:
+                max_single_notional = self.current_equity * self.max_single_position_equity_pct
+                if proposed_notional_usd > (max_single_notional * 1.05):
+                    pct_lbl = f"{int(self.max_single_position_equity_pct * 100)}%"
+                    return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap {pct_lbl} (${max_single_notional:,.2f})."
 
             cap = self.get_strategy_allocation_cap(strategy_name)
             max_allowed_margin = self.current_equity * cap

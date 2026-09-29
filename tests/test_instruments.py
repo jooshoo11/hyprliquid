@@ -19,6 +19,19 @@ def test_get_hyperliquid_perp_specifications():
     assert instrument.taker_fee == Decimal("0.00035")  # 0.035% taker fee
     assert instrument.size_precision == 5
     assert instrument.price_precision == 1
+    # BTC 40x max leverage: margin_init = 1/40 = 0.025, margin_maint = 0.5/40 = 0.0125
+    assert instrument.margin_init == Decimal("0.025")
+    assert instrument.margin_maint == Decimal("0.0125")
+
+    # SOL 20x max leverage: margin_init = 1/20 = 0.05, margin_maint = 0.5/20 = 0.025
+    sol_inst = get_hyperliquid_perp(coin="SOL")
+    assert sol_inst.margin_init == Decimal("0.05")
+    assert sol_inst.margin_maint == Decimal("0.025")
+
+    # USELESS 3x max leverage: margin_init = 1/3 = 0.333333, margin_maint = 0.5/3 = 0.166667
+    useless_inst = get_hyperliquid_perp(coin="USELESS")
+    assert useless_inst.margin_init == Decimal("0.333333")
+    assert useless_inst.margin_maint == Decimal("0.166667")
 
 
 def test_get_bar_types():
