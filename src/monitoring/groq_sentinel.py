@@ -212,6 +212,40 @@ class GroqRiskSentinel:
 
         return decision
 
+    def evaluate_fill(self, fill_event: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sub-100ms Event-Driven Toxic Fill Audit.
+        Evaluates execution fill for adverse selection, excessive slippage, or spread blowout.
+        """
+        t0 = time.time()
+        coin = fill_event.get("coin", "").upper()
+        fill_px = float(fill_event.get("fill_px", 0.0))
+        slippage_bps = float(fill_event.get("slippage_bps", 0.0))
+        spread_bps = float(fill_event.get("spread_bps", 0.0))
+
+        is_toxic = slippage_bps > 25.0 or spread_bps > 40.0
+        action = "CLOSE_POSITION" if is_toxic else "NONE"
+        reason = (
+            f"Toxic adverse selection detected on {coin} fill: {slippage_bps:.1f} bps slippage, {spread_bps:.1f} bps spread"
+            if is_toxic else f"Nominal fill on {coin} ({slippage_bps:.1f} bps slippage)"
+        )
+
+        decision = {
+            "status": "CRITICAL" if is_toxic else "HEALTHY",
+            "action": action,
+            "target_coins": [coin] if is_toxic else [],
+            "reason": reason,
+            "confidence": 95 if is_toxic else 90,
+            "_latency_ms": round((time.time() - t0) * 1000, 2),
+            "_provider": "event_driven_sentry",
+        }
+
+        if is_toxic:
+            self._dispatch_command(decision)
+
+        return decision
+
+
     def _dispatch_command(self, decision: Dict[str, Any]) -> None:
         """Append actionable commands into bridge/ai_commands.json for engine execution."""
         try:
