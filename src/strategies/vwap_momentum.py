@@ -170,13 +170,13 @@ class VwapOiMomentum(Strategy):
         # 1. Manage Open Positions
         if not self.portfolio.is_flat(instrument.id):
             if self.portfolio.is_net_long(instrument.id):
-                # Exit Long on VWAP breakdown or opposing liquidity sweep of session high
-                if close_px < vwap or bar.high.as_double() >= state.session_high:
+                # Exit Long on VWAP breakdown
+                if close_px < vwap:
                     self.log.info(f"🚪 VwapOiMomentum EXIT LONG {instrument.id}: Close={close_px:.4f}, VWAP={vwap:.4f}")
                     self.close_all_positions(instrument.id)
             elif self.portfolio.is_net_short(instrument.id):
-                # Exit Short on VWAP reclaim or opposing liquidity sweep of session low
-                if close_px > vwap or bar.low.as_double() <= state.session_low:
+                # Exit Short on VWAP reclaim
+                if close_px > vwap:
                     self.log.info(f"🚪 VwapOiMomentum EXIT SHORT {instrument.id}: Close={close_px:.4f}, VWAP={vwap:.4f}")
                     self.close_all_positions(instrument.id)
             return

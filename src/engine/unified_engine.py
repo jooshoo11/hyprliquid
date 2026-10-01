@@ -61,6 +61,7 @@ from src.strategies.continuation import TrendContinuationSMC, TrendContinuationC
 from src.strategies.funding_fade import HourlyFundingFade, HourlyFundingFadeConfig
 from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanceConfig
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
+from src.strategies.liquidation_absorber import LiquidationAbsorber, LiquidationAbsorberConfig
 from src.risk.portfolio_guard import PortfolioGuard
 from src.risk.trade_manager import TradeManager, TradeAction
 from src.risk.performance_analytics import PerformanceAnalytics
@@ -87,7 +88,7 @@ class UnifiedEngine:
         rr_ratio: float = 2.5,
         web_port: int = 8000,
         watchdog_interval: float = 10.0,
-        prospector_interval: float = 900.0,
+        prospector_interval: float = 45.0,
     ):
         self.top_n = top_n
         self.paper = paper
@@ -107,6 +108,7 @@ class UnifiedEngine:
             max_single_position_equity_pct=None,
             allow_pyramiding=False,
             bypass_risk_guard=False,
+            allow_reversals=True,
         )
         self.guard.reentry_cooldown_seconds = 300.0  # 5 minutes
         self.trade_manager = TradeManager(
@@ -135,6 +137,7 @@ class UnifiedEngine:
         self.funding_strat: Optional[HourlyFundingFade] = None
         self.scalp_strat: Optional[OrderBookImbalance] = None
         self.vwap_strat: Optional[VwapOiMomentum] = None
+        self.absorber_strat: Optional[LiquidationAbsorber] = None
 
         self.top_coins: List[str] = []
         self.prospects: Dict[str, Any] = {}
@@ -357,13 +360,18 @@ class UnifiedEngine:
             config=VwapOiMomentumConfig(venue="HYPERLIQUID", risk_per_trade_pct=self.risk_pct),
             portfolio_guard=self.guard,
         )
+        self.absorber_strat = LiquidationAbsorber(
+            config=LiquidationAbsorberConfig(venue="HYPERLIQUID", post_only=True),
+            portfolio_guard=self.guard,
+        )
 
         self.node.trader.add_strategy(self.continuation_strat)
         self.node.trader.add_strategy(self.funding_strat)
         self.node.trader.add_strategy(self.scalp_strat)
         self.node.trader.add_strategy(self.vwap_strat)
+        self.node.trader.add_strategy(self.absorber_strat)
 
-        self.log("✅ All 4 modular strategies registered under PortfolioGuard.", "INFO")
+        self.log("✅ All 5 modular strategies registered under PortfolioGuard.", "INFO")
 
     def get_open_positions(self) -> List[Any]:
         """Fetch active open positions directly from Nautilus cache, filtering out closed/in-flight positions."""
@@ -634,7 +642,7 @@ class UnifiedEngine:
                 try:
                     if self.node and self.node.cache:
                         for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
                                 if strat:
                                     try:
                                         strat.cancel_order(o)
@@ -645,7 +653,7 @@ class UnifiedEngine:
                     self.log(f"Pre-close order sweep error on {actual_coin}: {err}", "WARN")
 
                 # THEN submit the market close (strat.close_position(pos))
-                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
                     if strat and strat.id == pos.strategy_id:
                         strat.close_position(pos)
                         closed_any = True
@@ -715,7 +723,7 @@ class UnifiedEngine:
                     actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
                     try:
                         for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
                                 if strat:
                                     try:
                                         strat.cancel_order(o)
@@ -803,7 +811,7 @@ class UnifiedEngine:
                         for orphan_order in list(self.node.cache.orders_open()):
                             if orphan_order.instrument_id not in position_instrument_ids:
                                 orphan_coin = orphan_order.instrument_id.symbol.value.split("-")[0].upper()
-                                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
                                     if strat:
                                         try:
                                             strat.cancel_order(orphan_order)
@@ -1107,7 +1115,7 @@ class UnifiedEngine:
                     position_instrument_ids = {pos.instrument_id for pos in self.get_open_positions()}
                     for orphan_order in list(self.node.cache.orders_open()):
                         if orphan_order.instrument_id not in position_instrument_ids:
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
                                 if strat:
                                     try:
                                         strat.cancel_order(orphan_order)
@@ -1173,9 +1181,15 @@ class UnifiedEngine:
         if "Funding" in strat_hint:
             strat_actor = self.funding_strat
             strat_name = "HourlyFundingFade"
-        elif "VWAP" in strat_hint:
+        elif "VWAP" in strat_hint or "Burst" in strat_hint:
             strat_actor = self.vwap_strat
             strat_name = "VwapOiMomentum"
+        elif "Liquidation" in strat_hint or "Absorber" in strat_hint:
+            strat_actor = self.absorber_strat
+            strat_name = "LiquidationAbsorber"
+        elif "Scalp" in strat_hint or "Book" in strat_hint:
+            strat_actor = self.scalp_strat
+            strat_name = "OrderBookImbalance"
         else:
             strat_actor = self.continuation_strat
             strat_name = "TrendContinuationSMC"
@@ -1186,7 +1200,7 @@ class UnifiedEngine:
         instr_key = f"{coin}-USD-PERP.HYPERLIQUID"
         instrument = strat_actor.instruments_map.get(instr_key)
         if not instrument:
-            for other_strat in [self.continuation_strat, self.funding_strat, self.vwap_strat, self.scalp_strat]:
+            for other_strat in [self.continuation_strat, self.funding_strat, self.vwap_strat, self.scalp_strat, self.absorber_strat]:
                 if other_strat and hasattr(other_strat, "instruments_map") and instr_key in other_strat.instruments_map:
                     instrument = other_strat.instruments_map[instr_key]
                     break
@@ -1202,10 +1216,24 @@ class UnifiedEngine:
         if not instrument:
             return False
 
-        # Ensure no open position already on this instrument
-        open_coins = [p.instrument_id.symbol.value.split("-")[0].upper() for p in self.get_open_positions()]
-        if coin in open_coins:
-            return False
+        # Direction Reversal Check: If an opposing position is active on the coin, flatten it if high conviction
+        open_positions_snapshot = self.get_open_positions()
+        for pos in open_positions_snapshot:
+            c = pos.instrument_id.symbol.value.split("-")[0].upper()
+            if c == coin:
+                is_pos_long = getattr(pos, "is_long", False) or str(getattr(pos, "side", "")).upper() in ("BUY", "LONG")
+                is_opposing = (bias == "LONG" and not is_pos_long) or (bias == "SHORT" and is_pos_long)
+                if is_opposing and score >= 80:
+                    self.log(
+                        f"🔄 [Direction Reversal] Flattening opposing {pos.side} position on {coin} to reverse into {bias} (Conviction: {score})",
+                        "TRIGGER",
+                    )
+                    self.close_position(coin, reason=f"Direction reversal to {bias} (Conviction {score})")
+                    time.sleep(0.5)
+                    break
+                else:
+                    # Same direction already open or low conviction reversal, avoid stacking
+                    return False
 
         if self.node and self.node.cache and len(self.node.cache.orders_open(instrument_id=instrument.id)) > 0:
             return False
@@ -1218,32 +1246,32 @@ class UnifiedEngine:
         if mark_px <= 0:
             return False
 
-        # Microstructure Exhaustion Gate: Block shorting into oversold bottoms or longing into overbought tops
+        # Microstructure Exhaustion Gate: Block shorting into extreme oversold bottoms or longing into parabolic blow-offs
         rsi_5m = self.get_5m_rsi(coin)
         if rsi_5m is not None:
-            if bias == "SHORT" and rsi_5m < 32.0:
+            if bias == "SHORT" and rsi_5m < 18.0:
                 self.log(
-                    f"⚠️ [Exhaustion Gate] Blocked SHORT {coin}: 5m RSI is deeply oversold ({rsi_5m:.1f} < 32). "
+                    f"⚠️ [Exhaustion Gate] Blocked SHORT {coin}: 5m RSI is deeply oversold ({rsi_5m:.1f} < 18). "
                     f"Preventing bottom-wick short entry; waiting for relief bounce.",
                     "TRIGGER",
                 )
                 self.log_missed_opportunity(
                     coin=coin,
                     strategy=strat_name,
-                    reason=f"Exhaustion Gate: 5m RSI deeply oversold ({rsi_5m:.1f} < 32)",
+                    reason=f"Exhaustion Gate: 5m RSI deeply oversold ({rsi_5m:.1f} < 18)",
                     metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
                 )
                 return False
-            elif bias == "LONG" and rsi_5m > 68.0:
+            elif bias == "LONG" and rsi_5m > 82.0:
                 self.log(
-                    f"⚠️ [Exhaustion Gate] Blocked LONG {coin}: 5m RSI is deeply overbought ({rsi_5m:.1f} > 68). "
-                    f"Preventing top-wick long entry; waiting for pullback.",
+                    f"⚠️ [Exhaustion Gate] Blocked LONG {coin}: 5m RSI is deeply overbought ({rsi_5m:.1f} > 82). "
+                    f"Preventing blow-off top long entry; waiting for pullback.",
                     "TRIGGER",
                 )
                 self.log_missed_opportunity(
                     coin=coin,
                     strategy=strat_name,
-                    reason=f"Exhaustion Gate: 5m RSI deeply overbought ({rsi_5m:.1f} > 68)",
+                    reason=f"Exhaustion Gate: 5m RSI deeply overbought ({rsi_5m:.1f} > 82)",
                     metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
                 )
                 return False
@@ -1349,8 +1377,15 @@ class UnifiedEngine:
             "TRIGGER"
         )
 
-        # Microstructure-optimized entry: fill at mark price without paying 20 bps taker crossing penalty
-        entry_px = round(mark_px, instrument.price_precision)
+        # Microstructure-optimized entry: Maker post-only limit order to earn maker rebate (-0.010%) instead of paying taker fee (+0.035%)
+        # Post slightly inside the spread: for BUY, 1 tick below mark/ask; for SELL, 1 tick above mark/bid
+        tick_size = instrument.price_increment.as_double()
+        if side == OrderSide.BUY:
+            entry_px = round(mark_px - (tick_size * 0.5), instrument.price_precision)
+        else:
+            entry_px = round(mark_px + (tick_size * 0.5), instrument.price_precision)
+        if entry_px <= 0:
+            entry_px = round(mark_px, instrument.price_precision)
         entry_price_obj = instrument.make_price(Decimal(str(entry_px)))
 
         try:
@@ -1360,13 +1395,23 @@ class UnifiedEngine:
             self.log(f"Quote tick subscription notice for {instrument.id}: {sub_err}", "DEBUG")
 
         try:
-            order = strat_actor.order_factory.limit(
-                instrument_id=instrument.id,
-                order_side=side,
-                quantity=quantity,
-                price=entry_price_obj,
-                time_in_force=TimeInForce.GTC,
-            )
+            try:
+                order = strat_actor.order_factory.limit(
+                    instrument_id=instrument.id,
+                    order_side=side,
+                    quantity=quantity,
+                    price=entry_price_obj,
+                    time_in_force=TimeInForce.GTC,
+                    post_only=True,
+                )
+            except TypeError:
+                order = strat_actor.order_factory.limit(
+                    instrument_id=instrument.id,
+                    order_side=side,
+                    quantity=quantity,
+                    price=entry_price_obj,
+                    time_in_force=TimeInForce.GTC,
+                )
             strat_actor.submit_order(order)
             self.guard.register_order_submitted(
                 order=order,
@@ -1621,13 +1666,40 @@ class UnifiedEngine:
                     "rationale": f"Bear market breakdown: {chg:+.1f}% 24h drop on ${row['vol_24h']/1e6:.1f}M vol; heavy distribution.",
                 })
 
+            # --- Hit-and-Run Group 0: Volume Burst & Momentum Acceleration ---
+            # Coins bursting with volume (> $5M) and positive 24h acceleration (> 0.5%)
+            burst_filter = (
+                (pl.col("vol_24h") > 5_000_000)
+                & (pl.col("change_24h") > 0.5)
+            )
+            burst_df = df.filter(burst_filter).sort("change_24h", descending=True).head(5)
+            burst_candidates = []
+            for row in burst_df.iter_rows(named=True):
+                c = row["coin"]
+                px = float(row["price"])
+                funding_apr = float(row["funding_apr"])
+                chg = float(row["change_24h"])
+                burst_candidates.append({
+                    "coin": c,
+                    "bias": "LONG",
+                    "conviction_score": min(95, int(84 + chg)),
+                    "strategy": "Volume Burst Velocity",
+                    "mark_price": px,
+                    "target_entry": round(px * 0.998, 4),
+                    "stop_loss": round(px * long_sl_mult, 4),
+                    "take_profit": round(px * long_tp_mult, 4),
+                    "funding_apr_pct": funding_apr,
+                    "volume_24h_usd": float(row["vol_24h"]),
+                    "rationale": f"Volume burst: ${row['vol_24h']/1e6:.1f}M vol with +{chg:.1f}% 24h gain; rapid momentum injection.",
+                })
+
             # Assemble prospects list in regime-aligned priority order (hit-and-run momentum & squeezes first)
             if is_bull_regime:
-                priority_groups = [squeeze_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, burst_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
             elif regime_info.regime == "BEAR_MARKET_FLUSH":
-                priority_groups = [breakdown_candidates, fade_short_candidates, squeeze_candidates, breakout_candidates, long_candidates]
+                priority_groups = [breakdown_candidates, fade_short_candidates, squeeze_candidates, burst_candidates, breakout_candidates, long_candidates]
             else:
-                priority_groups = [squeeze_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, burst_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
 
             for grp in priority_groups:
                 for p in grp:

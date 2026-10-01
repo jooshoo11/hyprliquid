@@ -54,8 +54,10 @@ class PortfolioGuard:
         max_single_position_equity_pct: Optional[float] = 0.40,
         allow_pyramiding: bool = True,
         bypass_risk_guard: bool = False,
+        allow_reversals: bool = False,
     ) -> None:
         self.bypass_risk_guard = bypass_risk_guard
+        self.allow_reversals = allow_reversals
         self.max_strategy_equity_pct = max_strategy_equity_pct
         self.baseline_strategy_equity_pct = max_strategy_equity_pct
         self.max_single_position_equity_pct = max_single_position_equity_pct
@@ -354,6 +356,7 @@ class PortfolioGuard:
         proposed_notional_usd: float,
         current_open_positions_count: int,
         open_positions: Optional[List[Any]] = None,
+        allow_reversal: Optional[bool] = None,
     ) -> Tuple[bool, str]:
         with self._lock:
             if open_positions is not None:
@@ -490,7 +493,12 @@ class PortfolioGuard:
             existing_side = self.active_instrument_directions.get(instr_str)
             if existing_side is not None:
                 if existing_side != side:
-                    return False, f"Collision detected: opposing order on {instr_str} ({existing_side} exists)."
+                    is_rev_allowed = allow_reversal if allow_reversal is not None else self.allow_reversals
+                    if not is_rev_allowed:
+                        return False, f"Collision detected: opposing order on {instr_str} ({existing_side} exists)."
+                    # Reversal permitted: flip active direction
+                    self._pending_approvals += 1
+                    return True, f"Reversal approved: flipping {instr_str} from {existing_side.name} to {side.name}."
                 elif not self.allow_pyramiding:
                     return False, f"Anti-pyramiding: Position already active on {instr_str} ({existing_side.name}). Stacking blocked."
 
