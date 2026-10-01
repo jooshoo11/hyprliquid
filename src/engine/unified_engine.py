@@ -25,6 +25,7 @@ if REPO_ROOT not in sys.path:
 import os
 import time
 import json
+import queue
 import threading
 import signal
 from typing import Dict, Any, List, Optional, Tuple
@@ -163,7 +164,14 @@ class UnifiedEngine:
         self._last_proactive_scalp_scan = 0.0
         self._force_prospector_scan = False
         self._in_flight_closes: Dict[str, float] = {}  # coin -> timestamp when close was submitted
-        self._closed_positions_coins: Set[str] = set()  # set of coins whose close was submitted in this session
+        self._closed_positions_coins: set[str] = set()  # set of coins whose close was submitted in this session
+        self.command_queue: queue.Queue = queue.Queue()
+        self._latest_state: Dict[str, Any] = {}
+        self._lock: threading.RLock = threading.RLock()
+
+    def submit_command(self, cmd: Dict[str, Any]) -> None:
+        """Push a command to the thread-safe in-memory command queue for low-latency dispatch."""
+        self.command_queue.put(cmd)
 
     def _update_ai_status(self, open_count: int = 0) -> None:
         """Update bridge/ai_status.json with live watchdog and prospector cadence."""
@@ -195,8 +203,8 @@ class UnifiedEngine:
             with open(tmp_status, "w") as f:
                 json.dump(status_payload, f, indent=2)
             os.replace(tmp_status, self.ai_status_path)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Failed to update AI status: {e}", "DEBUG")
 
     def log(self, message: str, level: str = "INFO") -> None:
         """Structured logging with in-memory ring buffer for the web UI."""
@@ -253,8 +261,8 @@ class UnifiedEngine:
             with open(tmp, "w") as f:
                 json.dump(state, f, indent=2)
             os.replace(tmp, self.paper_state_path)
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"Failed to save paper state: {e}", "DEBUG")
 
     def setup(self) -> None:
         """Initialize Nautilus TradingNode and Strategy Actors."""
@@ -372,8 +380,8 @@ class UnifiedEngine:
                         continue
                     filtered.append(p)
                 return filtered
-        except Exception:
-            pass
+        except Exception as err:
+            self.log(f"Error fetching open positions from cache: {err}", "DEBUG")
         return []
 
     def get_5m_rsi(self, coin: str, period: int = 14) -> Optional[float]:
@@ -397,7 +405,8 @@ class UnifiedEngine:
                 return 100.0
             rs = avg_gain / avg_loss
             return 100.0 - (100.0 / (1.0 + rs))
-        except Exception:
+        except Exception as err:
+            self.log(f"Error calculating 5m RSI for {coin}: {err}", "DEBUG")
             return None
 
     def get_account_cash(self) -> float:
@@ -410,8 +419,8 @@ class UnifiedEngine:
                     bal = acct.balance_total(USD)
                     if bal:
                         return bal.as_double()
-        except Exception:
-            pass
+        except Exception as err:
+            self.log(f"Error fetching account cash from portfolio: {err}", "DEBUG")
         return self._paper_starting_balance + self._paper_realized_pnl
 
     def get_state(self) -> Dict[str, Any]:
@@ -426,8 +435,8 @@ class UnifiedEngine:
             universe = meta.get("universe", [])
             for u, ctx in zip(universe, asset_ctxs):
                 px_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
-        except Exception:
-            pass
+        except Exception as err:
+            self.log(f"Error fetching live prices in get_state: {err}", "DEBUG")
 
         positions_data = []
         total_unrealized = 0.0
@@ -468,8 +477,8 @@ class UnifiedEngine:
                     "roi_pct": round((pnl / (entry_px * qty) * 100.0) if (entry_px * qty) > 0 else 0.0, 2),
                     "strategy": strat_name,
                 })
-            except Exception:
-                pass
+            except Exception as pos_err:
+                self.log(f"Error parsing position item in get_state: {pos_err}", "DEBUG")
 
         total_equity = round(cash_balance + total_unrealized, 2)
         roi_total = round((total_unrealized / cash_balance * 100.0) if cash_balance > 0 else 0.0, 2)
@@ -484,8 +493,8 @@ class UnifiedEngine:
                         prospects_source = p_json["prospects"]
                     elif isinstance(p_json, dict) and p_json:
                         prospects_source = p_json
-            except Exception:
-                pass
+            except Exception as prosp_err:
+                self.log(f"Error loading prospects in get_state: {prosp_err}", "DEBUG")
 
         prospects_list = []
         if isinstance(prospects_source, list):
@@ -524,8 +533,8 @@ class UnifiedEngine:
                 with open(self.funding_arbitrage_path, "r") as f:
                     f_data = json.load(f)
                     funding_arb_pairs = f_data.get("pairs", [])
-            except Exception:
-                pass
+            except Exception as arb_err:
+                self.log(f"Error loading funding arbitrage in get_state: {arb_err}", "DEBUG")
 
         open_orders_data = []
         recent_orders_data = []
@@ -554,8 +563,8 @@ class UnifiedEngine:
                         "reason": reason,
                         "quantity": float(o.quantity.as_double()) if hasattr(o.quantity, "as_double") else float(o.quantity),
                     })
-        except Exception:
-            pass
+        except Exception as ord_err:
+            self.log(f"Error fetching orders from cache in get_state: {ord_err}", "DEBUG")
 
         return {
             "timestamp": time.time(),
@@ -589,105 +598,137 @@ class UnifiedEngine:
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
         """Natively and immediately close an open position across any strategy."""
-        coin_clean = coin.split("-")[0].split(".")[0].strip().upper()
+        with self._lock:
+            coin_clean = coin.split("-")[0].split(".")[0].strip().upper()
 
-        if not self.node or not self.node.cache:
-            return False
+            if not self.node or not self.node.cache:
+                return False
 
-        # Guard against in-flight close order re-entrancy (e.g. order pending in emulator / watchdog multi-calling)
-        now_ts = time.time()
-        in_flight_time = self._in_flight_closes.get(coin_clean, 0.0)
-        if (now_ts - in_flight_time) < 600.0:
-            self.log(f"Close already in-flight for {coin_clean} ({int(now_ts - in_flight_time)}s ago), suppressing duplicate close command.", "DEBUG")
-            return False
+            # Guard against in-flight close order re-entrancy (e.g. order pending in emulator / watchdog multi-calling)
+            now_ts = time.time()
+            in_flight_time = self._in_flight_closes.get(coin_clean, 0.0)
+            if (now_ts - in_flight_time) < 600.0:
+                self.log(f"Close already in-flight for {coin_clean} ({int(now_ts - in_flight_time)}s ago), suppressing duplicate close command.", "DEBUG")
+                return False
 
-        open_positions = [
-            p for p in self.node.cache.positions_open()
-            if not p.is_closed and (
-                p.instrument_id.symbol.value.split("-")[0].upper() == coin_clean
-            )
-        ]
-        if not open_positions:
-            self.log(f"No active position found to close for {coin_clean}", "WARN")
-            return False
-
-        closed_any = False
-        for pos in open_positions:
-            actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
-            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
-                if strat and strat.id == pos.strategy_id:
-                    strat.close_position(pos)
-                    closed_any = True
-                    self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via {strat.id} ({reason})", "CLOSE")
-                    break
-            if not closed_any:
-                fallback = self.funding_strat or self.continuation_strat
-                if fallback:
-                    fallback.close_position(pos)
-                    closed_any = True
-                    self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
-
-            if closed_any:
-                self._in_flight_closes[actual_coin] = now_ts
-                self._in_flight_closes[coin_clean] = now_ts
-                self._closed_positions_coins.add(actual_coin)
-                self._closed_positions_coins.add(coin_clean)
-                try:
-                    for o in self.node.cache.orders_open(instrument_id=pos.instrument_id):
-                        for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
-                            if strat:
-                                strat.cancel_order(o)
-                except Exception:
-                    pass
-                entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
-                qty = pos.quantity.as_double() if hasattr(pos, "quantity") and hasattr(pos.quantity, "as_double") else 1.0
-                side = "LONG" if pos.is_long else "SHORT"
-                strat_id = str(pos.strategy_id)
-                exit_px = entry_px
-                tracker = self.trade_manager.get_position(actual_coin)
-                if tracker and tracker.current_price > 0:
-                    exit_px = tracker.current_price
-
-                self.trade_manager.close_and_journal_position(
-                    coin=actual_coin,
-                    exit_price=exit_px,
-                    reason=reason,
-                    fallback_side=side,
-                    fallback_size=qty,
-                    fallback_entry_price=entry_px,
-                    fallback_strategy=strat_id,
+            open_positions = [
+                p for p in self.node.cache.positions_open()
+                if not p.is_closed and (
+                    p.instrument_id.symbol.value.split("-")[0].upper() == coin_clean
                 )
+            ]
+            if not open_positions:
+                self.log(f"No active position found to close for {coin_clean}", "WARN")
+                return False
 
-                # Set anti-churn cooldown (extended 2-hour penalty cooldown for MAE hard cuts)
-                cooldown_dur = 7200.0 if "MAE" in str(reason) else 1800.0
-                if hasattr(self, "guard") and self.guard:
-                    self.guard.set_cooldown(actual_coin, cooldown_dur)
-                    self.guard.register_position_closed(
-                        strategy_name=strat_id,
-                        instrument_id=pos.instrument_id,
-                        freed_notional_usd=abs(qty * entry_px),
+            closed_any = False
+            for pos in open_positions:
+                actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
+
+                # BEFORE submitting strat.close_position(pos) or any market close order:
+                # Inspect self.node.cache.orders_open(instrument_id=pos.instrument_id).
+                # Immediately iterate and call strat.cancel_order(o) across all strategy actors.
+                # Log each cancellation.
+                try:
+                    if self.node and self.node.cache:
+                        for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                                if strat:
+                                    try:
+                                        strat.cancel_order(o)
+                                    except Exception as cancel_err:
+                                        self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                            self.log(f"Pre-close atomically cancelled resting order {o.client_order_id} on {actual_coin}", "INFO")
+                except Exception as err:
+                    self.log(f"Pre-close order sweep error on {actual_coin}: {err}", "WARN")
+
+                # THEN submit the market close (strat.close_position(pos))
+                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                    if strat and strat.id == pos.strategy_id:
+                        strat.close_position(pos)
+                        closed_any = True
+                        self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via {strat.id} ({reason})", "CLOSE")
+                        break
+                if not closed_any:
+                    fallback = self.funding_strat or self.continuation_strat
+                    if fallback:
+                        fallback.close_position(pos)
+                        closed_any = True
+                        self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
+
+                if closed_any:
+                    self._in_flight_closes[actual_coin] = now_ts
+                    self._in_flight_closes[coin_clean] = now_ts
+                    self._closed_positions_coins.add(actual_coin)
+                    self._closed_positions_coins.add(coin_clean)
+
+                    entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
+                    qty = pos.quantity.as_double() if hasattr(pos, "quantity") and hasattr(pos.quantity, "as_double") else 1.0
+                    side = "LONG" if pos.is_long else "SHORT"
+                    strat_id = str(pos.strategy_id)
+                    exit_px = entry_px
+                    tracker = self.trade_manager.get_position(actual_coin)
+                    if tracker and tracker.current_price > 0:
+                        exit_px = tracker.current_price
+
+                    self.trade_manager.close_and_journal_position(
+                        coin=actual_coin,
+                        exit_price=exit_px,
+                        reason=reason,
+                        fallback_side=side,
+                        fallback_size=qty,
+                        fallback_entry_price=entry_px,
+                        fallback_strategy=strat_id,
                     )
-                    self.guard.sync_open_positions(self.get_open_positions())
-                if hasattr(self, "portfolio_guard") and self.portfolio_guard:
-                    self.portfolio_guard.set_cooldown(actual_coin, cooldown_dur)
-                if hasattr(self, "trade_manager") and self.trade_manager:
-                    self.trade_manager.set_cooldown(actual_coin)
 
-                # Dynamically adjust risk allocations based on updated trade performance
-                if hasattr(self, "guard") and self.guard:
-                    self.guard.update_dynamic_allocations(self.trade_manager.get_closed_trades())
+                    # Set anti-churn cooldown (extended 2-hour penalty cooldown for MAE hard cuts)
+                    cooldown_dur = 7200.0 if "MAE" in str(reason) else 1800.0
+                    if hasattr(self, "guard") and self.guard:
+                        self.guard.set_cooldown(actual_coin, cooldown_dur)
+                        self.guard.register_position_closed(
+                            strategy_name=strat_id,
+                            instrument_id=pos.instrument_id,
+                            freed_notional_usd=abs(qty * entry_px),
+                        )
+                        self.guard.sync_open_positions(self.get_open_positions())
+                    if hasattr(self, "portfolio_guard") and self.portfolio_guard:
+                        self.portfolio_guard.set_cooldown(actual_coin, cooldown_dur)
+                    if hasattr(self, "trade_manager") and self.trade_manager:
+                        self.trade_manager.set_cooldown(actual_coin)
 
-        return closed_any
+                    # Dynamically adjust risk allocations based on updated trade performance
+                    if hasattr(self, "guard") and self.guard:
+                        self.guard.update_dynamic_allocations(self.trade_manager.get_closed_trades())
 
-    def close_all_positions(self, reason: str = "Emergency Close All") -> List[str]:
-        """Emergency market close across all open positions."""
-        open_positions = self.get_open_positions()
-        closed = []
-        for pos in open_positions:
-            coin = pos.instrument_id.symbol.value.split("-")[0]
-            if self.close_position(coin, reason=reason):
-                closed.append(coin)
-        return closed
+            return closed_any
+
+    def close_all_positions(self, reason: str = "Emergency Flatten") -> List[str]:
+        """Emergency market close across all open positions with pre-close order sweep."""
+        with self._lock:
+            open_positions = self.get_open_positions()
+
+            # First sweep and cancel all open orders across the cache for every active position BEFORE dispatching market closes.
+            if self.node and self.node.cache:
+                for pos in open_positions:
+                    actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
+                    try:
+                        for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                                if strat:
+                                    try:
+                                        strat.cancel_order(o)
+                                    except Exception as cancel_err:
+                                        self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                            self.log(f"Pre-close atomically cancelled resting order {o.client_order_id} on {actual_coin}", "INFO")
+                    except Exception as err:
+                        self.log(f"Pre-close sweep error on {actual_coin}: {err}", "WARN")
+
+            closed = []
+            for pos in open_positions:
+                coin = pos.instrument_id.symbol.value.split("-")[0]
+                if self.close_position(coin, reason=reason):
+                    closed.append(coin)
+            return closed
 
     def log_missed_opportunity(
         self,
@@ -764,8 +805,8 @@ class UnifiedEngine:
                                     if strat:
                                         try:
                                             strat.cancel_order(orphan_order)
-                                        except Exception:
-                                            pass
+                                        except Exception as cancel_err:
+                                            self.log(f"Failed to cancel orphan order via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
                                 self.log(f"🧹 [Watchdog] Cancelled orphaned order {orphan_order.client_order_id} on {orphan_coin} (no active position)", "INFO")
                 except Exception as orphan_err:
                     self.log(f"Orphan order sweep error: {orphan_err}", "WARN")
@@ -954,8 +995,8 @@ class UnifiedEngine:
                                 client_order_id=ClientOrderId(stale.order_id),
                             )
                             self.node.trader.execute(cancel_cmd)
-                        except Exception:
-                            pass
+                        except Exception as cancel_err:
+                            self.log(f"Failed to cancel stale order {stale.order_id}: {cancel_err}", "DEBUG")
                         self.guard.acknowledge_order_cancelled(stale.order_id)
 
                 # 2. Proactive Autonomous Microstructure Scanner (High-Frequency Sentry)
@@ -1027,8 +1068,59 @@ class UnifiedEngine:
             sleep_time = max(1.0, self.watchdog_interval - elapsed)
             time.sleep(sleep_time)
 
+    def _process_command(self, cmd: Dict[str, Any]) -> None:
+        """Process a single execution command dictionary."""
+        action = cmd.get("action")
+        if action == "CLOSE_POSITION":
+            coin = cmd.get("coin")
+            if not coin and cmd.get("target_coins"):
+                for tc in cmd.get("target_coins"):
+                    self.close_position(tc, reason=cmd.get("reason", "Bridge Close Command"))
+            elif coin:
+                reason = cmd.get("reason", "Bridge Close Command")
+                self.close_position(coin, reason=reason)
+        elif action in ("FLATTEN_ALL", "CLOSE_ALL"):
+            reason = cmd.get("reason", "Autonomous AI Emergency Flatten")
+            self.log(f"🚨 [AI Sentinel Bridge] Executing emergency FLATTEN ALL: {reason}", "TRIGGER")
+            self.close_all_positions(reason=reason)
+        elif action == "CANCEL_ORPHANS":
+            self.log("🧹 [AI Sentinel Bridge] Sweeping all orphaned orders on flat instruments", "INFO")
+            try:
+                if self.node and self.node.cache:
+                    position_instrument_ids = {pos.instrument_id for pos in self.get_open_positions()}
+                    for orphan_order in list(self.node.cache.orders_open()):
+                        if orphan_order.instrument_id not in position_instrument_ids:
+                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
+                                if strat:
+                                    try:
+                                        strat.cancel_order(orphan_order)
+                                    except Exception as cancel_err:
+                                        self.log(f"Failed to cancel orphan order: {cancel_err}", "DEBUG")
+            except Exception as e:
+                self.log(f"Orphan sweep error: {e}", "WARN")
+        elif action in ("TRIGGER_SCAN", "TRIGGER_PROSPECTOR_SCAN", "SCAN_AND_TRADE"):
+            self.log("🔍 Triggered immediate on-demand Prospector market scan", "INFO")
+            self._force_prospector_scan = True
+        elif action in ("ENTER_PROSPECT", "OPEN_POSITION"):
+            self.execute_prospect_entry(cmd)
+
     def _check_external_bridge_commands(self) -> None:
-        """Execute any commands queued in bridge/ai_commands.json."""
+        """
+        Drain and execute all commands from the in-memory event bus first (zero disk latency),
+        then check and clear external bridge/ai_commands.json if present.
+        """
+        # 1. First drain and process all commands from self.command_queue in-memory with zero disk latency
+        while not self.command_queue.empty():
+            try:
+                cmd = self.command_queue.get_nowait()
+                if isinstance(cmd, dict):
+                    self._process_command(cmd)
+            except queue.Empty:
+                break
+            except Exception as q_err:
+                self.log(f"In-memory command execution error: {q_err}", "WARN")
+
+        # 2. Process external commands from file if present and non-empty
         if not os.path.exists(self.ai_commands_path):
             return
         try:
@@ -1041,44 +1133,15 @@ class UnifiedEngine:
                 cmds = [cmds]
 
             for cmd in cmds:
-                action = cmd.get("action")
-                if action == "CLOSE_POSITION":
-                    coin = cmd.get("coin")
-                    if not coin and cmd.get("target_coins"):
-                        for tc in cmd.get("target_coins"):
-                            self.close_position(tc, reason=cmd.get("reason", "Bridge Close Command"))
-                    elif coin:
-                        reason = cmd.get("reason", "Bridge Close Command")
-                        self.close_position(coin, reason=reason)
-                elif action in ("FLATTEN_ALL", "CLOSE_ALL"):
-                    reason = cmd.get("reason", "Autonomous AI Emergency Flatten")
-                    self.log(f"🚨 [AI Sentinel Bridge] Executing emergency FLATTEN ALL: {reason}", "TRIGGER")
-                    self.close_all_positions(reason=reason)
-                elif action == "CANCEL_ORPHANS":
-                    self.log("🧹 [AI Sentinel Bridge] Sweeping all orphaned orders on flat instruments", "INFO")
-                    try:
-                        if self.node and self.node.cache:
-                            position_instrument_ids = {pos.instrument_id for pos in self.get_open_positions()}
-                            for orphan_order in list(self.node.cache.orders_open()):
-                                if orphan_order.instrument_id not in position_instrument_ids:
-                                    for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat]:
-                                        if strat:
-                                            try:
-                                                strat.cancel_order(orphan_order)
-                                            except Exception:
-                                                pass
-                    except Exception as e:
-                        self.log(f"Orphan sweep error: {e}", "WARN")
-                elif action in ("TRIGGER_SCAN", "TRIGGER_PROSPECTOR_SCAN", "SCAN_AND_TRADE"):
-                    self.log("🔍 Triggered immediate on-demand Prospector market scan", "INFO")
-                    self._force_prospector_scan = True
-                elif action in ("ENTER_PROSPECT", "OPEN_POSITION"):
-                    self.execute_prospect_entry(cmd)
+                if isinstance(cmd, dict):
+                    self._process_command(cmd)
 
-            with open(self.ai_commands_path, "w") as f:
+            tmp_cmds = f"{self.ai_commands_path}.tmp"
+            with open(tmp_cmds, "w") as f:
                 json.dump([], f)
-        except Exception:
-            pass
+            os.replace(tmp_cmds, self.ai_commands_path)
+        except Exception as e:
+            self.log(f"External bridge commands error: {e}", "WARN")
 
     def execute_prospect_entry(self, prospect: Dict[str, Any]) -> bool:
         """
@@ -1116,8 +1179,8 @@ class UnifiedEngine:
                 instrument = self.node.cache.instrument(InstrumentId.from_str(instr_key))
                 if instrument and hasattr(strat_actor, "instruments_map"):
                     strat_actor.instruments_map[instr_key] = instrument
-            except Exception:
-                pass
+            except Exception as inst_err:
+                self.log(f"Cache instrument lookup error for {instr_key}: {inst_err}", "DEBUG")
 
         if not instrument:
             return False
@@ -1276,8 +1339,8 @@ class UnifiedEngine:
         try:
             if not getattr(strat_actor.cache, "is_backtest", False):
                 strat_actor.subscribe_quote_ticks(instrument.id)
-        except Exception:
-            pass
+        except Exception as sub_err:
+            self.log(f"Quote tick subscription notice for {instrument.id}: {sub_err}", "DEBUG")
 
         try:
             order = strat_actor.order_factory.limit(
@@ -1696,30 +1759,40 @@ class UnifiedEngine:
                 time.sleep(1.0)
 
     def _sync_bridge_state_loop(self) -> None:
-        """Sync in-memory state to disk every 1s for persistence."""
+        """
+        Maintain fast in-memory state dictionary and throttle disk persistence
+        to once every 5.0 seconds (atomic write with .tmp -> os.replace).
+        """
+        last_disk_sync = 0.0
         while self._is_running:
             try:
                 state = self.get_state()
-                # 1. Update bridge/active_trades.json
-                tmp_act = f"{self.active_trades_path}.tmp"
-                with open(tmp_act, "w") as f:
-                    json.dump({
-                        "timestamp": state["timestamp"],
-                        "equity": state["equity"],
-                        "cash_balance": state["cash_balance"],
-                        "positions": state["positions"],
-                    }, f, indent=2)
-                os.replace(tmp_act, self.active_trades_path)
+                self._latest_state = state
 
-                # 2. Persist paper state
-                if self.paper:
-                    self.save_paper_state(
-                        equity=state["equity"],
-                        realized_pnl=state["cash_balance"] - self._paper_starting_balance,
-                        positions=state["positions"],
-                    )
-            except Exception:
-                pass
+                now = time.time()
+                if (now - last_disk_sync) >= 5.0:
+                    last_disk_sync = now
+
+                    # 1. Update bridge/active_trades.json atomically (.tmp -> os.replace)
+                    tmp_act = f"{self.active_trades_path}.tmp"
+                    with open(tmp_act, "w") as f:
+                        json.dump({
+                            "timestamp": state["timestamp"],
+                            "equity": state["equity"],
+                            "cash_balance": state["cash_balance"],
+                            "positions": state["positions"],
+                        }, f, indent=2)
+                    os.replace(tmp_act, self.active_trades_path)
+
+                    # 2. Persist paper state atomically
+                    if self.paper:
+                        self.save_paper_state(
+                            equity=state["equity"],
+                            realized_pnl=state["cash_balance"] - self._paper_starting_balance,
+                            positions=state["positions"],
+                        )
+            except Exception as e:
+                self.log(f"Bridge state sync loop warning: {e}", "DEBUG")
             time.sleep(1.0)
 
     def start(self) -> None:
@@ -1766,14 +1839,14 @@ class UnifiedEngine:
         try:
             state = self.get_state()
             self.save_paper_state(state["equity"], state["cash_balance"] - self._paper_starting_balance, state["positions"])
-        except Exception:
-            pass
+        except Exception as state_err:
+            self.log(f"Failed to persist final state during stop: {state_err}", "DEBUG")
 
         if self.node:
             try:
                 self.node.stop()
                 self.node.dispose()
-            except Exception:
-                pass
+            except Exception as node_err:
+                self.log(f"Error stopping/disposing TradingNode: {node_err}", "DEBUG")
 
         self.log("TradingNode disposed cleanly. Shutdown complete.", "INFO")

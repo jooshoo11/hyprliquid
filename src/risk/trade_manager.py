@@ -20,10 +20,13 @@ import os
 import json
 import time
 import threading
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
@@ -145,14 +148,16 @@ class TradeManager:
         self.decision_journal_file = decision_journal_file or os.path.join(self.reports_dir, "decision_journal.jsonl")
 
         self.breakeven_roi_pct = breakeven_roi_pct
-        self.breakeven_stop_roi_pct = breakeven_stop_roi_pct
+        self.taker_fee_pct = float(taker_fee_pct)
+        self.round_trip_taker_fee_pct = self.taker_fee_pct * 2.0  # 0.070% round-trip taker fee
+        # The breakeven stop ratchet must be at least +0.10% so any exit strictly nets positive (0.070% fee + 0.030% cushion)
+        self.breakeven_stop_roi_pct = max(0.10, float(breakeven_stop_roi_pct))
         self.trailing_roi_pct = trailing_roi_pct
         self.trailing_distance_pct = trailing_distance_pct
         self.mae_roi_pct = mae_roi_pct
         self.mae_loss_usd = mae_loss_usd
         self.stagnant_hours = stagnant_hours
         self.stagnant_roi_pct = stagnant_roi_pct
-        self.taker_fee_pct = taker_fee_pct
         self.min_holding_seconds = min_holding_seconds
         self.reentry_cooldown_seconds = reentry_cooldown_seconds
         self.max_positions = max_positions
@@ -171,7 +176,7 @@ class TradeManager:
         self.cumulative_fees: float = 0.0
         self.cooldown_tracker: Dict[str, float] = {}
         self._recently_closed_times: Dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
 
         # Ensure reports directory exists
@@ -1024,8 +1029,8 @@ class TradeManager:
                         "|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
                     )
                 f.write(row)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to write to daily PnL journal %s: %s", self.daily_pnl_file, e)
 
     def _append_to_session_trades(self, record: Dict[str, Any]) -> None:
         """Append trade object to session_trades.json atomically."""
@@ -1040,7 +1045,8 @@ class TradeManager:
                             existing_trades = json.loads(content)
                             if not isinstance(existing_trades, list):
                                 existing_trades = []
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to parse session trades file %s: %s", self.session_trades_file, e)
                     existing_trades = []
 
             existing_trades.append(record)
@@ -1049,8 +1055,8 @@ class TradeManager:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(existing_trades, f, indent=2)
             os.replace(tmp_path, self.session_trades_file)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to append to session trades %s: %s", self.session_trades_file, e)
 
     def get_position(self, coin: str) -> Optional[PositionTracker]:
         """Retrieve active position tracker by coin symbol."""
@@ -1185,10 +1191,8 @@ class TradeManager:
 
                                     self.cumulative_fees += f_amt
                             self._closed_trades_cache.extend(data)
-            except Exception:
-                pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to load historical session trades from %s: %s", self.session_trades_file, e)
 
         if os.path.exists(self.decision_journal_file):
             try:
@@ -1200,10 +1204,11 @@ class TradeManager:
                                 item = json.loads(line)
                                 if isinstance(item, dict):
                                     self._missed_opportunities_cache.append(item)
-                            except Exception:
+                            except Exception as e:
+                                logger.debug("Skipping invalid decision journal line: %s", e)
                                 continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to load decision journal from %s: %s", self.decision_journal_file, e)
 
     def log_missed_opportunity(
         self,
@@ -1305,8 +1310,8 @@ class TradeManager:
                         "|---|---|---|---|---|---|\n"
                     )
                 f.write(row)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to append to missed opportunities markdown %s: %s", self.missed_opportunities_file, e)
 
     def _append_to_decision_journal(self, record: Dict[str, Any]) -> None:
         """Append JSONL line to decision_journal.jsonl."""
@@ -1315,8 +1320,8 @@ class TradeManager:
             line = json.dumps(record) + "\n"
             with open(self.decision_journal_file, "a", encoding="utf-8") as f:
                 f.write(line)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to append to decision journal %s: %s", self.decision_journal_file, e)
 
     def record_missed_opportunity(
         self,
@@ -1384,9 +1389,11 @@ class TradeManager:
                                     item = json.loads(line)
                                     if isinstance(item, dict):
                                         file_records.append(item)
-                                except Exception:
+                                except Exception as e:
+                                    logger.debug("Skipping malformed decision journal item: %s", e)
                                     continue
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to read decision journal file %s: %s", self.decision_journal_file, e)
                     file_records = []
 
             # 2. Combine with in-memory cache, preserving order and deduplicating
@@ -1439,7 +1446,8 @@ class TradeManager:
                             loaded = json.loads(content)
                             if isinstance(loaded, list):
                                 file_records = loaded
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to load session trades file %s: %s", self.session_trades_file, e)
                     file_records = []
 
             # 2. Combine with in-memory cache, preserving order and deduplicating

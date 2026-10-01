@@ -10,8 +10,9 @@ Multi-timeframe Smart Money Concepts (SMC) trend continuation strategy.
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, List, Optional, Any
+import numpy as np
 import polars as pl
-from smartmoneyconcepts import smc
+
 
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.indicators import AverageTrueRange, ExponentialMovingAverage
@@ -187,28 +188,29 @@ class TrendContinuationSMC(Strategy):
         if len(state.recent_30m_bars) < 5:
             return
 
-        # EXCEPTION TO ZERO-PANDAS GUIDELINE:
-        # The third-party `smartmoneyconcepts` library (smc.fvg) strictly requires a pandas DataFrame
-        # input with columns ['open', 'high', 'low', 'close', 'volume'].
-        # To optimize performance, we construct column vectors directly in a Polars DataFrame
-        # and convert via `.to_pandas()` exclusively at the boundary call to this external library.
-        df_pl = pl.DataFrame({
-            'open': [b.open.as_double() for b in state.recent_30m_bars],
-            'high': [b.high.as_double() for b in state.recent_30m_bars],
-            'low': [b.low.as_double() for b in state.recent_30m_bars],
-            'close': [b.close.as_double() for b in state.recent_30m_bars],
-            'volume': [b.volume.as_double() for b in state.recent_30m_bars],
-        })
-        fvg_df = smc.fvg(df_pl.to_pandas())
-        
-        close_px = bar.close.as_double()
-        # Find latest FVG that is not mitigated
-        latest_idx = fvg_df['FVG'].last_valid_index()
-        if latest_idx is not None and fvg_df.loc[latest_idx, 'FVG'] != 0:
-            fvg_val = fvg_df.loc[latest_idx, 'FVG']
-            top = fvg_df.loc[latest_idx, 'Top']
-            bottom = fvg_df.loc[latest_idx, 'Bottom']
-            
+        # Native Zero-Pandas Vectorized FVG Detection:
+        # A Fair Value Gap (FVG) is formed across a 3-bar sequence:
+        # Bullish (Demand): bar[i].low > bar[i-2].high
+        # Bearish (Supply): bar[i].high < bar[i-2].low
+        bars = state.recent_30m_bars
+        if len(bars) >= 3:
+            highs = np.array([b.high.as_double() for b in bars])
+            lows = np.array([b.low.as_double() for b in bars])
+            i = len(bars) - 1
+            fvg_val = 0
+            top = 0.0
+            bottom = 0.0
+
+            if lows[i] > highs[i - 2]:
+                fvg_val = 1
+                top = lows[i]
+                bottom = highs[i - 2]
+            elif highs[i] < lows[i - 2]:
+                fvg_val = -1
+                top = lows[i - 2]
+                bottom = highs[i]
+
+            close_px = bar.close.as_double()
             # Demand FVG
             if fvg_val == 1 and not any(z.ts_event == bar.ts_event for z in state.demand_zones):
                 state.demand_zones.append(Zone(
@@ -332,38 +334,45 @@ class TrendContinuationSMC(Strategy):
                     self._execute_short_entry(bar, state, target_zone, is_equilibrium_discount=is_rejection_wick)
 
     def _update_5m_swing_points(self, state: SMCInstrumentState) -> None:
-        """Detect swing fractal highs and lows from recent 5M bars using SMC."""
+        """Detect swing fractal highs and lows from recent 5M bars using pure vectorized NumPy."""
         bars = state.recent_5m_bars
         if len(bars) < 5:
             return
 
-        # EXCEPTION TO ZERO-PANDAS GUIDELINE:
-        # The third-party `smartmoneyconcepts` library (smc.swing_highs_lows) strictly requires a
-        # pandas DataFrame with columns ['open', 'high', 'low', 'close', 'volume'].
-        # Column vectors are constructed in Polars and converted to pandas once via `.to_pandas()`.
-        df_pl = pl.DataFrame({
-            'open': [b.open.as_double() for b in bars],
-            'high': [b.high.as_double() for b in bars],
-            'low': [b.low.as_double() for b in bars],
-            'close': [b.close.as_double() for b in bars],
-            'volume': [b.volume.as_double() for b in bars],
-        })
-        df = df_pl.to_pandas()
-        swing_data = smc.swing_highs_lows(df, swing_length=2)
-        
-        highs = swing_data[swing_data['HighLow'] == 1]
-        lows = swing_data[swing_data['HighLow'] == -1]
-        
-        last_high = highs.last_valid_index() if not highs.empty else None
-        last_low = lows.last_valid_index() if not lows.empty else None
-        
+        highs = np.array([b.high.as_double() for b in bars])
+        lows = np.array([b.low.as_double() for b in bars])
+        swing_length = 2
+        n = len(bars)
+
+        # Detect fractal high/low: a bar is a fractal high if it is strictly higher than
+        # `swing_length` bars before and after it.
+        last_high = None
+        last_low = None
+
+        for i in range(swing_length, n - swing_length):
+            is_high = True
+            for offset in range(1, swing_length + 1):
+                if highs[i] <= highs[i - offset] or highs[i] <= highs[i + offset]:
+                    is_high = False
+                    break
+            if is_high:
+                last_high = i
+
+            is_low = True
+            for offset in range(1, swing_length + 1):
+                if lows[i] >= lows[i - offset] or lows[i] >= lows[i + offset]:
+                    is_low = False
+                    break
+            if is_low:
+                last_low = i
+
         if last_high is not None:
-            state.recent_swing_high = highs.loc[last_high, 'Level']
-            state.recent_swing_wick_high = df.loc[last_high, 'high']
-        
+            state.recent_swing_high = float(highs[last_high])
+            state.recent_swing_wick_high = float(highs[last_high])
+
         if last_low is not None:
-            state.recent_swing_low = lows.loc[last_low, 'Level']
-            state.recent_swing_wick_low = df.loc[last_low, 'low']
+            state.recent_swing_low = float(lows[last_low])
+            state.recent_swing_wick_low = float(lows[last_low])
 
     def _execute_long_entry(self, bar: Bar, state: SMCInstrumentState, zone: Zone, is_equilibrium_discount: bool = False) -> None:
         """1% equity risk bracket order with STOP_MARKET below the 5M swing wick."""

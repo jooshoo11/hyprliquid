@@ -10,9 +10,12 @@ Strict Constraints & Guardrails:
 
 import time
 import threading
+import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 import polars as pl
 
@@ -251,6 +254,14 @@ class PortfolioGuard:
 
             return dict(self.strategy_allocation_caps)
 
+    def set_strategy_allocation_cap(self, strategy_name: str, cap: float) -> None:
+        """Explicitly set margin allocation cap for a strategy."""
+        with self._lock:
+            base_strat = strategy_name.split("-")[0]
+            self.strategy_allocation_caps[strategy_name] = float(cap)
+            self.strategy_allocation_caps[base_strat] = float(cap)
+
+
     def is_strategy_locked(self, strategy_name: str) -> bool:
         """Check if strategy is currently locked out by circuit breaker."""
         with self._lock:
@@ -332,8 +343,8 @@ class PortfolioGuard:
                         self.strategy_allocated_margin[b_strat] = self.strategy_allocated_margin.get(b_strat, 0.0) + notional
                         if s_raw:
                             self.strategy_allocated_margin[s_raw] = self.strategy_allocated_margin.get(s_raw, 0.0) + notional
-                except Exception:
-                    pass
+                except Exception as pos_err:
+                    logger.debug("Failed to calculate position notional for %s: %s", getattr(p, "instrument_id", p), pos_err)
 
     def can_open_position(
         self,
@@ -355,8 +366,8 @@ class PortfolioGuard:
                         self.strategy_open_positions.setdefault(b_strat, set()).add(i_str)
                         if s_raw:
                             self.strategy_open_positions.setdefault(s_raw, set()).add(i_str)
-                    except Exception:
-                        pass
+                    except Exception as sync_err:
+                        logger.debug("Failed to sync open position %s in can_open_position: %s", getattr(p, "instrument_id", p), sync_err)
             elif current_open_positions_count == 0:
                 self.strategy_open_positions.clear()
                 self.strategy_allocated_margin.clear()

@@ -6,8 +6,11 @@ tick sizes, lot sizes, and maker/taker fee tiers (-0.01% maker / 0.035% taker).
 
 import os
 import json
+import logging
 from decimal import Decimal
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import BarType
@@ -39,8 +42,8 @@ def get_coin_max_leverage(coin: str) -> float:
                         lev = u.get("maxLeverage")
                         if name and lev is not None:
                             _LEVERAGE_CACHE[name.upper()] = float(lev)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to load leverage cache from %s: %s", cache_path, e)
 
     if coin in _LEVERAGE_CACHE:
         return _LEVERAGE_CACHE[coin]
