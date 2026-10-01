@@ -1,0 +1,11 @@
+{
+  "status": "HEALTHY",
+  "action": "NONE",
+  "target_coins": [],
+  "reason": "All positions and orders within risk tolerances.",
+  "confidence": 99.0,
+  "_provider": "groq_instructor",
+  "timestamp": "2026-10-01 05:51:11 UTC",
+  "active_positions_count": 2,
+  "open_orders_count": 0
+}

@@ -27,8 +27,11 @@ from src.utils.instruments import get_coin_max_leverage
 class OrderBookImbalanceConfig(StrategyConfig, kw_only=True):
     """Configuration for OrderBookImbalance scalper."""
     skew_threshold: float = 3.5  # Bid/Ask depth ratio > 3.5 (genuine wall, avoids noise)
-    stop_ticks: int = 12  # 12-tick stop behind the wall
-    take_profit_ticks: int = 24  # 24-tick target (2:1 reward-to-risk)
+    stop_ticks: int = 12  # Minimum tick offset
+    take_profit_ticks: int = 24  # Target tick offset
+    min_wall_usd: float = 10000.0  # Require at least $10,000 USD resting depth to avoid small-cap illusions
+    min_stop_pct: float = 0.012  # Minimum 1.2% stop distance (prevents spread/fee stopouts)
+    min_tp_pct: float = 0.025  # Minimum 2.5% take profit target (> 2:1 R:R)
     risk_per_trade_pct: float = 0.0075  # 0.75% equity risk
     max_active_positions: int = 1  # Strictly 1 position max to prevent portfolio monopolization
     venue: str = "HYPERLIQUID"
@@ -116,10 +119,18 @@ class OrderBookImbalance(Strategy):
         skew_thresh = getattr(self, "dynamic_skew_threshold", self.scalp_config.skew_threshold)
         tp_ticks = getattr(self, "dynamic_take_profit_ticks", self.scalp_config.take_profit_ticks)
 
-        # Bid Wall: Imbalance Skew >= threshold -> Buy in front of the wall
+        # Check minimum wall depth in USD to filter out low-liquidity shitcoin illusions
+        min_wall_usd = getattr(self.scalp_config, "min_wall_usd", 10000.0)
+        bid_depth_usd = bid_size * bid_px
+        ask_depth_usd = ask_size * ask_px
+
+        min_stop_pct = getattr(self.scalp_config, "min_stop_pct", 0.012)
+        min_tp_pct = getattr(self.scalp_config, "min_tp_pct", 0.025)
+
+        # Bid Wall: Imbalance Skew >= threshold and USD depth >= min_wall_usd
         bid_ask_skew = bid_size / ask_size
         buy_key = f"{instr_str}_BUY"
-        if bid_ask_skew >= skew_thresh:
+        if bid_ask_skew >= skew_thresh and (is_backtest or bid_depth_usd >= min_wall_usd):
             if not is_backtest and buy_key not in self._wall_first_seen:
                 self._wall_first_seen[buy_key] = now_ns
                 return  # Wall first observed: wait for persistence
@@ -132,18 +143,20 @@ class OrderBookImbalance(Strategy):
                 return  # Skip BUY if AI Prospect bias is SHORT
             wall_px = bid_px
             entry_px = wall_px  # Post at best bid (maker)
-            sl_px = wall_px - (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px + (tp_ticks * tick_size)
+            stop_dist = max(self.scalp_config.stop_ticks * tick_size, entry_px * min_stop_pct)
+            tp_dist = max(tp_ticks * tick_size, entry_px * min_tp_pct)
+            sl_px = wall_px - stop_dist
+            tp_px = entry_px + tp_dist
             self._wall_first_seen.pop(buy_key, None)
             self._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, bid_ask_skew)
             return
         else:
             self._wall_first_seen.pop(buy_key, None)
 
-        # Ask Wall: Imbalance Skew >= threshold -> Sell in front of the wall
+        # Ask Wall: Imbalance Skew >= threshold and USD depth >= min_wall_usd
         ask_bid_skew = ask_size / bid_size
         sell_key = f"{instr_str}_SELL"
-        if ask_bid_skew >= skew_thresh:
+        if ask_bid_skew >= skew_thresh and (is_backtest or ask_depth_usd >= min_wall_usd):
             if not is_backtest and sell_key not in self._wall_first_seen:
                 self._wall_first_seen[sell_key] = now_ns
                 return  # Wall first observed: wait for persistence
@@ -156,8 +169,10 @@ class OrderBookImbalance(Strategy):
                 return  # Skip SELL if AI Prospect bias is LONG
             wall_px = ask_px
             entry_px = wall_px  # Post at best ask (maker)
-            sl_px = wall_px + (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px - (tp_ticks * tick_size)
+            stop_dist = max(self.scalp_config.stop_ticks * tick_size, entry_px * min_stop_pct)
+            tp_dist = max(tp_ticks * tick_size, entry_px * min_tp_pct)
+            sl_px = wall_px + stop_dist
+            tp_px = entry_px - tp_dist
             self._wall_first_seen.pop(sell_key, None)
             self._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, ask_bid_skew)
             return
@@ -195,14 +210,22 @@ class OrderBookImbalance(Strategy):
         if lower_wick > 0 and upper_wick / lower_wick > 4.0:
             # Rejection from high -> Ask wall
             entry_px = bar.close.as_double()
-            sl_px = entry_px + (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px - (self.scalp_config.take_profit_ticks * tick_size)
+            min_stop_pct = getattr(self.scalp_config, 'min_stop_pct', 0.012)
+            min_tp_pct = getattr(self.scalp_config, 'min_tp_pct', 0.025)
+            stop_dist = max(self.scalp_config.stop_ticks * tick_size, entry_px * min_stop_pct)
+            tp_dist = max(self.scalp_config.take_profit_ticks * tick_size, entry_px * min_tp_pct)
+            sl_px = entry_px + stop_dist
+            tp_px = entry_px - tp_dist
             self._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, 3.5)
         elif upper_wick > 0 and lower_wick / upper_wick > 4.0:
             # Rejection from low -> Bid wall
             entry_px = bar.close.as_double()
-            sl_px = entry_px - (self.scalp_config.stop_ticks * tick_size)
-            tp_px = entry_px + (self.scalp_config.take_profit_ticks * tick_size)
+            min_stop_pct = getattr(self.scalp_config, 'min_stop_pct', 0.012)
+            min_tp_pct = getattr(self.scalp_config, 'min_tp_pct', 0.025)
+            stop_dist = max(self.scalp_config.stop_ticks * tick_size, entry_px * min_stop_pct)
+            tp_dist = max(self.scalp_config.take_profit_ticks * tick_size, entry_px * min_tp_pct)
+            sl_px = entry_px - stop_dist
+            tp_px = entry_px + tp_dist
             self._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, 3.5)
 
     def _execute_scalp(
@@ -218,6 +241,14 @@ class OrderBookImbalance(Strategy):
         equity = self._get_account_equity()
         if equity <= 0 or entry_price <= 0:
             return
+
+        # Prevent duplicate orders if an order is already pending or position open for this instrument
+        if hasattr(self, "cache") and self.cache:
+            if len(self.cache.orders_open(instrument_id=instrument.id)) > 0:
+                return
+            open_for_instr = [p for p in self.cache.positions_open() if not p.is_closed and p.instrument_id == instrument.id]
+            if open_for_instr:
+                return
 
         max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
         margin_allocated = equity / max_positions

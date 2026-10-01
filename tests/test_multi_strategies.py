@@ -220,3 +220,59 @@ def test_funding_normalization_exit():
     call_reason = strat._exit_fade.call_args[0][1]
     assert "Funding Normalized" in call_reason
 
+
+def test_vwap_oi_momentum_enter_momentum():
+    """Verify VwapOiMomentum._enter_momentum correctly calculates stop loss, risk per unit, and take profit without errors."""
+    engine, inst = _setup_engine("TEST-ENG-VWAP")
+    guard = PortfolioGuard(max_strategy_equity_pct=50.0, max_single_position_equity_pct=None)
+    strat = VwapOiMomentum(
+        config=VwapOiMomentumConfig(venue="HYPERLIQUID"),
+        portfolio_guard=guard,
+    )
+    engine.add_strategy(strat)
+    strat.submit_order_list = MagicMock()
+    strat._get_account_equity = MagicMock(return_value=100.0)
+
+    # 1. Test BUY entry (like the WIF trigger)
+    strat._enter_momentum(
+        instrument=inst,
+        side=OrderSide.BUY,
+        price=100.0,
+        vwap=99.5,
+        oi_z=2.5,
+    )
+    assert strat.submit_order_list.call_count == 1
+    bracket_list = strat.submit_order_list.call_args[0][0]
+    orders = list(bracket_list.orders)
+    assert len(orders) == 3  # Entry, TP, SL
+    entry_order = [o for o in orders if o.order_type == OrderType.MARKET][0]
+    sl_order = [o for o in orders if o.order_type == OrderType.STOP_MARKET][0]
+    tp_order = [o for o in orders if o.order_type == OrderType.LIMIT][0]
+    assert entry_order.side == OrderSide.BUY
+    assert sl_order.side == OrderSide.SELL
+    assert tp_order.side == OrderSide.SELL
+    assert float(sl_order.trigger_price.as_double()) < 100.0
+    assert float(tp_order.price.as_double()) > 100.0
+
+    # 2. Test SELL entry
+    strat._enter_momentum(
+        instrument=inst,
+        side=OrderSide.SELL,
+        price=100.0,
+        vwap=100.5,
+        oi_z=2.5,
+    )
+    assert strat.submit_order_list.call_count == 2
+    bracket_list_sell = strat.submit_order_list.call_args[0][0]
+    orders_sell = list(bracket_list_sell.orders)
+    assert len(orders_sell) == 3
+    entry_order_sell = [o for o in orders_sell if o.order_type == OrderType.MARKET][0]
+    sl_order_sell = [o for o in orders_sell if o.order_type == OrderType.STOP_MARKET][0]
+    tp_order_sell = [o for o in orders_sell if o.order_type == OrderType.LIMIT][0]
+    assert entry_order_sell.side == OrderSide.SELL
+    assert sl_order_sell.side == OrderSide.BUY
+    assert tp_order_sell.side == OrderSide.BUY
+    assert float(sl_order_sell.trigger_price.as_double()) > 100.0
+    assert float(tp_order_sell.price.as_double()) < 100.0
+
+

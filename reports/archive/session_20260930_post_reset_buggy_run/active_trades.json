@@ -1,0 +1,29 @@
+{
+  "timestamp": 1790816784.1133282,
+  "equity": 88.87,
+  "cash_balance": 87.92,
+  "positions": [
+    {
+      "coin": "2Z",
+      "instrument_id": "2Z-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 1508.0,
+      "entry_price": 0.059158,
+      "mark_price": 0.059704,
+      "unrealized_pnl": 0.82,
+      "roi_pct": 0.92,
+      "strategy": "VWAP/OI"
+    },
+    {
+      "coin": "REZ",
+      "instrument_id": "REZ-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 18521.0,
+      "entry_price": 0.004748,
+      "mark_price": 0.004755,
+      "unrealized_pnl": 0.13,
+      "roi_pct": 0.15,
+      "strategy": "VWAP/OI"
+    }
+  ]
+}

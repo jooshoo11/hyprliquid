@@ -1,0 +1,143 @@
+{
+  "updated_at": "2026-09-30T21:07:51.817286+00:00",
+  "scan_iteration": 1,
+  "interval_minutes": 15,
+  "next_scan_at": "2026-09-30T21:22:51.685205+00:00",
+  "macro_sentiment": "Range-Bound Consolidation (44% green, avg -0.5% 24h). Support/resistance walls holding; low directional breakout follow-through.",
+  "regime": "CHOPPY_MEAN_REVERTING_RANGE",
+  "regime_tweaks": [
+    "Mean Reversion Mode: Funding Fade & Scalp prioritized (max 3/2 pos), Trend TP 1.8 R:R, Scalp TP 18t"
+  ],
+  "prospects": [
+    {
+      "coin": "NEAR",
+      "bias": "LONG",
+      "conviction_score": 90,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 5.3665,
+      "target_entry": 5.3343,
+      "stop_loss": 5.3182,
+      "take_profit": 5.4738,
+      "funding_apr_pct": 25.175188800000004,
+      "volume_24h_usd": 348230529.9491407,
+      "rationale": "Spot-led accumulation: +8.2% 24h on $348.2M vol; healthy baseline funding (+25.2% APR)."
+    },
+    {
+      "coin": "ENA",
+      "bias": "LONG",
+      "conviction_score": 86,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 0.2621,
+      "target_entry": 0.2605,
+      "stop_loss": 0.2597,
+      "take_profit": 0.2673,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 85917755.68915004,
+      "rationale": "Spot-led accumulation: +4.2% 24h on $85.9M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "WLD",
+      "bias": "LONG",
+      "conviction_score": 89,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 0.5352,
+      "target_entry": 0.532,
+      "stop_loss": 0.5304,
+      "take_profit": 0.5459,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 50323218.33857206,
+      "rationale": "Spot-led accumulation: +8.0% 24h on $50.3M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "ZRO",
+      "bias": "LONG",
+      "conviction_score": 86,
+      "strategy": "SMC Trend & Spot Divergence",
+      "mark_price": 1.6795,
+      "target_entry": 1.6694,
+      "stop_loss": 1.6644,
+      "take_profit": 1.7131,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 31735924.368339997,
+      "rationale": "Spot-led accumulation: +4.3% 24h on $31.7M vol; healthy baseline funding (+11.0% APR)."
+    },
+    {
+      "coin": "MON",
+      "bias": "SHORT",
+      "conviction_score": 84,
+      "strategy": "Hourly Funding Fade",
+      "mark_price": 0.02933,
+      "target_entry": 0.0296,
+      "stop_loss": 0.0296,
+      "take_profit": 0.0287,
+      "funding_apr_pct": 87.7695936,
+      "volume_24h_usd": 10374175.152783995,
+      "rationale": "Crowded long leverage: Funding APR +87.8% on $10.4M 24h vol; longs paying steep hourly fees."
+    },
+    {
+      "coin": "LIT",
+      "bias": "SHORT",
+      "conviction_score": 94,
+      "strategy": "SMC Trend Breakdown",
+      "mark_price": 3.8315,
+      "target_entry": 3.8545,
+      "stop_loss": 3.866,
+      "take_profit": 3.7549,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 210574514.52910006,
+      "rationale": "Bear market breakdown: -14.7% 24h drop on $210.6M vol; heavy distribution."
+    },
+    {
+      "coin": "GRASS",
+      "bias": "SHORT",
+      "conviction_score": 90,
+      "strategy": "SMC Trend Breakdown",
+      "mark_price": 0.68858,
+      "target_entry": 0.6927,
+      "stop_loss": 0.6948,
+      "take_profit": 0.6748,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 18099877.609177005,
+      "rationale": "Bear market breakdown: -8.9% 24h drop on $18.1M vol; heavy distribution."
+    },
+    {
+      "coin": "CASHCAT",
+      "bias": "SHORT",
+      "conviction_score": 89,
+      "strategy": "SMC Trend Breakdown",
+      "mark_price": 0.16509,
+      "target_entry": 0.1661,
+      "stop_loss": 0.1666,
+      "take_profit": 0.1618,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 11607203.360509997,
+      "rationale": "Bear market breakdown: -7.8% 24h drop on $11.6M vol; heavy distribution."
+    },
+    {
+      "coin": "BTC",
+      "bias": "LONG",
+      "conviction_score": 80,
+      "strategy": "VWAP / Volume Breakout",
+      "mark_price": 83733.0,
+      "target_entry": 83314.335,
+      "stop_loss": 82979.403,
+      "take_profit": 85407.66,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 2884606048.7804756,
+      "rationale": "Top volume leader ($2884.6M 24h vol) with LONG bias and +11.0% APR funding."
+    },
+    {
+      "coin": "ETH",
+      "bias": "LONG",
+      "conviction_score": 80,
+      "strategy": "VWAP / Volume Breakout",
+      "mark_price": 2683.4,
+      "target_entry": 2669.983,
+      "stop_loss": 2659.2494,
+      "take_profit": 2737.068,
+      "funding_apr_pct": 10.950000000000001,
+      "volume_24h_usd": 1068721673.1071801,
+      "rationale": "Top volume leader ($1068.7M 24h vol) with LONG bias and +11.0% APR funding."
+    }
+  ]
+}

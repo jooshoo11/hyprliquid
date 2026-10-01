@@ -1,17 +1,17 @@
 {
-  "regime": "CHOPPY_MEAN_REVERTING_RANGE",
-  "breadth_pct": 38.0,
-  "avg_change_24h": 0.04,
-  "avg_funding_apr": 17.0,
-  "volatility_score": 6.66,
-  "high_funding_count": 4,
-  "negative_funding_count": 1,
-  "sentiment": "Range-Bound Consolidation (38% green, avg +0.0% 24h). Support/resistance walls holding; low directional breakout follow-through.",
+  "regime": "BULL_MOMENTUM_EXPANSION",
+  "breadth_pct": 82.0,
+  "avg_change_24h": 2.61,
+  "avg_funding_apr": 16.7,
+  "volatility_score": 5.79,
+  "high_funding_count": 3,
+  "negative_funding_count": 0,
+  "sentiment": "Broad-Based Bull Expansion (82% green, avg +2.6% 24h). Institutional accumulation with healthy carry (+16.7% APR).",
   "active_tweaks": [
-    "OrderBookImbalance allowed up to 2 concurrent scalps on depth skew walls",
-    "Funding Fade prioritized for mean reversion (max 3 positions)",
-    "VWAP breakout allocations trimmed to prevent whipsaw in range",
-    "Profit targets tightened to 1.5 R:R to lock gains quickly"
+    "SMC Trend Continuation max positions expanded to 4 (Alloc: 2.5x)",
+    "VWAP/OI Momentum max positions expanded to 3 (Alloc: 2.0x)",
+    "Trend profit target expanded to 3.0 R:R for runners",
+    "Funding Fade entry threshold raised to +80% APR (avoid fighting trend)"
   ],
-  "timestamp": 1790564081.8562064
+  "timestamp": 1790833803.2290564
 }

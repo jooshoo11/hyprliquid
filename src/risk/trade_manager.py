@@ -53,6 +53,7 @@ class PositionTracker:
     dynamic_trailing_distance_pct: Optional[float] = None
     take_profit_roi_pct: Optional[float] = None  # Profit target %
     breakeven_roi_pct: Optional[float] = None    # Dynamic breakeven threshold %
+    tiered_lock_roi_pct: Optional[float] = None  # Guaranteed locked stop ROI %
 
     # Current snapshot
     current_price: float = 0.0
@@ -117,8 +118,8 @@ class TradeManager:
         session_trades_file: Optional[str] = None,
         missed_opportunities_file: Optional[str] = None,
         decision_journal_file: Optional[str] = None,
-        breakeven_roi_pct: float = 1.0,         # Breakeven ratchet trigger: +1.0%
-        breakeven_stop_roi_pct: float = 0.1,    # Stop set at +0.1% ROI (covers taker fee)
+        breakeven_roi_pct: float = 1.25,        # Breakeven ratchet trigger: +1.25%
+        breakeven_stop_roi_pct: float = 0.15,   # Stop set at +0.15% ROI (covers taker fee)
         trailing_roi_pct: float = 2.0,          # Trailing stop trigger: +2.0%
         trailing_distance_pct: float = 0.75,    # Trails 0.75% behind peak mark price
         mae_roi_pct: float = -2.5,              # MAE hard cut ROI: <= -2.5%
@@ -132,6 +133,10 @@ class TradeManager:
         take_profit_roi_pct: Optional[float] = None, # Hard Take-Profit target: e.g. +2.0% to +3.5% ROI
         extended_hold_hours: float = 2.0,       # Extended hold duration: > 2.0 hours
         extended_hold_roi_pct: float = 1.5,     # Extended hold profit lock: >= +1.5% ROI
+        tiered_profit_lock: bool = False,       # Tiered profit locking (+0.75% @ 1.5% peak, +1.40% @ 2.2% peak)
+        fast_dud_minutes: float = 30.0,         # Fast dud cut: after 30 mins
+        fast_dud_roi_pct: float = -0.40,        # If ROI <= -0.40%
+        fast_dud_max_peak_roi: float = 0.20,    # And peak ROI never exceeded +0.20%
     ) -> None:
         self.reports_dir = reports_dir or os.path.join(REPO_ROOT, "reports")
         self.daily_pnl_file = daily_pnl_file or os.path.join(self.reports_dir, "daily_pnl.md")
@@ -154,6 +159,10 @@ class TradeManager:
         self.take_profit_roi_pct = take_profit_roi_pct
         self.extended_hold_hours = extended_hold_hours
         self.extended_hold_roi_pct = extended_hold_roi_pct
+        self.tiered_profit_lock = tiered_profit_lock
+        self.fast_dud_minutes = fast_dud_minutes
+        self.fast_dud_roi_pct = fast_dud_roi_pct
+        self.fast_dud_max_peak_roi = fast_dud_max_peak_roi
 
         self.active_positions: Dict[str, PositionTracker] = {}
         self._journaled_trade_keys: set = set()
@@ -161,6 +170,7 @@ class TradeManager:
         self._missed_opportunities_cache: List[Dict[str, Any]] = []
         self.cumulative_fees: float = 0.0
         self.cooldown_tracker: Dict[str, float] = {}
+        self._recently_closed_times: Dict[str, float] = {}
         self._lock = threading.Lock()
 
 
@@ -183,6 +193,7 @@ class TradeManager:
         entry_time: Optional[float] = None,
         atr_pct: Optional[float] = None,
         take_profit_roi_pct: Optional[float] = None,
+        stop_price: Optional[float] = None,
     ) -> PositionTracker:
         """Register or reset an active position for tracking."""
         key = self._get_key(coin)
@@ -197,11 +208,13 @@ class TradeManager:
                 strategy=strategy,
                 last_update_time=now,
                 take_profit_roi_pct=take_profit_roi_pct if take_profit_roi_pct is not None else self.take_profit_roi_pct,
+                stop_price=float(stop_price) if stop_price is not None and float(stop_price) > 0 else None,
             )
             if atr_pct is not None and atr_pct > 0:
                 tracker.atr_pct = float(atr_pct)
                 tracker.dynamic_trailing_distance_pct = round(max(0.5, min(2.5, 1.5 * tracker.atr_pct)), 2)
             self.active_positions[key] = tracker
+            self._recently_closed_times.pop(key, None)
             return tracker
 
     def sync_active_positions(self, current_open_coins: Any) -> List[str]:
@@ -229,6 +242,7 @@ class TradeManager:
         atr_pct: Optional[float] = None,
         take_profit_roi_pct: Optional[float] = None,
         breakeven_roi_pct: Optional[float] = None,
+        stop_price: Optional[float] = None,
     ) -> TradeAction:
         """
         Update position with the latest mark price, recalculate metrics and watermarks,
@@ -240,6 +254,20 @@ class TradeManager:
         with self._lock:
             tracker = self.active_positions.get(key)
             if tracker is None:
+                # Re-entrancy guard: If coin was already closed, do NOT recreate tracker from delayed emulator fill!
+                if key in self._recently_closed_times:
+                    return TradeAction(
+                        action="HOLD",
+                        should_close=False,
+                        reason=f"Position on {key} was already closed; suppressing re-creation from delayed emulator fill.",
+                        coin=key,
+                        side=side,
+                        roi=0.0,
+                        pnl=0.0,
+                        current_price=mark_price,
+                        peak_price=mark_price,
+                        stop_price=stop_price,
+                    )
                 tracker = PositionTracker(
                     coin=key,
                     side=side,
@@ -250,6 +278,7 @@ class TradeManager:
                     last_update_time=now,
                     take_profit_roi_pct=take_profit_roi_pct if take_profit_roi_pct is not None else self.take_profit_roi_pct,
                     breakeven_roi_pct=breakeven_roi_pct,
+                    stop_price=float(stop_price) if stop_price is not None and float(stop_price) > 0 else None,
                 )
                 self.active_positions[key] = tracker
             else:
@@ -261,6 +290,8 @@ class TradeManager:
                     tracker.strategy = strategy
                 if entry_time is not None:
                     tracker.entry_time = entry_time
+                if tracker.stop_price is None and stop_price is not None and float(stop_price) > 0:
+                    tracker.stop_price = float(stop_price)
 
             if atr_pct is not None and atr_pct > 0:
                 tracker.atr_pct = float(atr_pct)
@@ -270,7 +301,8 @@ class TradeManager:
                 tracker.take_profit_roi_pct = float(take_profit_roi_pct)
 
             if breakeven_roi_pct is not None and breakeven_roi_pct > 0:
-                tracker.breakeven_roi_pct = float(breakeven_roi_pct)
+                if not tracker.breakeven_triggered:
+                    tracker.breakeven_roi_pct = float(breakeven_roi_pct)
 
             # Update current price and timestamp
             mark_price = float(mark_price)
@@ -384,6 +416,32 @@ class TradeManager:
                         stop_price=tracker.stop_price,
                     )
 
+            # Guaranteed locked stop floor (Breakeven ratchet & Tiered profit lock)
+            be_thresh = getattr(tracker, "breakeven_roi_pct", None) or self.breakeven_roi_pct
+            locked_roi: Optional[float] = None
+            if self.tiered_profit_lock:
+                if tracker.peak_roi >= 2.20:
+                    locked_roi = 1.40
+                elif tracker.peak_roi >= 1.50:
+                    locked_roi = 0.75
+                elif tracker.peak_roi >= be_thresh or tracker.breakeven_triggered:
+                    locked_roi = self.breakeven_stop_roi_pct
+            elif tracker.peak_roi >= be_thresh or tracker.breakeven_triggered:
+                locked_roi = self.breakeven_stop_roi_pct
+
+            if locked_roi is not None:
+                tracker.breakeven_triggered = True
+                if tracker.tiered_lock_roi_pct is None or locked_roi > tracker.tiered_lock_roi_pct:
+                    tracker.tiered_lock_roi_pct = locked_roi
+                if tracker.side == "LONG":
+                    lock_stop = tracker.entry_price * (1.0 + (locked_roi / 100.0))
+                    if tracker.stop_price is None or lock_stop > tracker.stop_price:
+                        tracker.stop_price = lock_stop
+                else:  # SHORT
+                    lock_stop = tracker.entry_price * (1.0 - (locked_roi / 100.0))
+                    if tracker.stop_price is None or lock_stop < tracker.stop_price:
+                        tracker.stop_price = lock_stop
+
             # Rule 3: Trailing stop
             # When ROI >= +2.0%, trails behind peak mark price (dynamic ATR or configured default)
             if tracker.peak_roi >= self.trailing_roi_pct:
@@ -411,10 +469,16 @@ class TradeManager:
                                 peak_price=tracker.peak_price,
                                 stop_price=tracker.stop_price,
                             )
-                        reason = (
-                            f"Trailing stop triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
-                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
-                        )
+                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct and tracker.stop_price == (tracker.entry_price * (1.0 + (tracker.tiered_lock_roi_pct / 100.0))):
+                            reason = (
+                                f"Tiered profit lock triggered: ROI {roi:+.2f}% <= locked stop {tracker.tiered_lock_roi_pct:.2f}% "
+                                f"(Peak ROI {tracker.peak_roi:+.2f}%)"
+                            )
+                        else:
+                            reason = (
+                                f"Trailing stop triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
+                                f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
+                            )
                         return TradeAction(
                             action="CLOSE",
                             should_close=True,
@@ -449,10 +513,16 @@ class TradeManager:
                                 peak_price=tracker.peak_price,
                                 stop_price=tracker.stop_price,
                             )
-                        reason = (
-                            f"Trailing stop triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
-                            f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
-                        )
+                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct and tracker.stop_price == (tracker.entry_price * (1.0 - (tracker.tiered_lock_roi_pct / 100.0))):
+                            reason = (
+                                f"Tiered profit lock triggered: ROI {roi:+.2f}% >= locked stop {tracker.tiered_lock_roi_pct:.2f}% "
+                                f"(Peak ROI {tracker.peak_roi:+.2f}%)"
+                            )
+                        else:
+                            reason = (
+                                f"Trailing stop triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
+                                f"(Peak: ${tracker.peak_price:,.2f}, Trail: {trail_dist}%)"
+                            )
                         return TradeAction(
                             action="CLOSE",
                             should_close=True,
@@ -466,16 +536,10 @@ class TradeManager:
                             stop_price=tracker.stop_price,
                         )
 
-            # Rule 4: Breakeven ratchet
-            # Dynamically triggers at +0.75% in chop/flush or +1.0% baseline, sets stop at +0.1% (covering taker fee)
-            be_thresh = getattr(tracker, "breakeven_roi_pct", None) or self.breakeven_roi_pct
-            if tracker.peak_roi >= be_thresh:
-                tracker.breakeven_triggered = True
+            # Rule 4: Ratchet stop trigger check (Initial SL, Breakeven, & Tiered Profit Lock)
+            # If tracker.stop_price is active, execute when breached
+            if tracker.stop_price is not None:
                 if tracker.side == "LONG":
-                    be_stop = tracker.entry_price * (1.0 + (self.breakeven_stop_roi_pct / 100.0))
-                    if tracker.stop_price is None or be_stop > tracker.stop_price:
-                        tracker.stop_price = be_stop
-
                     if mark_price <= tracker.stop_price:
                         if duration_seconds < self.min_holding_seconds:
                             reason = f"HOLD (Min holding period active: {int(duration_seconds)}s / {int(self.min_holding_seconds)}s)"
@@ -491,10 +555,21 @@ class TradeManager:
                                 peak_price=tracker.peak_price,
                                 stop_price=tracker.stop_price,
                             )
-                        reason = (
-                            f"Breakeven ratchet triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
-                            f"(+0.1% ROI locked)"
-                        )
+                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct:
+                            reason = (
+                                f"Tiered profit lock triggered: ROI {roi:+.2f}% <= locked stop {tracker.tiered_lock_roi_pct:.2f}% "
+                                f"(Peak ROI {tracker.peak_roi:+.2f}%)"
+                            )
+                        elif tracker.breakeven_triggered and roi >= 0.0:
+                            reason = (
+                                f"Breakeven ratchet triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
+                                f"(+{self.breakeven_stop_roi_pct:.1f}% ROI locked)"
+                            )
+                        else:
+                            reason = (
+                                f"Stop loss triggered: price ${mark_price:,.2f} <= stop ${tracker.stop_price:,.2f} "
+                                f"(ROI: {roi:+.2f}%)"
+                            )
                         return TradeAction(
                             action="CLOSE",
                             should_close=True,
@@ -508,10 +583,6 @@ class TradeManager:
                             stop_price=tracker.stop_price,
                         )
                 else:  # SHORT
-                    be_stop = tracker.entry_price * (1.0 - (self.breakeven_stop_roi_pct / 100.0))
-                    if tracker.stop_price is None or be_stop < tracker.stop_price:
-                        tracker.stop_price = be_stop
-
                     if mark_price >= tracker.stop_price:
                         if duration_seconds < self.min_holding_seconds:
                             reason = f"HOLD (Min holding period active: {int(duration_seconds)}s / {int(self.min_holding_seconds)}s)"
@@ -527,9 +598,43 @@ class TradeManager:
                                 peak_price=tracker.peak_price,
                                 stop_price=tracker.stop_price,
                             )
+                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct:
+                            reason = (
+                                f"Tiered profit lock triggered: ROI {roi:+.2f}% >= locked stop {tracker.tiered_lock_roi_pct:.2f}% "
+                                f"(Peak ROI {tracker.peak_roi:+.2f}%)"
+                            )
+                        elif tracker.breakeven_triggered and roi >= 0.0:
+                            reason = (
+                                f"Breakeven ratchet triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
+                                f"(+{self.breakeven_stop_roi_pct:.1f}% ROI locked)"
+                            )
+                        else:
+                            reason = (
+                                f"Stop loss triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
+                                f"(ROI: {roi:+.2f}%)"
+                            )
+                        return TradeAction(
+                            action="CLOSE",
+                            should_close=True,
+                            reason=reason,
+                            coin=tracker.coin,
+                            side=tracker.side,
+                            roi=roi,
+                            pnl=pnl,
+                            current_price=mark_price,
+                            peak_price=tracker.peak_price,
+                            stop_price=tracker.stop_price,
+                        )
+
+            # Rule 5A: Fast Dud Cut
+            # Kills dead trades with zero upward momentum after fast_dud_minutes (e.g. 30m) before they bleed into full stop-outs
+            duration_minutes = duration_seconds / 60.0
+            if self.fast_dud_minutes and duration_minutes >= self.fast_dud_minutes:
+                if tracker.peak_roi < self.fast_dud_max_peak_roi and roi <= self.fast_dud_roi_pct:
+                    if duration_seconds >= self.min_holding_seconds:
                         reason = (
-                            f"Breakeven ratchet triggered: price ${mark_price:,.2f} >= stop ${tracker.stop_price:,.2f} "
-                            f"(+0.1% ROI locked)"
+                            f"Fast dud cut: open {duration_minutes:.0f}m with zero momentum "
+                            f"(Peak ROI: {tracker.peak_roi:+.2f}%, current: {roi:+.2f}%)"
                         )
                         return TradeAction(
                             action="CLOSE",
@@ -545,7 +650,7 @@ class TradeManager:
                         )
 
             # Rule 5: Stagnant trade exit
-            # Closes position if open > 4 hours without moving > 0.3% ROI
+            # Closes position if open > stagnant_hours without moving > stagnant_roi_pct ROI
             duration_hours = duration_seconds / 3600.0
             if duration_hours > self.stagnant_hours:
                 if abs(tracker.current_roi) <= self.stagnant_roi_pct or (
@@ -713,6 +818,20 @@ class TradeManager:
         with self._lock:
             tracker = self.active_positions.pop(key, None)
             self.cooldown_tracker[key] = now
+            last_closed_ts = self._recently_closed_times.get(key)
+            was_recently_closed = (last_closed_ts is not None)
+            is_stale_reentry = was_recently_closed and tracker is not None and (tracker.entry_time <= last_closed_ts)
+
+        # Re-entrancy guard: If tracker is None and this coin was already closed, OR tracker entry is stale
+        if (tracker is None and was_recently_closed) or is_stale_reentry:
+            return {
+                "coin": key,
+                "status": "SUPPRESSED_DUPLICATE",
+                "reason": f"Position on {key} was already closed and journaled; ignoring remnant close.",
+            }
+
+        with self._lock:
+            self._recently_closed_times[key] = now
 
         if tracker is not None:
             side = tracker.side

@@ -1,0 +1,21 @@
+{
+  "equity": 77.05,
+  "realized_pnl": -22.97,
+  "open_positions": [
+    {
+      "coin": "CHIP",
+      "instrument_id": "CHIP-USD-PERP.HYPERLIQUID",
+      "side": "SHORT",
+      "size": 1803.0,
+      "entry_price": 0.042721,
+      "mark_price": 0.042711,
+      "unrealized_pnl": 0.02,
+      "roi_pct": 0.02,
+      "strategy": "Book Imbalance"
+    }
+  ],
+  "session_start": "2026-09-30T21:14:49Z",
+  "last_updated": "2026-09-30T21:14:49Z",
+  "total_trades": 67,
+  "starting_balance": 100.0
+}

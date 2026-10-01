@@ -1,0 +1,29 @@
+{
+  "timestamp": 1790831432.4305587,
+  "equity": 97.33,
+  "cash_balance": 96.98,
+  "positions": [
+    {
+      "coin": "JUP",
+      "instrument_id": "JUP-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 963.0,
+      "entry_price": 0.33173,
+      "mark_price": 0.331675,
+      "unrealized_pnl": -0.05,
+      "roi_pct": -0.02,
+      "strategy": "VWAP/OI"
+    },
+    {
+      "coin": "SKY",
+      "instrument_id": "SKY-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 1234.0,
+      "entry_price": 0.078614,
+      "mark_price": 0.07894,
+      "unrealized_pnl": 0.4,
+      "roi_pct": 0.41,
+      "strategy": "Book Imbalance"
+    }
+  ]
+}

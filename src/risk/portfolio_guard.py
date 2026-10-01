@@ -50,7 +50,9 @@ class PortfolioGuard:
         default_order_timeout_secs: float = 300.0,
         max_single_position_equity_pct: Optional[float] = 0.40,
         allow_pyramiding: bool = True,
+        bypass_risk_guard: bool = False,
     ) -> None:
+        self.bypass_risk_guard = bypass_risk_guard
         self.max_strategy_equity_pct = max_strategy_equity_pct
         self.baseline_strategy_equity_pct = max_strategy_equity_pct
         self.max_single_position_equity_pct = max_single_position_equity_pct
@@ -83,6 +85,7 @@ class PortfolioGuard:
         self._pending_approvals: int = 0
         self.prospect_biases: Dict[str, str] = {}
         self.cooldown_tracker: Dict[str, float] = {}
+        self.strategy_lockouts: Dict[str, float] = {}  # Strategy circuit breaker lockouts (strat -> unlock timestamp)
         self.reentry_cooldown_seconds: float = 30.0  # 30 seconds anti-churn cooldown
         self.current_regime: Optional[str] = None
         self.regime_tweaks: List[str] = []
@@ -191,7 +194,32 @@ class PortfolioGuard:
                 win_rate = wins / len(eval_trades)
                 profit_factor = round(gross_wins / max(gross_losses, 0.01), 2) if gross_losses > 0 else (round(gross_wins, 2) if gross_wins > 0 else 1.0)
 
-                if win_rate >= 0.60 and total_net_pnl > 0:
+                # Evaluate consecutive losses in recent trades
+                consecutive_losses = 0
+                for tr in reversed(eval_trades):
+                    gross = float(tr.get("gross_pnl") if "gross_pnl" in tr else (tr.get("pnl") or 0.0))
+                    fees = float(tr.get("fees") or 0.0)
+                    net = float(tr.get("net_pnl") if "net_pnl" in tr else (gross - fees))
+                    if net < 0:
+                        consecutive_losses += 1
+                    else:
+                        break
+
+                now_ts = time.time()
+                # Strategy Circuit Breaker: 3 consecutive losses OR win rate < 35% over at least 5 trades
+                if consecutive_losses >= 3 or (len(eval_trades) >= 5 and win_rate < 0.35 and total_net_pnl < 0):
+                    self.strategy_lockouts[strat] = now_ts + 3600.0
+                    base_strat = strat.split("-")[0]
+                    self.strategy_lockouts[base_strat] = now_ts + 3600.0
+
+                lockout_until = max(self.strategy_lockouts.get(strat, 0.0), self.strategy_lockouts.get(strat.split("-")[0], 0.0))
+                is_locked = (now_ts < lockout_until)
+                lock_rem = max(0, int((lockout_until - now_ts) / 60)) if is_locked else 0
+
+                if is_locked:
+                    multiplier = 0.4
+                    tier = f"CIRCUIT BREAKER 🛑 ({lock_rem}m lockout)"
+                elif win_rate >= 0.60 and total_net_pnl > 0:
                     multiplier = 1.6 if win_rate >= 0.75 else 1.4
                     tier = "HOT 🔥" if win_rate >= 0.75 else "WARM ⚡"
                 elif win_rate < 0.40 and total_net_pnl < 0:
@@ -216,9 +244,30 @@ class PortfolioGuard:
                     "win_rate_pct": round(win_rate * 100.0, 1),
                     "profit_factor": profit_factor,
                     "rolling_net_pnl": round(total_net_pnl, 2),
+                    "consecutive_losses": consecutive_losses,
+                    "is_locked": is_locked,
+                    "lockout_remaining_minutes": lock_rem,
                 }
 
             return dict(self.strategy_allocation_caps)
+
+    def is_strategy_locked(self, strategy_name: str) -> bool:
+        """Check if strategy is currently locked out by circuit breaker."""
+        with self._lock:
+            base_strat = strategy_name.split("-")[0]
+            now_ts = time.time()
+            return now_ts < max(
+                self.strategy_lockouts.get(strategy_name, 0.0),
+                self.strategy_lockouts.get(base_strat, 0.0),
+            )
+
+    def set_strategy_lockout(self, strategy_name: str, duration_seconds: float = 3600.0) -> None:
+        """Explicitly set a circuit breaker lockout on a strategy."""
+        with self._lock:
+            until = time.time() + duration_seconds
+            self.strategy_lockouts[strategy_name] = until
+            base_strat = strategy_name.split("-")[0]
+            self.strategy_lockouts[base_strat] = until
 
     def get_strategy_sizing_multiplier(self, strategy_name: str) -> float:
         """Get current dynamic risk sizing multiplier for order sizing (never throttled below 1.0x)."""
@@ -313,8 +362,24 @@ class PortfolioGuard:
                 self.strategy_allocated_margin.clear()
                 self.active_instrument_directions.clear()
 
+            if getattr(self, "bypass_risk_guard", False):
+                coin = str(instrument_id).split("-")[0].split(".")[0].upper()
+                instr_str = str(instrument_id)
+                existing_side = self.active_instrument_directions.get(instr_str)
+                if existing_side is not None and existing_side != side:
+                    return False, f"Collision detected: opposing order on {instr_str} ({existing_side} exists)."
+
+                from src.utils.instruments import get_coin_max_leverage
+                max_lev = float(get_coin_max_leverage(coin))
+                max_coin_notional = self.current_equity * max_lev
+                if proposed_notional_usd > (max_coin_notional * 1.05):
+                    return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
+
+                return True, f"Risk guard bypassed: MAX LEVERAGE UNCONSTRAINED ({max_lev:.0f}x on {coin})"
+
             if self.is_circuit_breaker_triggered:
-                return False, f"Trading halted: 24h drawdown breached 2% limit."
+                pct_str = f"{int(self.max_daily_drawdown_pct * 100)}%"
+                return False, f"Trading halted: 24h drawdown breached {pct_str} limit."
 
             # AI Prospect bias check from bridge/prospects.json
             coin = str(instrument_id).split("-")[0].split(".")[0].upper()
@@ -326,6 +391,16 @@ class PortfolioGuard:
                 rem_sec = int(cooldown_until - now_sec)
                 return False, f"Anti-churn cooldown active for {coin} ({rem_sec}s remaining)."
 
+            # Strategy Circuit Breaker Lockout Check
+            base_strat = strategy_name.split("-")[0]
+            lockout_until = max(
+                self.strategy_lockouts.get(strategy_name, 0.0),
+                self.strategy_lockouts.get(base_strat, 0.0),
+            )
+            if now_sec < lockout_until:
+                rem_mins = max(1, int((lockout_until - now_sec) / 60))
+                return False, f"Strategy Circuit Breaker: Strategy '{base_strat}' locked out ({rem_mins}m remaining) due to consecutive loss streak or low win rate."
+
             prospect_bias = self.prospect_biases.get(coin)
             if prospect_bias:
                 # Do not block microstructural orderbook scalpers from taking resting liquidity on either side
@@ -335,11 +410,14 @@ class PortfolioGuard:
                     elif prospect_bias == "SHORT" and side != OrderSide.SELL:
                         return False, f"AI Prospect bias for {coin} is SHORT; rejecting {side.name} entry."
 
-            # Directional Regime Filter: Prevent counter-trend bleeding in macro trending regimes
+            # Directional Regime Filter: Prevent counter-trend bleeding and trend breakouts in chop
             if self.current_regime:
                 side_is_buy = (side == OrderSide.BUY) or (str(side).upper() in ("BUY", "LONG"))
                 is_major_benchmark = coin in ("BTC", "ETH")
-                if self.current_regime == "BEAR_MARKET_FLUSH":
+                if self.current_regime == "CHOPPY_MEAN_REVERTING_RANGE":
+                    if "TrendContinuation" in strategy_name or "Trend" in base_strat:
+                        return False, f"Regime Strategy Gate: {strategy_name} blocked during CHOPPY_MEAN_REVERTING_RANGE (trend breakouts fail in chop; favor OrderBookImbalance/FundingFade)."
+                elif self.current_regime == "BEAR_MARKET_FLUSH":
                     if side_is_buy and not is_major_benchmark:
                         return False, f"Directional Regime Filter: Altcoin LONG on {coin} blocked during BEAR_MARKET_FLUSH."
                 elif self.current_regime == "BULL_MOMENTUM_EXPANSION":

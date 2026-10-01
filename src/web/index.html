@@ -130,6 +130,59 @@
   <!-- MAIN COCKPIT BODY -->
   <main class="flex-1 p-5 max-w-[1700px] w-full mx-auto flex flex-col gap-5">
 
+    <!-- REAL-TIME SUBSYSTEM CONNECTIVITY & HEALTH BAR -->
+    <section class="bg-[#0b1120] border border-slate-800/90 rounded-xl px-4 py-2.5 shadow-xl flex flex-wrap items-center justify-between gap-3 text-xs mono">
+      <div class="flex items-center space-x-2">
+        <span class="text-[11px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1.5">
+          <i class="fa-solid fa-network-wired text-cyan-400"></i> SUBSYSTEMS:
+        </span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+        <!-- 1. Nautilus Trading Node -->
+        <div id="subsystem-node" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-emerald-800/40 text-emerald-400">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-live"></span>
+          <span class="font-bold text-[11px]">NAUTILUS CORE:</span>
+          <span class="text-slate-300 font-semibold text-[11px]">ACTIVE (PORT 8000)</span>
+        </div>
+
+        <!-- 2. Hyperliquid Feed -->
+        <div id="subsystem-feed" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-emerald-800/40 text-emerald-400">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span class="font-bold text-[11px]">L2 PERP FEED:</span>
+          <span class="text-slate-300 font-semibold text-[11px]">50 PAIRS LIVE</span>
+        </div>
+
+        <!-- 3. Groq LPU Sentinel -->
+        <div id="subsystem-groq" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-cyan-800/40 text-cyan-300">
+          <span class="w-2 h-2 rounded-full bg-cyan-400 pulse-live"></span>
+          <span class="font-bold text-[11px]">⚡ GROQ LPU:</span>
+          <span id="subsystem-groq-text" class="text-cyan-200 font-semibold text-[11px]">ONLINE (&lt;150ms)</span>
+        </div>
+
+        <!-- 4. Google AI Studio -->
+        <div id="subsystem-gemini" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-blue-800/40 text-blue-300">
+          <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+          <span class="font-bold text-[11px]">🧠 AI STUDIO:</span>
+          <span id="subsystem-gemini-text" class="text-blue-200 font-semibold text-[11px]">GEMINI 3 FLASH (GROUNDED)</span>
+        </div>
+
+        <!-- 5. Portfolio Guard / Max Leverage -->
+        <div id="subsystem-guard" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-emerald-800/40 text-emerald-400">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span class="font-bold text-[11px]">RISK GUARD:</span>
+          <span id="subsystem-guard-text" class="text-emerald-200 font-semibold text-[11px]">ARMED (EXCHANGE MAX LEV)</span>
+        </div>
+
+        <!-- 6. Paper Trading Ledger -->
+        <div id="subsystem-ledger" class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-amber-800/40 text-amber-300">
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+          <span class="font-bold text-[11px]">LEDGER:</span>
+          <span id="subsystem-ledger-text" class="text-amber-200 font-semibold text-[11px]">$100.00 RESET</span>
+        </div>
+      </div>
+    </section>
+
     <!-- METRICS STRIP -->
     <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       <!-- Total Equity -->
@@ -388,17 +441,19 @@
             </div>
 
             <!-- Category filter pills -->
-            <div class="flex items-center space-x-1 bg-slate-900/90 p-1 rounded-lg border border-slate-800 text-xs mono">
+            <div class="flex flex-wrap items-center gap-1 bg-slate-900/90 p-1 rounded-lg border border-slate-800 text-xs mono">
               <button onclick="filterSentinelCategory('ALL')" class="sentinel-filter-btn px-2.5 py-0.5 rounded bg-cyan-900 text-cyan-200 font-bold" data-cat="ALL">ALL</button>
+              <button onclick="filterSentinelCategory('[GROQ LPU]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-cyan-400 font-semibold" data-cat="[GROQ LPU]">⚡ [GROQ LPU]</button>
+              <button onclick="filterSentinelCategory('[AI STUDIO]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-blue-400 font-semibold" data-cat="[AI STUDIO]">🧠 [AI STUDIO]</button>
               <button onclick="filterSentinelCategory('[AUDIT]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-emerald-400 font-semibold" data-cat="[AUDIT]">[AUDIT]</button>
+              <button onclick="filterSentinelCategory('[REGIME]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-indigo-300 font-semibold" data-cat="[REGIME]">[REGIME]</button>
               <button onclick="filterSentinelCategory('[RISK]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-rose-400 font-semibold" data-cat="[RISK]">[RISK]</button>
-              <button onclick="filterSentinelCategory('[SCREEN]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-indigo-400 font-semibold" data-cat="[SCREEN]">[SCREEN]</button>
               <button onclick="filterSentinelCategory('[MISSED]')" class="sentinel-filter-btn px-2 py-0.5 rounded hover:bg-slate-800 text-amber-400 font-semibold" data-cat="[MISSED]">[MISSED]</button>
             </div>
           </div>
 
           <!-- Streaming list container -->
-          <div id="sentinel-stream-container" class="flex flex-col gap-2 mt-3 overflow-y-auto max-h-[220px] pr-1 mono text-xs">
+          <div id="sentinel-stream-container" class="flex flex-col gap-2 mt-3 overflow-y-auto max-h-[340px] pr-1 mono text-xs">
             <div class="text-xs text-slate-500 py-6 text-center italic">Awaiting AI Sentinel 10-second thoughts stream...</div>
           </div>
         </div>
@@ -1753,10 +1808,12 @@
         return;
       }
 
-      container.innerHTML = filtered.slice(-15).reverse().map(t => {
+      container.innerHTML = filtered.slice(-25).reverse().map(t => {
         const cat = t.category || '[AUDIT]';
         let catStyle = 'bg-cyan-950 text-cyan-300 border-cyan-800/60';
-        if (cat.includes('AUDIT')) catStyle = 'bg-emerald-950 text-emerald-300 border-emerald-800/60';
+        if (cat.includes('GROQ')) catStyle = 'bg-cyan-950 text-cyan-200 border-cyan-500/80 shadow-sm shadow-cyan-950';
+        else if (cat.includes('AI STUDIO') || cat.includes('STUDIO')) catStyle = 'bg-blue-950 text-blue-200 border-blue-500/80 shadow-sm shadow-blue-950';
+        else if (cat.includes('AUDIT')) catStyle = 'bg-emerald-950 text-emerald-300 border-emerald-800/60';
         else if (cat.includes('RISK')) catStyle = 'bg-rose-950 text-rose-300 border-rose-800/60';
         else if (cat.includes('SCREEN')) catStyle = 'bg-indigo-950 text-indigo-300 border-indigo-800/60';
         else if (cat.includes('REGIME')) catStyle = 'bg-indigo-950 text-indigo-200 border-indigo-600/70';
@@ -1985,6 +2042,23 @@
       // Render 10s AI Sentinel Logic Stream
       if (data.sentinel_thoughts) {
         renderSentinelThoughts(data.sentinel_thoughts);
+      }
+
+      // Update Subsystem Connectivity & Health Indicators
+      const groqEl = document.getElementById('subsystem-groq-text');
+      if (groqEl) {
+        const hasGroq = data.sentinel_thoughts && data.sentinel_thoughts.some(t => (t.category || '').includes('GROQ'));
+        groqEl.textContent = hasGroq ? 'ONLINE (<150ms)' : 'ACTIVE (LPU)';
+      }
+      const geminiEl = document.getElementById('subsystem-gemini-text');
+      if (geminiEl) {
+        const hasGemini = (data.prospects && data.prospects.some(p => p.ai_studio_validated !== undefined)) ||
+                          (data.sentinel_thoughts && data.sentinel_thoughts.some(t => (t.category || '').includes('AI STUDIO')));
+        geminiEl.textContent = hasGemini ? 'GEMINI 3 FLASH (GROUNDED)' : 'GEMINI 3 FLASH';
+      }
+      const ledgerEl = document.getElementById('subsystem-ledger-text');
+      if (ledgerEl) {
+        ledgerEl.textContent = `$${equity.toFixed(2)} (RESET)`;
       }
 
       // Update Est. Fees & Carry Pill

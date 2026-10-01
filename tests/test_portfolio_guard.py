@@ -295,5 +295,75 @@ def test_anti_pyramiding_enforcement():
     assert "Position already active on ENA" in reason_second
 
 
+def test_choppy_regime_blocks_trend_continuation():
+    """Verify that TrendContinuationSMC is blocked during CHOPPY_MEAN_REVERTING_RANGE while scalper is permitted."""
+    guard = PortfolioGuard()
+    guard.update_equity(1000.0)
+    inst_eth = InstrumentId(Symbol("ETH-USD-PERP"), Venue("HYPERLIQUID"))
+
+    guard.set_market_regime("CHOPPY_MEAN_REVERTING_RANGE")
+
+    # TrendContinuationSMC must be rejected
+    can_open_trend, reason_trend = guard.can_open_position("TrendContinuationSMC", inst_eth, OrderSide.BUY, 100.0, 0)
+    assert can_open_trend is False
+    assert "Regime Strategy Gate" in reason_trend
+    assert "blocked during CHOPPY_MEAN_REVERTING_RANGE" in reason_trend
+
+    # OrderBookImbalance must be allowed
+    can_open_scalp, _ = guard.can_open_position("OrderBookImbalance", inst_eth, OrderSide.BUY, 100.0, 0)
+    assert can_open_scalp is True
+
+
+def test_strategy_circuit_breaker_lockout():
+    """Verify that a strategy with 3 consecutive losses is locked out for 60 minutes."""
+    guard = PortfolioGuard()
+    guard.update_equity(1000.0)
+    inst_sol = InstrumentId(Symbol("SOL-USD-PERP"), Venue("HYPERLIQUID"))
+
+    # Initial order allowed
+    can_open, _ = guard.can_open_position("TrendContinuationSMC", inst_sol, OrderSide.BUY, 100.0, 0)
+    assert can_open is True
+
+    # Feed 3 consecutive losing trades for TrendContinuationSMC
+    losing_trades = [
+        {"strategy": "TrendContinuationSMC-000", "gross_pnl": -2.0, "fees": 0.1, "net_pnl": -2.1},
+        {"strategy": "TrendContinuationSMC-000", "gross_pnl": -1.5, "fees": 0.1, "net_pnl": -1.6},
+        {"strategy": "TrendContinuationSMC-000", "gross_pnl": -3.0, "fees": 0.1, "net_pnl": -3.1},
+    ]
+    guard.update_dynamic_allocations(losing_trades)
+
+    # Strategy should now be locked out
+    assert guard.is_strategy_locked("TrendContinuationSMC") is True
+    stats = guard.get_strategy_performance_status()
+    assert "TrendContinuationSMC" in stats
+    assert stats["TrendContinuationSMC"]["is_locked"] is True
+    assert "CIRCUIT BREAKER" in stats["TrendContinuationSMC"]["tier"]
+
+    # can_open_position must block new orders
+    can_open_blocked, reason_blocked = guard.can_open_position("TrendContinuationSMC", inst_sol, OrderSide.BUY, 100.0, 0)
+    assert can_open_blocked is False
+    assert "Strategy Circuit Breaker" in reason_blocked
+    assert "locked out" in reason_blocked
+
+
+def test_bypass_risk_guard_unconstrained_max_leverage():
+    """Verify that when bypass_risk_guard is True, all internal throttles/caps are bypassed up to exchange max leverage."""
+    guard = PortfolioGuard(bypass_risk_guard=True)
+    guard.update_equity(100.0)
+
+    # BTC max leverage is 40.0x -> max allowed notional is $4,000 (with buffer: $4,200)
+    inst_btc = InstrumentId(Symbol("BTC-USD-PERP"), Venue("HYPERLIQUID"))
+    # Order at 35x leverage ($3,500 on $100 equity) is approved even though it exceeds standard 40% cap and 5x cap
+    can_open_btc, reason_btc = guard.can_open_position("TrendContinuationSMC", inst_btc, OrderSide.BUY, 3500.0, 0)
+    assert can_open_btc is True
+    assert "Risk guard bypassed: MAX LEVERAGE UNCONSTRAINED" in reason_btc
+
+    # Order exceeding exchange maximum leverage (e.g. $4,500 > $4,000 * 1.05) is safely rejected
+    can_open_exceed, reason_exceed = guard.can_open_position("TrendContinuationSMC", inst_btc, OrderSide.BUY, 4500.0, 0)
+    assert can_open_exceed is False
+    assert "exceeds Hyperliquid max leverage for BTC" in reason_exceed
+
+
+
 
 

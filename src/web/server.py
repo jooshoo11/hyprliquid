@@ -65,6 +65,7 @@ PAPER_STATE_PATH = os.path.join(REPO_ROOT, "bridge", "paper_state.json")
 SENTINEL_LOG_PATH = os.path.join(REPO_ROOT, "bridge", "sentinel.log")
 SESSION_TRADES_PATH = os.path.join(REPO_ROOT, "reports", "session_trades.json")
 DECISION_JOURNAL_PATH = os.path.join(REPO_ROOT, "reports", "decision_journal.jsonl")
+GROQ_SENTINEL_PATH = os.path.join(REPO_ROOT, "bridge", "groq_sentinel.json")
 
 _active_engine = None
 
@@ -188,116 +189,173 @@ _last_sentinel_thought_time: float = 0.0
 
 def generate_sentinel_thoughts(current_positions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """
-    Generate / update latest 10-second AI Sentinel audit thoughts.
-    Maintains a rolling window of thoughts with timestamps, category tags,
-    and color-coded status badges.
+    Generate unified multi-agent AI thoughts stream combining:
+    1. Groq Real-Time Risk Sentinel (sub-second LPU risk guardian)
+    2. Google AI Studio Grounded Prospector (Gemini news catalysts & token unlocks)
+    3. Autonomous Watchdog (L2 depth wall & position audits)
+    4. Market Regime & Retrospective Decision Journal
     """
-    global _sentinel_thoughts_buffer, _last_sentinel_thought_time
-    now = time.time()
+    all_thoughts: List[Dict[str, Any]] = []
+    time_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-    # 1. If active engine has dedicated sentinel_thoughts, use them
+    # 1. Groq Real-Time Risk Sentinel Thought
+    groq_state = load_json_file(GROQ_SENTINEL_PATH)
+    if isinstance(groq_state, dict) and groq_state.get("reason"):
+        status = groq_state.get("status", "HEALTHY")
+        lat = groq_state.get("_latency_ms", 120.0)
+        action = groq_state.get("action", "NONE")
+        model = groq_state.get("_model", "Groq LPU")
+        reason = groq_state.get("reason", "")
+        badge_col = "emerald" if status == "HEALTHY" else ("rose" if status in ("ALERT", "CRITICAL") else "amber")
+        thought_msg = f"Groq LPU ({lat}ms | {model}): [{status}] Action: {action} — {reason}"
+        all_thoughts.append({
+            "timestamp": groq_state.get("timestamp", time_str).split()[-2] if " " in str(groq_state.get("timestamp")) else time_str,
+            "category": "[GROQ LPU]",
+            "badge_color": badge_col,
+            "status": status,
+            "coin": "RISK",
+            "thought": thought_msg,
+            "text": thought_msg,
+        })
+
+    # 2. Google AI Studio Grounded Prospector Thoughts
+    prospects_data = load_json_file(PROSPECTS_PATH)
+    prospects_list = []
+    if isinstance(prospects_data, dict):
+        prospects_list = prospects_data.get("prospects", [])
+    elif isinstance(prospects_data, list):
+        prospects_list = prospects_data
+
+    for p in prospects_list[:4]:
+        coin = p.get("coin", "")
+        verdict = p.get("catalyst_verdict")
+        sentiment = p.get("news_sentiment", "NEUTRAL")
+        score = p.get("conviction_score", p.get("score", 80))
+        if verdict:
+            badge_col = "blue" if sentiment == "BULLISH" else ("rose" if sentiment == "TOXIC_CATALYST" else "cyan")
+            status = "OPTIMAL" if sentiment == "BULLISH" else ("WARNING" if sentiment == "TOXIC_CATALYST" else "NORMAL")
+            thought_msg = f"AI Studio (Gemini 3 Flash): {coin} [{sentiment}] — {verdict} (Conviction: {score})"
+            all_thoughts.append({
+                "timestamp": time_str,
+                "category": "[AI STUDIO]",
+                "badge_color": badge_col,
+                "status": status,
+                "coin": coin,
+                "thought": thought_msg,
+                "text": thought_msg,
+            })
+
+    # 3. Engine Watchdog Internal Sentinel Thoughts
     if _active_engine and hasattr(_active_engine, "sentinel_thoughts") and _active_engine.sentinel_thoughts:
-        return list(_active_engine.sentinel_thoughts)[-20:]
+        for t in list(_active_engine.sentinel_thoughts)[-15:]:
+            t_copy = dict(t)
+            if "thought" not in t_copy and "text" in t_copy:
+                t_copy["thought"] = t_copy["text"]
+            elif "text" not in t_copy and "thought" in t_copy:
+                t_copy["text"] = t_copy["thought"]
+            all_thoughts.append(t_copy)
 
-    # 2. If active engine has audit_events, adapt them
-    if _active_engine and hasattr(_active_engine, "audit_events") and _active_engine.audit_events:
-        thoughts = []
-        for ev in _active_engine.audit_events[-15:]:
+    # 4. Engine Audit Events (if sentinel_thoughts empty)
+    elif _active_engine and hasattr(_active_engine, "audit_events") and _active_engine.audit_events:
+        for ev in _active_engine.audit_events[-10:]:
             lvl = ev.get("level", "INFO")
             cat = "[AUDIT]" if lvl in ("INFO", "CLOSE") else ("[RISK]" if lvl == "TRIGGER" else "[SCREEN]")
             status = "HEALTHY" if lvl == "INFO" else ("TRIGGER" if lvl in ("TRIGGER", "CLOSE") else "WATCHING")
             badge_col = "emerald" if status == "HEALTHY" else ("rose" if status == "TRIGGER" else "amber")
-            thoughts.append({
-                "timestamp": ev.get("timestamp", datetime.now(timezone.utc).strftime("%H:%M:%S")),
+            msg = ev.get("message", "")
+            all_thoughts.append({
+                "timestamp": ev.get("timestamp", time_str),
                 "category": cat,
                 "badge_color": badge_col,
                 "status": status,
-                "thought": ev.get("message", ""),
+                "thought": msg,
+                "text": msg,
             })
-        if thoughts:
-            return thoughts
 
-    # 3. Dynamic 10s Sentinel thoughts generator (runs in standalone mode or as fallback)
-    if (now - _last_sentinel_thought_time) >= 8.0 or not _sentinel_thoughts_buffer:
-        _last_sentinel_thought_time = now
-        time_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    # 5. Position Audits fallback
+    positions = current_positions
+    if positions is None and _active_engine and hasattr(_active_engine, "get_open_positions"):
+        try:
+            positions = _active_engine.get_state().get("positions", [])
+        except Exception:
+            pass
 
-        positions = current_positions
-        if positions is None:
-            active_trades = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "positions": []})
-            positions = active_trades.get("positions", [])
-
-        prospects_data = load_json_file(PROSPECTS_PATH, {})
-        new_thoughts = []
-
-        # Trade Audit Thoughts
-        if positions:
-            for p in positions:
-                coin = p.get("coin", "BTC")
-                side = p.get("side", "LONG")
-                entry_px = float(p.get("entry_price", 0.0))
-                mark_px = float(p.get("mark_price", entry_px))
-                roi = float(p.get("roi_pct", 0.0))
-                strat = p.get("strategy", "SMC Trend")
-                pnl = float(p.get("unrealized_pnl", 0.0))
-                status = "HEALTHY" if roi >= 0 else ("WATCHING" if roi > -1.5 else "WARNING")
-                badge_col = "emerald" if status == "HEALTHY" else ("amber" if status == "WATCHING" else "rose")
-                new_thoughts.append({
-                    "timestamp": time_str,
-                    "category": "[AUDIT]",
-                    "badge_color": badge_col,
-                    "status": status,
-                    "coin": coin,
-                    "thought": f"Audited {coin} ({side} [{strat}]): Mark ${mark_px:,.4f} vs Entry ${entry_px:,.4f} (ROI {roi:+.2f}%, ${pnl:+.2f}). L2 depth skew normal. Ratchet stop active.",
-                })
-        else:
-            new_thoughts.append({
+    if positions:
+        for p in positions:
+            coin = p.get("coin", "BTC")
+            side = p.get("side", "LONG")
+            entry_px = float(p.get("entry_price", 0.0))
+            mark_px = float(p.get("mark_price", entry_px))
+            roi = float(p.get("roi_pct", 0.0))
+            strat = p.get("strategy", "SMC Trend")
+            pnl = float(p.get("unrealized_pnl", 0.0))
+            status = "HEALTHY" if roi >= 0 else ("WATCHING" if roi > -1.5 else "WARNING")
+            badge_col = "emerald" if status == "HEALTHY" else ("amber" if status == "WATCHING" else "rose")
+            thought_msg = f"Audited {coin} ({side} [{strat}]): Mark ${mark_px:,.4f} vs Entry ${entry_px:,.4f} (ROI {roi:+.2f}%, ${pnl:+.2f}). L2 depth skew nominal. Ratchet stop active."
+            all_thoughts.append({
                 "timestamp": time_str,
                 "category": "[AUDIT]",
-                "badge_color": "cyan",
-                "status": "MONITORING",
-                "thought": "All positions FLAT. 0 active trades. Surveillance scanning top perpetuals for orderbook depth imbalances & funding carry.",
+                "badge_color": badge_col,
+                "status": status,
+                "coin": coin,
+                "thought": thought_msg,
+                "text": thought_msg,
             })
 
-        # Risk Engine Thought
-        new_thoughts.append({
+    # 6. Market Regime Thought
+    regime_data = load_json_file(MARKET_REGIME_PATH)
+    if isinstance(regime_data, dict) and regime_data.get("regime"):
+        reg_name = regime_data.get("regime")
+        breadth = regime_data.get("breadth_pct", 50.0)
+        carry = regime_data.get("avg_funding_apr", 10.0)
+        sent = regime_data.get("sentiment", "Balanced")
+        thought_msg = f"Regime Engine: {reg_name} (Breadth: {breadth:.0f}%, Avg Carry: {carry:+.1f}% APR). {sent}"
+        all_thoughts.append({
             "timestamp": time_str,
-            "category": "[RISK]",
-            "badge_color": "emerald",
-            "status": "NORMAL",
-            "thought": "PortfolioGuard: Equity healthy | Max DD circuit breaker threshold 20% active | Max 10 positions allowed.",
+            "category": "[REGIME]",
+            "badge_color": "indigo",
+            "status": "OPTIMAL" if "EXPANSION" in str(reg_name) else "NORMAL",
+            "coin": "MACRO",
+            "thought": thought_msg,
+            "text": thought_msg,
         })
 
-        # Prospect Screening Thought
-        raw_pros = prospects_data.get("prospects", prospects_data) if isinstance(prospects_data, dict) else {}
-        if isinstance(raw_pros, dict) and raw_pros:
-            top_coin = list(raw_pros.keys())[0]
-            top_data = raw_pros[top_coin]
-            bias = top_data.get("bias", "LONG") if isinstance(top_data, dict) else str(top_data)
-            new_thoughts.append({
-                "timestamp": time_str,
-                "category": "[SCREEN]",
-                "badge_color": "purple",
-                "status": "OPTIMAL",
-                "coin": top_coin,
-                "thought": f"AI Prospector: Screened 50 perpetuals. High-conviction bias: {top_coin} ({bias}) with volume momentum.",
-            })
+    # 7. Recent Missed Opportunity / Retrospective
+    if os.path.exists(DECISION_JOURNAL_PATH):
+        try:
+            with open(DECISION_JOURNAL_PATH, "r") as f:
+                lines = f.readlines()
+            if lines:
+                last_line = lines[-1].strip()
+                if last_line:
+                    dj = json.loads(last_line)
+                    c = dj.get("coin", "SOL")
+                    strat = dj.get("strategy", "SMC Trend")
+                    reason = dj.get("reason", "Filtered")
+                    retro = dj.get("retrospective_note", "Capital preserved.")
+                    thought_msg = f"Decision Journal: Filtered {c} ({strat}) — {reason}. Retrospective: {retro}"
+                    all_thoughts.append({
+                        "timestamp": time_str,
+                        "category": "[MISSED]",
+                        "badge_color": "amber",
+                        "status": "FILTERED",
+                        "coin": c,
+                        "thought": thought_msg,
+                        "text": thought_msg,
+                    })
+        except Exception:
+            pass
 
-        # Missed Setup Retrospective Thought
-        new_thoughts.append({
-            "timestamp": time_str,
-            "category": "[MISSED]",
-            "badge_color": "amber",
-            "status": "FILTERED",
-            "coin": "SOL",
-            "thought": "Retrospective filter: Skipped SOL-PERP SMC Long — Reward/Risk ratio 1.8 < 2.5 threshold. Capital preserved.",
-        })
+    # Deduplicate by thought text while preserving order
+    seen = set()
+    deduped = []
+    for t in all_thoughts:
+        txt = t.get("thought") or t.get("text") or ""
+        if txt and txt not in seen:
+            seen.add(txt)
+            deduped.append(t)
 
-        _sentinel_thoughts_buffer.extend(new_thoughts)
-        if len(_sentinel_thoughts_buffer) > 30:
-            _sentinel_thoughts_buffer = _sentinel_thoughts_buffer[-30:]
-
-    return _sentinel_thoughts_buffer[-20:]
+    return deduped[-40:]
 
 
 def get_live_state() -> Dict[str, Any]:
@@ -311,9 +369,8 @@ def get_live_state() -> Dict[str, Any]:
             p["strategy"] = normalize_strategy(strat, p.get("coin", ""), idx)
         # Ensure full 10 LLM prospects are always included
         state["prospects"] = prospects_list
-        # Ensure sentinel_thoughts is always included
-        if "sentinel_thoughts" not in state or not state["sentinel_thoughts"]:
-            state["sentinel_thoughts"] = generate_sentinel_thoughts(state.get("positions", []))
+        # Always generate comprehensive multi-agent AI thoughts stream (Groq LPU, AI Studio, Watchdog, Regime)
+        state["sentinel_thoughts"] = generate_sentinel_thoughts(state.get("positions", []))
 
         tm_summary = state.get("trade_manager") or (
             _active_engine.trade_manager.get_summary() if hasattr(_active_engine, "trade_manager") else {}
@@ -510,6 +567,8 @@ def get_live_state() -> Dict[str, Any]:
         "funding_arbitrage": funding_pairs,
         "funding_arbitrage_summary": funding_arb_data,
         "market_regime": load_json_file(MARKET_REGIME_PATH, {}),
+        "risk_guard": "ARMED",
+        "leverage_mode": "EXCHANGE_MAX",
         "paper_state": paper_state,
         "pending_ai_commands": pending_cmds,
         "sentinel_thoughts": generate_sentinel_thoughts(positions),

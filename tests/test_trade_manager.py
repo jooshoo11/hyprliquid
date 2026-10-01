@@ -112,28 +112,28 @@ def test_breakeven_ratchet_long(tmp_trade_manager):
     assert pos.breakeven_triggered is False
     assert pos.stop_price is None
 
-    # Price reaches $100.80 (+0.8% ROI) -> Below 1.0% trigger, no breakeven yet
+    # Price reaches $100.80 (+0.8% ROI) -> Below 1.25% trigger, no breakeven yet
     action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.80, current_time=t0 + 10)
     assert pos.breakeven_triggered is False
     assert action.should_close is False
 
-    # Price reaches $101.20 (+1.2% ROI >= +1.0%) -> Breakeven triggers, stop at +0.1% = $100.10
-    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=101.20, current_time=t0 + 20)
+    # Price reaches $101.30 (+1.3% ROI >= +1.25%) -> Breakeven triggers, stop at +0.15% = $100.15
+    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=101.30, current_time=t0 + 20)
     assert pos.breakeven_triggered is True
-    assert pytest.approx(pos.stop_price, 0.001) == 100.10
+    assert pytest.approx(pos.stop_price, 0.001) == 100.15
     assert action.should_close is False
 
-    # Price dips to $100.20 (above $100.10 stop) -> HOLD
+    # Price dips to $100.20 (above $100.15 stop) -> HOLD
     action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.20, current_time=t0 + 30)
     assert action.should_close is False
 
-    # Price dips to $100.10 (hits stop) at t0 + 40 (< 90s min holding period) -> Suppressed with HOLD
-    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.10, current_time=t0 + 40)
+    # Price dips to $100.15 (hits stop) at t0 + 40 (< 90s min holding period) -> Suppressed with HOLD
+    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.15, current_time=t0 + 40)
     assert action.should_close is False
     assert "HOLD (Min holding period active: 40s / 90s)" in action.reason
 
-    # Price remains at $100.10 at t0 + 100 (> 90s min holding period) -> CLOSE
-    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.10, current_time=t0 + 100)
+    # Price remains at $100.15 at t0 + 100 (> 90s min holding period) -> CLOSE
+    action = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.15, current_time=t0 + 100)
     assert action.should_close is True
     assert "Breakeven ratchet triggered" in action.reason
 
@@ -146,23 +146,23 @@ def test_breakeven_ratchet_short(tmp_trade_manager):
     tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
     pos = tm.get_position("AVAX")
 
-    # Price drops to $98.80 (+1.2% ROI >= +1.0%) -> Breakeven triggers, stop at +0.1% = $99.90
-    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=98.80, current_time=t0 + 10)
+    # Price drops to $98.70 (+1.3% ROI >= +1.25%) -> Breakeven triggers, stop at +0.15% = $99.85
+    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=98.70, current_time=t0 + 10)
     assert pos.breakeven_triggered is True
-    assert pytest.approx(pos.stop_price, 0.001) == 99.90
+    assert pytest.approx(pos.stop_price, 0.001) == 99.85
     assert action.should_close is False
 
-    # Price rises to $99.80 (below $99.90 stop) -> HOLD
+    # Price rises to $99.80 (below $99.85 stop) -> HOLD
     action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=99.80, current_time=t0 + 20)
     assert action.should_close is False
 
-    # Price rises to $99.95 (breaches stop) at t0 + 30 (< 90s min holding period) -> Suppressed with HOLD
-    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=99.95, current_time=t0 + 30)
+    # Price rises to $99.90 (breaches stop) at t0 + 30 (< 90s min holding period) -> Suppressed with HOLD
+    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=99.90, current_time=t0 + 30)
     assert action.should_close is False
     assert "HOLD (Min holding period active: 30s / 90s)" in action.reason
 
-    # Price rises to $99.95 at t0 + 100 (> 90s min holding period) -> CLOSE
-    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=99.95, current_time=t0 + 100)
+    # Price rises to $99.90 at t0 + 100 (> 90s min holding period) -> CLOSE
+    action = tm.update_position("AVAX", "SHORT", size=1.0, entry_price=100.0, mark_price=99.90, current_time=t0 + 100)
     assert action.should_close is True
     assert "Breakeven ratchet triggered" in action.reason
 
@@ -332,6 +332,47 @@ def test_stagnant_trade_not_triggered_when_moving(tmp_trade_manager):
     # Open 4.5 hours with ROI +0.70% (> 0.3% ROI) -> HOLD
     action = tm.update_position("LINK", "LONG", size=1.0, entry_price=100.0, mark_price=100.70, current_time=t0 + (4.5 * 3600))
     assert action.should_close is False
+
+
+def test_fast_dud_cut_triggers(tmp_trade_manager):
+    """Verify Fast Dud Cut triggers at 30 minutes if peak ROI < 0.20% and current ROI <= -0.40%."""
+    tm = tmp_trade_manager
+    tm.fast_dud_minutes = 30.0
+    tm.fast_dud_roi_pct = -0.40
+    tm.fast_dud_max_peak_roi = 0.20
+    t0 = 1000.0
+
+    # Entry: LONG @ $100.00
+    tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
+
+    # 15 mins in: ROI -0.45%, but duration < 30 mins -> HOLD
+    action_15m = tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=99.55, current_time=t0 + (15 * 60))
+    assert action_15m.should_close is False
+
+    # 31 mins in: ROI -0.45%, peak ROI was only +0.05% (< 0.20%) -> CLOSE via Fast Dud Cut!
+    action_31m = tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=99.55, current_time=t0 + (31 * 60))
+    assert action_31m.should_close is True
+    assert "Fast dud cut" in action_31m.reason
+
+
+def test_fast_dud_cut_does_not_trigger_with_prior_momentum(tmp_trade_manager):
+    """Verify Fast Dud Cut does NOT trigger if position previously demonstrated significant momentum (peak ROI >= 0.20%)."""
+    tm = tmp_trade_manager
+    tm.fast_dud_minutes = 30.0
+    tm.fast_dud_roi_pct = -0.40
+    tm.fast_dud_max_peak_roi = 0.20
+    t0 = 1000.0
+
+    # Entry: LONG @ $100.00
+    tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
+
+    # 10 mins in: Price pumps to $100.80 (+0.80% peak ROI)
+    tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=100.80, current_time=t0 + (10 * 60))
+
+    # 35 mins in: Price pulls back to $99.55 (-0.45% ROI). Since peak was +0.80% (>= 0.20%), fast dud cut must NOT fire.
+    action_35m = tm.update_position("SOL", "LONG", size=1.0, entry_price=100.0, mark_price=99.55, current_time=t0 + (35 * 60))
+    if action_35m.should_close:
+        assert "Fast dud cut" not in action_35m.reason
 
 
 # =========================================================================
@@ -976,5 +1017,213 @@ def test_extended_hold_profit_exit(tmp_trade_manager):
     assert action2.action == "CLOSE"
     assert action2.should_close is True
     assert "Extended hold profit lock" in action2.reason
+
+
+# =========================================================================
+# 7. Tiered Profit Lock Tests
+# =========================================================================
+
+def test_tiered_profit_lock_tier1_long(tmp_trade_manager):
+    """Test Tier 1 Profit Lock: Peak ROI >= 1.5% locks stop at +0.75% ROI."""
+    tm = tmp_trade_manager
+    tm.tiered_profit_lock = True
+    t0 = 1000.0
+
+    # Entry: LONG @ $100.00
+    tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
+    pos = tm.get_position("AVAX")
+
+    # Price rises to $101.60 (+1.60% ROI) -> Peak >= 1.50% locks stop at +0.75% ($100.75)
+    action1 = tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=101.60, current_time=t0 + 20)
+    assert action1.should_close is False
+    assert pos.tiered_lock_roi_pct == 0.75
+    assert pytest.approx(pos.stop_price, 0.001) == 100.75
+
+    # Price pulls back to $100.74 (below $100.75 locked stop) at t0 + 100 (> 90s hold) -> CLOSE
+    action2 = tm.update_position("AVAX", "LONG", size=1.0, entry_price=100.0, mark_price=100.74, current_time=t0 + 100)
+    assert action2.should_close is True
+    assert "Tiered profit lock triggered" in action2.reason
+    assert "locked stop 0.75%" in action2.reason
+
+
+def test_tiered_profit_lock_tier2_long(tmp_trade_manager):
+    """Test Tier 2 Profit Lock: Peak ROI >= 2.2% locks stop at +1.40% ROI."""
+    tm = tmp_trade_manager
+    tm.tiered_profit_lock = True
+    tm.trailing_distance_pct = 1.5  # Wider ATR trailing distance to demonstrate guaranteed floor protection
+    t0 = 1000.0
+
+    # Entry: LONG @ $100.00
+    tm.update_position("NEAR", "LONG", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
+    pos = tm.get_position("NEAR")
+
+    # Price reaches $102.30 (+2.30% ROI) -> Peak >= 2.20% locks stop at +1.40% ($101.40) despite wide 1.5% trail
+    action1 = tm.update_position("NEAR", "LONG", size=1.0, entry_price=100.0, mark_price=102.30, current_time=t0 + 20)
+    assert action1.should_close is False
+    assert pos.tiered_lock_roi_pct == 1.40
+    assert pytest.approx(pos.stop_price, 0.001) == 101.40
+
+    # Price pulls back to $101.35 at t0 + 100 (> 90s hold) -> CLOSE with +1.35% ROI banked
+    action2 = tm.update_position("NEAR", "LONG", size=1.0, entry_price=100.0, mark_price=101.35, current_time=t0 + 100)
+    assert action2.should_close is True
+    assert "Tiered profit lock triggered" in action2.reason
+    assert "locked stop 1.40%" in action2.reason
+
+
+def test_tiered_profit_lock_short(tmp_trade_manager):
+    """Test Tier 1 Profit Lock for SHORT: Peak ROI >= 1.5% locks stop at +0.75% ROI."""
+    tm = tmp_trade_manager
+    tm.tiered_profit_lock = True
+    t0 = 1000.0
+
+    # Entry: SHORT @ $100.00
+    tm.update_position("CRV", "SHORT", size=1.0, entry_price=100.0, mark_price=100.0, current_time=t0)
+    pos = tm.get_position("CRV")
+
+    # Price drops to $98.40 (+1.60% ROI) -> Peak >= 1.50% locks stop at entry * (1 - 0.0075) = $99.25
+    action1 = tm.update_position("CRV", "SHORT", size=1.0, entry_price=100.0, mark_price=98.40, current_time=t0 + 20)
+    assert action1.should_close is False
+    assert pos.tiered_lock_roi_pct == 0.75
+    assert pytest.approx(pos.stop_price, 0.001) == 99.25
+
+    # Price bounces to $99.30 (above $99.25 stop) at t0 + 100 -> CLOSE
+    action2 = tm.update_position("CRV", "SHORT", size=1.0, entry_price=100.0, mark_price=99.30, current_time=t0 + 100)
+    assert action2.should_close is True
+    assert "Tiered profit lock triggered" in action2.reason
+    assert "locked stop 0.75%" in action2.reason
+
+
+def test_breakeven_persists_across_regime_threshold_increase(tmp_trade_manager):
+    """Regression test: Once breakeven triggers at 0.75%, changing be_thresh to 1.0% must NOT disable stop."""
+    tm = tmp_trade_manager
+    tm.tiered_profit_lock = True
+    t0 = 1000.0
+
+    # 1. Entry: SHORT @ 0.73355
+    action0 = tm.update_position("GRASS", "SHORT", size=100.0, entry_price=0.73355, mark_price=0.73355, current_time=t0)
+    assert action0.should_close is False
+
+    # 2. Price drops to 0.72667 (+0.94% ROI >= 0.75% threshold) -> Triggers breakeven
+    action1 = tm.update_position("GRASS", "SHORT", size=100.0, entry_price=0.73355, mark_price=0.72667, current_time=t0 + 30, breakeven_roi_pct=0.75)
+    pos = tm.get_position("GRASS")
+    assert pos.breakeven_triggered is True
+    assert pytest.approx(pos.stop_price, 0.0001) == pytest.approx(0.73355 * (1 - 0.0015), rel=1e-4)
+
+    # 3. Regime flips to BULL EXPANSION, breakeven_roi_pct passed as 1.0% (higher than peak 0.94%)
+    # Stop price must remain active!
+    action2 = tm.update_position("GRASS", "SHORT", size=100.0, entry_price=0.73355, mark_price=0.7300, current_time=t0 + 60, breakeven_roi_pct=1.0)
+    assert pos.breakeven_triggered is True
+    assert pytest.approx(pos.stop_price, 0.0001) == pytest.approx(0.73355 * (1 - 0.0015), rel=1e-4)
+
+    # 4. Price rallies through stop price to 0.73350 after 100s (> 90s hold) -> MUST CLOSE!
+    action3 = tm.update_position("GRASS", "SHORT", size=100.0, entry_price=0.73355, mark_price=0.73350, current_time=t0 + 100, breakeven_roi_pct=1.0)
+    assert action3.should_close is True
+    assert "Breakeven ratchet triggered" in action3.reason
+
+
+def test_initial_stop_loss_trigger(tmp_trade_manager):
+    """Test that an initial stop_price registered on entry cuts losses before MAE."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+
+    # Entry: SHORT @ 100.0, size 0.10 ($10 notional), initial stop at 101.5 (+1.5% loss = -$0.15)
+    tm.register_position("HBAR", "SHORT", size=0.10, entry_price=100.0, entry_time=t0, stop_price=101.50)
+    pos = tm.get_position("HBAR")
+    assert pos.stop_price == 101.50
+
+    # Price moves against trade to 101.20 (< stop of 101.50, loss -$0.12) -> HOLD
+    action1 = tm.update_position("HBAR", "SHORT", size=0.10, entry_price=100.0, mark_price=101.20, current_time=t0 + 30)
+    assert action1.should_close is False
+
+    # Price crosses stop to 101.55 at t0 + 100 (> 90s hold) -> CLOSE via stop loss
+    action2 = tm.update_position("HBAR", "SHORT", size=0.10, entry_price=100.0, mark_price=101.55, current_time=t0 + 100)
+    assert action2.should_close is True
+    assert "Stop loss triggered" in action2.reason
+
+
+def test_duplicate_close_suppression(tmp_trade_manager):
+    """Verify that duplicate close_and_journal_position calls within 120s for the same coin are suppressed."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+
+    # Register and close position
+    tm.register_position("SPX", "SHORT", size=422.8, entry_price=0.43, entry_time=t0)
+    res1 = tm.close_and_journal_position("SPX", exit_price=0.437, reason="Stop loss", exit_time=t0 + 60)
+    assert res1.get("status") != "SUPPRESSED_DUPLICATE"
+    assert res1["coin"] == "SPX"
+    initial_trades_count = len(tm.get_closed_trades())
+    assert initial_trades_count == 1
+
+    # Immediate second close call 10s later (watchdog re-entrancy / partial fill)
+    res2 = tm.close_and_journal_position("SPX", exit_price=0.437, reason="Stop loss", exit_time=t0 + 70, fallback_size=351.4)
+    assert res2.get("status") == "SUPPRESSED_DUPLICATE"
+    # Ensure no new trade was logged to closed trades
+    assert len(tm.get_closed_trades()) == 1
+
+    # Third close call 30s later
+    res3 = tm.close_and_journal_position("SPX", exit_price=0.437, reason="Stop loss", exit_time=t0 + 90, fallback_size=292.2)
+    assert res3.get("status") == "SUPPRESSED_DUPLICATE"
+    assert len(tm.get_closed_trades()) == 1
+
+    # Fourth close call 500s later (beyond 120s) - MUST STILL BE SUPPRESSED because no new position opened!
+    res4 = tm.close_and_journal_position("SPX", exit_price=0.437, reason="Stop loss", exit_time=t0 + 500, fallback_size=100.0)
+    assert res4.get("status") == "SUPPRESSED_DUPLICATE"
+    assert len(tm.get_closed_trades()) == 1
+
+    # Now open a legitimate NEW position on SPX
+    tm.register_position("SPX", "LONG", size=200.0, entry_price=0.45, entry_time=t0 + 600)
+    # Closing the new position must succeed
+    res5 = tm.close_and_journal_position("SPX", exit_price=0.46, reason="Take Profit", exit_time=t0 + 700)
+    assert res5.get("status") != "SUPPRESSED_DUPLICATE"
+    assert len(tm.get_closed_trades()) == 2
+
+
+def test_update_position_suppresses_closed_recreation(tmp_trade_manager):
+    """Verify that update_position does not resurrect a closed position or erase _recently_closed_times."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+
+    # 1. Register and close position
+    tm.register_position("CASHCAT", "SHORT", size=606.0, entry_price=0.165, entry_time=t0)
+    res1 = tm.close_and_journal_position("CASHCAT", exit_price=0.166, reason="Stop loss", exit_time=t0 + 60)
+    assert res1.get("status") != "SUPPRESSED_DUPLICATE"
+    assert len(tm.get_closed_trades()) == 1
+
+    # 2. Watchdog calls update_position for stale emulator cache item 10s later
+    action = tm.update_position(
+        coin="CASHCAT",
+        side="SHORT",
+        size=462.0,
+        entry_price=0.165,
+        mark_price=0.167,
+        current_time=t0 + 70,
+    )
+    assert action.should_close is False
+    assert "already closed" in action.reason
+    assert "CASHCAT" not in tm.active_positions
+
+    # 3. Subsequent close attempt must be suppressed
+    res2 = tm.close_and_journal_position("CASHCAT", exit_price=0.167, reason="MAE hard cut", exit_time=t0 + 80)
+    assert res2.get("status") == "SUPPRESSED_DUPLICATE"
+    assert len(tm.get_closed_trades()) == 1
+
+
+def test_breakeven_negative_roi_labeled_as_stop_loss(tmp_trade_manager):
+    """Verify that if breakeven was triggered but price exits in loss, reason is Stop loss."""
+    tm = tmp_trade_manager
+    t0 = 1000.0
+    tm.register_position("WLD", "LONG", size=100.0, entry_price=1.00, entry_time=t0)
+    # Move price up to trigger breakeven (1.3% ROI triggers BE at new 1.25% threshold, < 2.0% does not trigger trail)
+    tm.update_position("WLD", "LONG", 100.0, 1.00, 1.013, current_time=t0 + 100)
+    tracker = tm.get_position("WLD")
+    assert tracker.breakeven_triggered is True
+
+    # Now price drops below entry
+    tracker.stop_price = 0.995
+    action = tm.update_position("WLD", "LONG", 100.0, 1.00, 0.994, current_time=t0 + 200)
+    assert action.should_close is True
+    assert "Stop loss triggered" in action.reason
+    assert "Breakeven ratchet triggered" not in action.reason
+
 
 

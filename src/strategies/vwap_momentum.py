@@ -247,7 +247,16 @@ class VwapOiMomentum(Strategy):
             if (side == OrderSide.BUY and p_bias == "LONG") or (side == OrderSide.SELL and p_bias == "SHORT"):
                 self.log.info(f"🎯 AI Prospect confirmed {p_bias} bias on {instrument.id}")
 
-        tp_price = (price + 2.5 * risk_per_unit) if side == OrderSide.BUY else (price - 2.5 * risk_per_unit)
+        # Stop loss anchored behind VWAP with minimum 1% buffer
+        sl_distance = max(abs(price - vwap) * 1.5, price * 0.01)
+        sl_price = (price - sl_distance) if side == OrderSide.BUY else (price + sl_distance)
+        risk_per_unit = abs(price - sl_price)
+
+        if risk_per_unit <= 0:
+            return
+
+        tp_rr = getattr(self.portfolio_guard, "dynamic_take_profit_rr", 2.5) if self.portfolio_guard else 2.5
+        tp_price = (price + tp_rr * risk_per_unit) if side == OrderSide.BUY else (price - tp_rr * risk_per_unit)
 
         sl_obj = instrument.make_price(Decimal(str(round(sl_price, instrument.price_precision))))
         tp_obj = instrument.make_price(Decimal(str(round(tp_price, instrument.price_precision))))
