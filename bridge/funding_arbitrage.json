@@ -1,6 +1,6 @@
 {
-  "timestamp": 1790842140.3604991,
-  "updated_at": "2026-10-01T08:09:00.360501+00:00",
+  "timestamp": 1790843060.5907147,
+  "updated_at": "2026-10-01T08:24:20.590716+00:00",
   "strategy": "DELTA_NEUTRAL_FUNDING_CARRY",
   "thresholds": {
     "max_negative_funding_apr": -0.5,
@@ -13,7 +13,7 @@
     "public_rpc": {
       "url": "https://api.hyperliquid.xyz/info",
       "status_code": 200,
-      "latency_ms": 198.91,
+      "latency_ms": 352.9,
       "rate_limit_cap": "100 req/min"
     },
     "chainstack_private_rpc": {

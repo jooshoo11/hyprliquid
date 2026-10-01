@@ -190,6 +190,7 @@ class LiquidationAbsorber(Strategy):
                 side=side,
                 proposed_notional_usd=notional_usd,
                 current_open_positions_count=self.cache.positions_open_count(),
+                leverage=max_lev,
             )
             if not can_trade:
                 return

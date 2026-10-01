@@ -36,7 +36,7 @@ console = Console()
 
 def main():
     parser = argparse.ArgumentParser(description="Hyperliquid Autonomous Multi-Strategy System")
-    parser.add_argument("--top-n", type=int, default=30, help="Number of perpetual markets to monitor (default 30)")
+    parser.add_argument("--top-n", type=int, default=15, help="Number of perpetual markets to monitor (default 15 for top liquidity)")
     parser.add_argument("--port", type=int, default=8000, help="Web Cockpit port (default 8000)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Web Cockpit bind host (default 0.0.0.0)")
     parser.add_argument("--live", action="store_true", help="Run in Live Testnet mode with burner wallet instead of local Paper emulator")

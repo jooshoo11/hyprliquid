@@ -28,10 +28,10 @@ if [ -n "$ENGINE_PID" ]; then
 else
     echo "🚀 Starting Hyperliquid Trading Engine in background..."
     nohup "$PROJECT_DIR/.venv/bin/python" -u run.py \
-        --top-n 50 \
+        --top-n 15 \
         --port 8000 \
         --watchdog-interval 10 \
-        --prospector-interval 900 \
+        --prospector-interval 45 \
         > "$PROJECT_DIR/logs/engine_daemon.log" 2>&1 &
     NEW_ENGINE_PID=$!
     disown $NEW_ENGINE_PID 2>/dev/null || true

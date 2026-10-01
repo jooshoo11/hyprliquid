@@ -269,6 +269,7 @@ class OrderBookImbalance(Strategy):
                 side=side,
                 proposed_notional_usd=notional_usd,
                 current_open_positions_count=self.cache.positions_open_count(),
+                leverage=min(max_lev, 15.0),
             )
             if not can_trade:
                 if reason != "SILENT_BLOCK":

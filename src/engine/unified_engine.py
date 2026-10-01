@@ -69,8 +69,9 @@ from src.risk.fallback_engine import AIFallbackEngine
 from src.risk.regime_manager import MarketRegimeManager, MarketRegimeInfo
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.scanner.arbitrage_scanner import ArbitrageScanner
-from src.utils.instruments import get_coin_max_leverage
+from src.utils.instruments import get_coin_max_leverage, to_hl_price
 from src.execution.node_runner import generate_or_load_wallet
+from src.execution.agent_wallet import HyperliquidAgentWallet
 
 console = Console()
 
@@ -82,7 +83,7 @@ class UnifiedEngine:
 
     def __init__(
         self,
-        top_n: int = 30,
+        top_n: int = 15,
         paper: bool = True,
         risk_pct: float = 0.01,
         rr_ratio: float = 2.5,
@@ -100,6 +101,10 @@ class UnifiedEngine:
 
         self.info_client = HyperliquidInfoClient(network="mainnet" if paper else "testnet")
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
+        self.agent_wallet = HyperliquidAgentWallet(
+            main_address=self.wallet_address,
+            network="mainnet" if self.paper else "testnet",
+        )
 
         self.guard = PortfolioGuard(
             max_strategy_equity_pct=50.0,
@@ -112,19 +117,19 @@ class UnifiedEngine:
         )
         self.guard.reentry_cooldown_seconds = 120.0  # 2 minutes for high-velocity scalping
         self.trade_manager = TradeManager(
-            min_holding_seconds=45.0,
-            reentry_cooldown_seconds=120.0,
-            take_profit_roi_pct=1.40,
-            breakeven_roi_pct=0.60,
-            breakeven_stop_roi_pct=0.12,
-            trailing_roi_pct=0.90,
-            trailing_distance_pct=0.40,
-            mae_roi_pct=-0.95,
-            mae_loss_usd=-2.50,
-            fast_dud_minutes=12.0,
+            min_holding_seconds=45.0,        # 45s minimum hold to prevent instant noise whipsaws
+            reentry_cooldown_seconds=120.0,   # 2 minutes cooldown (re-arm quickly)
+            take_profit_roi_pct=1.40,        # Bank +1.4% price move (+21% ROE at 15x leverage)
+            breakeven_roi_pct=0.60,          # Move stop to breakeven once price is up +0.60%
+            breakeven_stop_roi_pct=0.12,     # +0.12% stop locks in profit above fees
+            trailing_roi_pct=0.90,           # Activate trailing stop at +0.90%
+            trailing_distance_pct=0.40,      # Tight 0.40% trail behind peak price
+            mae_roi_pct=-0.90,               # Hard cut at -0.90% price move
+            mae_loss_usd=-2.50,              # Hard dollar stop per position
+            fast_dud_minutes=10.0,           # Exit trades that chop flat for 10 minutes
             fast_dud_roi_pct=-0.25,
             fast_dud_max_peak_roi=0.15,
-            stagnant_hours=0.5,
+            stagnant_hours=0.35,             # 20 minutes maximum total duration per trade
             tiered_profit_lock=True,
             max_positions=3,
         )
@@ -367,8 +372,8 @@ class UnifiedEngine:
             portfolio_guard=self.guard,
         )
 
-        self.node.trader.add_strategy(self.continuation_strat)
-        # HourlyFundingFade disabled to dedicate all 3 execution slots to high-frequency momentum scalpers
+        # Put slow swing strategies to sleep to dedicate all 3 execution slots to high-frequency scalpers
+        # self.node.trader.add_strategy(self.continuation_strat)
         # self.node.trader.add_strategy(self.funding_strat)
         self.node.trader.add_strategy(self.scalp_strat)
         self.node.trader.add_strategy(self.vwap_strat)
@@ -390,6 +395,11 @@ class UnifiedEngine:
                     if c in self._closed_positions_coins:
                         continue
                     if c in recently_closed:
+                        continue
+                    # Filter residual dust positions (< $5.0 USD notional) so rounding dust does not block trade slots
+                    qty_val = abs(p.quantity.as_double()) if hasattr(p, "quantity") and hasattr(p.quantity, "as_double") else abs(float(getattr(p, "size", 0.0)))
+                    px_val = float(p.avg_px_open) if hasattr(p, "avg_px_open") and p.avg_px_open else (float(getattr(p, "avg_px", 0.0)))
+                    if px_val > 0 and (qty_val * px_val) < 5.0:
                         continue
                     filtered.append(p)
                 return filtered
@@ -612,6 +622,7 @@ class UnifiedEngine:
             "last_watchdog_audit": datetime.fromtimestamp(self._last_watchdog_audit, timezone.utc).isoformat() if self._last_watchdog_audit else None,
             "fallback_status": self.fallback_engine.get_status_summary() if hasattr(self, "fallback_engine") else {},
             "market_regime": self.regime_manager.current_regime.to_dict() if hasattr(self, "regime_manager") and self.regime_manager and self.regime_manager.current_regime else None,
+            "agent_wallet": self.agent_wallet.get_status() if hasattr(self, "agent_wallet") and self.agent_wallet else {},
         }
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
@@ -673,6 +684,21 @@ class UnifiedEngine:
                         fallback.close_position(pos)
                         closed_any = True
                         self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
+
+                # Live execution fallback via HyperliquidAgentWallet
+                if not closed_any and not self.paper and hasattr(self, "agent_wallet") and self.agent_wallet.is_configured:
+                    qty = pos.quantity.as_double() if hasattr(pos, "quantity") and hasattr(pos.quantity, "as_double") else 1.0
+                    res = self.agent_wallet.place_order(
+                        coin=actual_coin,
+                        is_buy=not pos.is_long,
+                        size=qty,
+                        limit_px=float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else 0.0,
+                        order_type={"market": {}},
+                        reduce_only=True,
+                    )
+                    if res:
+                        closed_any = True
+                        self.log(f"Market close submitted for {actual_coin} via native AgentWallet ({reason})", "CLOSE")
 
                 if closed_any:
                     self._in_flight_closes[actual_coin] = now_ts
@@ -1146,6 +1172,10 @@ class UnifiedEngine:
             self._force_prospector_scan = True
         elif action in ("ENTER_PROSPECT", "OPEN_POSITION"):
             self.execute_prospect_entry(cmd)
+        elif action in ("RESET_CIRCUIT_BREAKER", "RESET_BREAKER"):
+            if hasattr(self, "guard") and self.guard:
+                self.guard.reset_circuit_breaker()
+                self.log("🛡️ [Risk Guard] Circuit breaker manually reset. Drawdown window restarted.", "INFO")
 
     def _check_external_bridge_commands(self) -> None:
         """
@@ -1307,35 +1337,18 @@ class UnifiedEngine:
         except Exception as l2_err:
             self.log(f"Pre-entry L2 check error for {coin}: {l2_err}", "DEBUG")
 
-        # Microstructure Exhaustion Gate: Block shorting into extreme oversold bottoms or longing into parabolic blow-offs
-        rsi_5m = self.get_5m_rsi(coin)
-        if rsi_5m is not None:
-            if bias == "SHORT" and rsi_5m < 18.0:
-                self.log(
-                    f"⚠️ [Exhaustion Gate] Blocked SHORT {coin}: 5m RSI is deeply oversold ({rsi_5m:.1f} < 18). "
-                    f"Preventing bottom-wick short entry; waiting for relief bounce.",
-                    "TRIGGER",
-                )
-                self.log_missed_opportunity(
-                    coin=coin,
-                    strategy=strat_name,
-                    reason=f"Exhaustion Gate: 5m RSI deeply oversold ({rsi_5m:.1f} < 18)",
-                    metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
-                )
-                return False
-            elif bias == "LONG" and rsi_5m > 82.0:
-                self.log(
-                    f"⚠️ [Exhaustion Gate] Blocked LONG {coin}: 5m RSI is deeply overbought ({rsi_5m:.1f} > 82). "
-                    f"Preventing blow-off top long entry; waiting for pullback.",
-                    "TRIGGER",
-                )
-                self.log_missed_opportunity(
-                    coin=coin,
-                    strategy=strat_name,
-                    reason=f"Exhaustion Gate: 5m RSI deeply overbought ({rsi_5m:.1f} > 82)",
-                    metrics={"rsi_5m": rsi_5m, "bias": bias, "mark_price": mark_px},
-                )
-                return False
+        # 1m Volume Burst Detection: Verify active volume momentum expansion on breakout entry
+        try:
+            now_ms = int(time.time() * 1000)
+            klines_1m = self.info_client.get_historical_klines(coin, "1m", start_time_ms=now_ms - (15 * 60 * 1000), end_time_ms=now_ms)
+            if klines_1m and len(klines_1m) >= 5:
+                vols = [float(k.get("v", 0.0)) for k in klines_1m]
+                avg_vol = sum(vols[:-1]) / max(1, len(vols) - 1)
+                latest_vol = vols[-1]
+                if avg_vol > 0 and latest_vol >= (avg_vol * 1.2):
+                    self.log(f"⚡ [Volume Burst] {coin} 1m volume expansion confirmed ({latest_vol:,.0f} vs avg {avg_vol:,.0f})", "INFO")
+        except Exception as vol_err:
+            self.log(f"Volume burst check notice for {coin}: {vol_err}", "DEBUG")
 
         sl_px = float(prospect.get("stop_loss", 0.0))
         tp_px = float(prospect.get("take_profit", 0.0))
@@ -1394,7 +1407,10 @@ class UnifiedEngine:
         if quantity.as_double() <= 0:
             return False
 
-        notional_usd = qty_val * mark_px
+        notional_usd = float(quantity.as_double()) * mark_px
+        if notional_usd < 11.0:
+            self.log(f"Order notional (${notional_usd:.2f}) below exchange minimum floor of $11.0 USD for {coin}", "DEBUG")
+            return False
 
         open_pos = self.get_open_positions()
         self.guard.sync_open_positions(open_pos)
@@ -1406,6 +1422,7 @@ class UnifiedEngine:
             proposed_notional_usd=notional_usd,
             current_open_positions_count=len(open_pos),
             open_positions=open_pos,
+            leverage=coin_max_lev,
         )
         if not can_trade:
             # If high conviction (>= 88), attempt capital rotation of a stagnant position
@@ -1428,6 +1445,7 @@ class UnifiedEngine:
                             proposed_notional_usd=notional_usd,
                             current_open_positions_count=len(open_pos),
                             open_positions=open_pos,
+                            leverage=coin_max_lev,
                         )
 
             if not can_trade:
@@ -1447,11 +1465,12 @@ class UnifiedEngine:
         # Post slightly inside the spread: for BUY, 1 tick below mark/ask; for SELL, 1 tick above mark/bid
         tick_size = instrument.price_increment.as_double()
         if side == OrderSide.BUY:
-            entry_px = round(mark_px - (tick_size * 0.5), instrument.price_precision)
+            raw_entry = mark_px - (tick_size * 0.5)
         else:
-            entry_px = round(mark_px + (tick_size * 0.5), instrument.price_precision)
-        if entry_px <= 0:
-            entry_px = round(mark_px, instrument.price_precision)
+            raw_entry = mark_px + (tick_size * 0.5)
+        if raw_entry <= 0:
+            raw_entry = mark_px
+        entry_px = to_hl_price(raw_entry, instrument.size_precision)
         entry_price_obj = instrument.make_price(Decimal(str(entry_px)))
 
         try:
@@ -1498,6 +1517,34 @@ class UnifiedEngine:
             self._in_flight_closes.pop(coin, None)
             return True
         except Exception as e:
+            # Fallback to direct HyperliquidAgentWallet native signing if live
+            if not self.paper and hasattr(self, "agent_wallet") and self.agent_wallet.is_configured:
+                try:
+                    self.log(f"Falling back to native HyperliquidAgentWallet order placement for {coin}...", "WARN")
+                    res = self.agent_wallet.place_order(
+                        coin=coin,
+                        is_buy=(side == OrderSide.BUY),
+                        size=float(quantity.as_double()),
+                        limit_px=entry_px,
+                        order_type={"limit": {"tif": "Alo"}},
+                        reduce_only=False,
+                    )
+                    if res and res.get("status") in ("ok", "filled", "MOCK_PAPER_FILLED"):
+                        if hasattr(self, "trade_manager") and self.trade_manager:
+                            self.trade_manager.register_position(
+                                coin=coin,
+                                side=bias,
+                                size=float(quantity.as_double()),
+                                entry_price=entry_px,
+                                strategy=strat_name,
+                                entry_time=time.time(),
+                                stop_price=float(sl_px) if sl_px > 0 else None,
+                            )
+                        self._closed_positions_coins.discard(coin)
+                        self._in_flight_closes.pop(coin, None)
+                        return True
+                except Exception as aw_err:
+                    self.log(f"Native AgentWallet fallback order failed on {coin}: {aw_err}", "ERROR")
             self.log(f"Failed to submit prospect order for {coin}: {e}", "ERROR")
             return False
 

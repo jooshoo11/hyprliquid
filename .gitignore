@@ -30,6 +30,7 @@ venv/
 venv
 env/
 env
+hyperliquid_nautilus/
 hyperliquid_nautilus/.venv/
 
 # ==============================================================================

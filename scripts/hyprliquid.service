@@ -1,0 +1,18 @@
+[Unit]
+Description=Hyperliquid Autonomous High-Frequency Scalper Daemon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jooshoo
+WorkingDirectory=/home/jooshoo/Desktop/hyprliquid
+ExecStart=/home/jooshoo/Desktop/hyprliquid/.venv/bin/python -u run.py --port 8000 --prospector-interval 45
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

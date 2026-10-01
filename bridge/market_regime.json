@@ -1,17 +1,17 @@
 {
   "regime": "CHOPPY_MEAN_REVERTING_RANGE",
-  "breadth_pct": 52.0,
-  "avg_change_24h": 1.09,
-  "avg_funding_apr": 9.9,
-  "volatility_score": 5.11,
+  "breadth_pct": 50.0,
+  "avg_change_24h": 0.88,
+  "avg_funding_apr": 9.4,
+  "volatility_score": 4.89,
   "high_funding_count": 0,
-  "negative_funding_count": 2,
-  "sentiment": "Range-Bound Consolidation (52% green, avg +1.1% 24h). Support/resistance walls holding; low directional breakout follow-through.",
+  "negative_funding_count": 1,
+  "sentiment": "Range-Bound Consolidation (50% green, avg +0.9% 24h). Support/resistance walls holding; low directional breakout follow-through.",
   "active_tweaks": [
     "OrderBookImbalance allowed up to 2 concurrent scalps on depth skew walls",
     "Funding Fade prioritized for mean reversion (max 3 positions)",
     "VWAP breakout allocations trimmed to prevent whipsaw in range",
     "Profit targets tightened to 1.5 R:R to lock gains quickly"
   ],
-  "timestamp": 1790842130.5450494
+  "timestamp": 1790843059.868742
 }

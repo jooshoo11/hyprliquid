@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -125,19 +126,19 @@ class TradeManager:
         breakeven_stop_roi_pct: float = 0.15,   # Stop set at +0.15% ROI (covers taker fee)
         trailing_roi_pct: float = 2.0,          # Trailing stop trigger: +2.0%
         trailing_distance_pct: float = 0.75,    # Trails 0.75% behind peak mark price
-        mae_roi_pct: float = -2.5,              # MAE hard cut ROI: <= -2.5%
-        mae_loss_usd: float = -2.00,            # MAE hard cut loss: <= -$2.00
-        stagnant_hours: float = 4.0,            # Stagnant duration: > 4.0 hours
-        stagnant_roi_pct: float = 0.3,          # Stagnant max movement: <= 0.3% ROI
+        mae_roi_pct: float = -2.5,              # Base MAE hard cut ROI: <= -2.5%
+        mae_loss_usd: float = -2.00,            # Base MAE hard cut loss: <= -$2.00
+        stagnant_hours: float = 4.0,            # Base Stagnant duration: > 4.0 hours
+        stagnant_roi_pct: float = 0.3,          # Base Stagnant max movement: <= 0.3% ROI
         taker_fee_pct: float = 0.035,           # Hyperliquid standard 3.5 bps per side
-        min_holding_seconds: float = 90.0,      # Minimum holding duration before non-emergency exits
-        reentry_cooldown_seconds: float = 180.0,# Cooldown after closing before re-entering (3 mins)
+        min_holding_seconds: float = 90.0,      # Base Minimum holding duration before non-emergency exits
+        reentry_cooldown_seconds: float = 180.0,# Base Cooldown after closing before re-entering (3 mins)
         max_positions: int = 3,                 # Max portfolio positions for capital rotation
-        take_profit_roi_pct: Optional[float] = None, # Hard Take-Profit target: e.g. +2.0% to +3.5% ROI
+        take_profit_roi_pct: Optional[float] = None, # Hard Take-Profit target (customized in UnifiedEngine)
         extended_hold_hours: float = 2.0,       # Extended hold duration: > 2.0 hours
         extended_hold_roi_pct: float = 1.5,     # Extended hold profit lock: >= +1.5% ROI
-        tiered_profit_lock: bool = False,       # Tiered profit locking (+0.75% @ 1.5% peak, +1.40% @ 2.2% peak)
-        fast_dud_minutes: float = 30.0,         # Fast dud cut: after 30 mins
+        tiered_profit_lock: bool = False,       # Tiered profit locking
+        fast_dud_minutes: float = 30.0,         # Base Fast dud cut: after 30 mins
         fast_dud_roi_pct: float = -0.40,        # If ROI <= -0.40%
         fast_dud_max_peak_roi: float = 0.20,    # And peak ROI never exceeded +0.20%
     ) -> None:
@@ -997,8 +998,65 @@ class TradeManager:
             self._closed_trades_cache.append(trade_record)
             self._append_to_daily_pnl(ts_str, trade_record)
             self._append_to_session_trades(trade_record)
+            self._send_trade_alert(trade_record)
 
         return trade_record
+
+    def _send_trade_alert(self, record: Dict[str, Any]) -> None:
+        """Send instantaneous Telegram/Discord webhook alert on trade exit in background thread."""
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        discord_webhook = os.getenv("DISCORD_WEBHOOK_URL")
+
+        if not (bot_token and chat_id) and not discord_webhook:
+            return
+
+        coin = record.get("coin", "UNKNOWN")
+        side = record.get("side", "UNKNOWN")
+        roi = record.get("roi", 0.0)
+        net_pnl = record.get("net_pnl", 0.0)
+        reason = record.get("reason", "N/A")
+        duration = record.get("duration", "N/A")
+        strategy = record.get("strategy", "Unknown")
+
+        emoji = "🚀" if roi > 0 else "🛑"
+        if "MAE" in str(reason):
+            emoji = "⚠️ [MAE HARD CUT]"
+        elif "Take profit" in str(reason) or roi >= 1.2:
+            emoji = "🎯 [TARGET SCALP HIT]"
+        elif "Breakeven" in str(reason):
+            emoji = "🛡️ [BREAKEVEN EXIT]"
+
+        msg = (
+            f"{emoji} *Hyperliquid Trade Closed*\n"
+            f"• *Coin*: `{coin}` ({side})\n"
+            f"• *ROI*: `{roi:+.2f}%` | *Net PnL*: `${net_pnl:+.2f}`\n"
+            f"• *Strategy*: `{strategy}`\n"
+            f"• *Reason*: {reason}\n"
+            f"• *Duration*: `{duration}`"
+        )
+
+        def _dispatch():
+            if bot_token and chat_id:
+                try:
+                    requests.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+                        timeout=2.0,
+                    )
+                except Exception as e:
+                    logger.debug("Telegram alert dispatch error: %s", e)
+            if discord_webhook:
+                try:
+                    requests.post(
+                        discord_webhook,
+                        json={"content": msg.replace("*", "**")},
+                        timeout=2.0,
+                    )
+                except Exception as e:
+                    logger.debug("Discord webhook dispatch error: %s", e)
+
+        threading.Thread(target=_dispatch, daemon=True).start()
 
     def _append_to_daily_pnl(self, ts_str: str, record: Dict[str, Any]) -> None:
         """Append formatted row to daily_pnl.md table with Gross PnL, Fees, and Net PnL."""

@@ -219,7 +219,7 @@ class VwapOiMomentum(Strategy):
         max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
         margin_allocated = equity / max_positions
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = float(get_coin_max_leverage(coin))
+        max_lev = min(float(get_coin_max_leverage(coin)), 15.0)  # Max 15x safe scalping ceiling
         target_notional = margin_allocated * max_lev
         qty_val = target_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
@@ -235,6 +235,7 @@ class VwapOiMomentum(Strategy):
                 side=side,
                 proposed_notional_usd=notional_usd,
                 current_open_positions_count=self.cache.positions_open_count(),
+                leverage=max_lev,
             )
             if not can_trade:
                 if reason != "SILENT_BLOCK":

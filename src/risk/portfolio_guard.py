@@ -102,10 +102,10 @@ class PortfolioGuard:
             self.regime_tweaks = list(tweaks or [])
 
     def update_equity(self, equity: float) -> None:
-        """Update portfolio equity and evaluate 24-hour drawdown circuit breaker."""
+        """Update portfolio equity and evaluate rolling 4-hour drawdown circuit breaker."""
         now_ms = int(time.time() * 1000)
-        # Reset high water mark if 24 hours elapsed
-        if now_ms - self.day_start_timestamp_ms >= 86_400_000:
+        # Reset high water mark if 4 hours elapsed (rolling 4h window prevents 24h deadlocks)
+        if now_ms - self.day_start_timestamp_ms >= (4 * 3600 * 1000):
             self.day_start_timestamp_ms = now_ms
             self.daily_high_water_mark = equity
             self.is_circuit_breaker_triggered = False
@@ -116,11 +116,22 @@ class PortfolioGuard:
         if equity > self.daily_high_water_mark:
             self.daily_high_water_mark = equity
 
-        # Calculate daily drawdown
+        # Calculate drawdown against rolling high water mark
         if self.daily_high_water_mark > 0:
             drawdown_pct = (self.daily_high_water_mark - equity) / self.daily_high_water_mark
             if drawdown_pct >= self.max_daily_drawdown_pct:
                 self.is_circuit_breaker_triggered = True
+            elif self.is_circuit_breaker_triggered and drawdown_pct < (self.max_daily_drawdown_pct * 0.5):
+                # Auto-heal circuit breaker once equity recovers back above half the drawdown threshold
+                self.is_circuit_breaker_triggered = False
+
+    def reset_circuit_breaker(self) -> None:
+        """Manually or programmatically reset circuit breaker and restart rolling drawdown window."""
+        with self._lock:
+            self.day_start_timestamp_ms = int(time.time() * 1000)
+            self.daily_high_water_mark = self.current_equity
+            self.is_circuit_breaker_triggered = False
+            self.strategy_lockouts.clear()
 
     def set_prospect_biases(self, biases: Dict[str, str]) -> None:
         """Update active AI prospect biases for instruments."""
@@ -357,6 +368,7 @@ class PortfolioGuard:
         current_open_positions_count: int,
         open_positions: Optional[List[Any]] = None,
         allow_reversal: Optional[bool] = None,
+        leverage: Optional[float] = None,
     ) -> Tuple[bool, str]:
         with self._lock:
             if open_positions is not None:
@@ -458,19 +470,22 @@ class PortfolioGuard:
             if proposed_notional_usd > (max_coin_notional * 1.01):
                 return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds Hyperliquid max leverage for {coin} ({max_lev:.0f}x = ${max_coin_notional:,.2f})."
 
+            eff_lev = min(float(max_lev), float(leverage)) if leverage is not None else 1.0
+
             # Enforce single position notional cap (if configured)
             if self.max_single_position_equity_pct is not None:
-                max_single_notional = self.current_equity * self.max_single_position_equity_pct
+                max_single_notional = self.current_equity * self.max_single_position_equity_pct * eff_lev
                 if proposed_notional_usd > (max_single_notional * 1.05):
                     pct_lbl = f"{int(self.max_single_position_equity_pct * 100)}%"
                     return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap {pct_lbl} (${max_single_notional:,.2f})."
 
             cap = self.get_strategy_allocation_cap(strategy_name)
             if cap <= 1.0:
-                max_allowed_margin = self.current_equity * cap
+                max_allowed_margin = self.current_equity * cap * eff_lev
             else:
                 # When cap is expressed as position multiplier (e.g. 2.5x positions), scale by trade slot size at max leverage
-                slot_notional = (self.current_equity / float(max(1, self.max_total_open_positions))) * max_lev
+                slot_lev = eff_lev if leverage is not None else min(float(max_lev), 15.0)
+                slot_notional = (self.current_equity / float(max(1, self.max_total_open_positions))) * slot_lev
                 max_allowed_margin = cap * slot_notional
 
             current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, self.strategy_allocated_margin.get(base_strat, 0.0))

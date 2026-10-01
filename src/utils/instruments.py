@@ -203,3 +203,15 @@ def get_bar_type(coin: str, timeframe: str) -> BarType:
     if tf_key not in tf_map:
         raise ValueError(f"Unsupported timeframe: {timeframe}. Must be one of {list(tf_map.keys())}")
     return BarType.from_str(tf_map[tf_key])
+
+
+def to_hl_price(px: float, decimals: Optional[int] = None) -> float:
+    """
+    Format price according to official Hyperliquid protocol rules:
+    - Maximum 5 significant figures
+    """
+    if px <= 0:
+        return float(px)
+    if decimals is not None:
+        return round(float(f"{px:.5g}"), decimals)
+    return float(f"{px:.5g}")
