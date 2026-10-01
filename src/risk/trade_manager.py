@@ -440,12 +440,14 @@ class TradeManager:
                     tracker.tiered_lock_roi_pct = locked_roi
                 if tracker.side == "LONG":
                     lock_stop = tracker.entry_price * (1.0 + (locked_roi / 100.0))
-                    if tracker.stop_price is None or lock_stop > tracker.stop_price:
-                        tracker.stop_price = lock_stop
+                    if mark_price > lock_stop:
+                        if tracker.stop_price is None or lock_stop > tracker.stop_price:
+                            tracker.stop_price = lock_stop
                 else:  # SHORT
                     lock_stop = tracker.entry_price * (1.0 - (locked_roi / 100.0))
-                    if tracker.stop_price is None or lock_stop < tracker.stop_price:
-                        tracker.stop_price = lock_stop
+                    if mark_price < lock_stop:
+                        if tracker.stop_price is None or lock_stop < tracker.stop_price:
+                            tracker.stop_price = lock_stop
 
             # Rule 3: Trailing stop
             # When ROI >= +2.0%, trails behind peak mark price (dynamic ATR or configured default)

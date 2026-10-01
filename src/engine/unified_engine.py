@@ -108,21 +108,23 @@ class UnifiedEngine:
             allow_pyramiding=False,
             bypass_risk_guard=False,
         )
-        self.guard.reentry_cooldown_seconds = 1800.0  # 30 minutes anti-churn
+        self.guard.reentry_cooldown_seconds = 300.0  # 5 minutes
         self.trade_manager = TradeManager(
-            min_holding_seconds=120.0,
-            reentry_cooldown_seconds=1800.0,  # 30 minutes anti-churn
-            breakeven_roi_pct=0.75,
-            trailing_roi_pct=1.6,
-            trailing_distance_pct=0.75,
-            mae_roi_pct=-1.25,
-            mae_loss_usd=-3.50,
-            fast_dud_minutes=30.0,
-            fast_dud_roi_pct=-0.40,
-            fast_dud_max_peak_roi=0.20,
-            stagnant_hours=1.0,
-            max_positions=3,
+            min_holding_seconds=45.0,
+            reentry_cooldown_seconds=300.0,
+            take_profit_roi_pct=1.40,
+            breakeven_roi_pct=0.60,
+            breakeven_stop_roi_pct=0.12,
+            trailing_roi_pct=0.90,
+            trailing_distance_pct=0.40,
+            mae_roi_pct=-0.95,
+            mae_loss_usd=-2.50,
+            fast_dud_minutes=12.0,
+            fast_dud_roi_pct=-0.25,
+            fast_dud_max_peak_roi=0.15,
+            stagnant_hours=0.5,
             tiered_profit_lock=True,
+            max_positions=3,
         )
         self.analytics = PerformanceAnalytics()
         self.fallback_engine = AIFallbackEngine()
@@ -1048,11 +1050,11 @@ class UnifiedEngine:
                                     skew_ratio = b_depth / a_depth
                                     skew_threshold = max(3.5, getattr(self.scalp_strat.scalp_config, "skew_threshold", 3.5))
                                     p_bias = self.prospects.get(sc_coin, {}).get("bias")
-                                    min_sl_dist = wall_px * 0.012  # Minimum 1.2% stop distance
-                                    min_tp_dist = wall_px * 0.025  # Minimum 2.5% TP target
 
                                     if skew_ratio >= skew_threshold and p_bias != "SHORT":
                                         wall_px = float(bids[0]["px"])
+                                        min_sl_dist = wall_px * 0.008  # 0.8% stop
+                                        min_tp_dist = wall_px * 0.015  # 1.5% take profit
                                         entry_px = wall_px
                                         sl_dist = max(self.scalp_strat.scalp_config.stop_ticks * tick_size, min_sl_dist)
                                         tp_dist = max(self.scalp_strat.scalp_config.take_profit_ticks * tick_size, min_tp_dist)
@@ -1063,6 +1065,8 @@ class UnifiedEngine:
                                     elif (a_depth / b_depth) >= skew_threshold and p_bias != "LONG":
                                         skew_rev = a_depth / b_depth
                                         wall_px = float(asks[0]["px"])
+                                        min_sl_dist = wall_px * 0.008  # 0.8% stop
+                                        min_tp_dist = wall_px * 0.015  # 1.5% take profit
                                         entry_px = wall_px
                                         sl_dist = max(self.scalp_strat.scalp_config.stop_ticks * tick_size, min_sl_dist)
                                         tp_dist = max(self.scalp_strat.scalp_config.take_profit_ticks * tick_size, min_tp_dist)
@@ -1456,32 +1460,11 @@ class UnifiedEngine:
             if len(self.sentinel_thoughts) > 50:
                 self.sentinel_thoughts.pop(0)
 
-            # Dynamic TP and SL multipliers adapted to prevailing market regime (tight 0.90% stops for 10x-20x leverage)
-            if regime_info.regime == "BEAR_MARKET_FLUSH":
-                long_tp_mult = 1.015
-                long_sl_mult = 0.991
-                short_tp_mult = 0.965
-                short_sl_mult = 1.009
-            elif regime_info.regime == "CHOPPY_MEAN_REVERTING_RANGE":
-                long_tp_mult = 1.020
-                long_sl_mult = 0.991
-                short_tp_mult = 0.980
-                short_sl_mult = 1.009
-            elif regime_info.regime == "BULL_MOMENTUM_EXPANSION":
-                long_tp_mult = 1.035
-                long_sl_mult = 0.991
-                short_tp_mult = 0.975
-                short_sl_mult = 1.009
-            elif regime_info.regime == "NEGATIVE_FUNDING_SHORT_SQUEEZE":
-                long_tp_mult = 1.045
-                long_sl_mult = 0.991
-                short_tp_mult = 0.980
-                short_sl_mult = 1.009
-            else:
-                long_tp_mult = 1.025
-                long_sl_mult = 0.991
-                short_tp_mult = 0.975
-                short_sl_mult = 1.009
+            # High-Leverage Hit-and-Run TP and SL multipliers (+1.5% TP target, -0.9% tight SL for 10x-20x leverage)
+            long_tp_mult = 1.015
+            long_sl_mult = 0.991
+            short_tp_mult = 0.985
+            short_sl_mult = 1.009
 
             prospects_list = []
             selected_coins = set()
@@ -1490,6 +1473,61 @@ class UnifiedEngine:
                 regime_info.regime in ("BULL_MOMENTUM_EXPANSION", "NEGATIVE_FUNDING_SHORT_SQUEEZE")
                 or regime_info.breadth_pct >= 60.0
             )
+
+            # --- Hit-and-Run Group 1: Short Squeeze Pops ---
+            # Funding APR < -15% with positive 24h momentum and heavy volume
+            squeeze_filter = (
+                (pl.col("funding_apr") < -15.0)
+                & (pl.col("change_24h") > 1.0)
+                & (pl.col("vol_24h") > 5_000_000)
+            )
+            squeeze_df = df.filter(squeeze_filter).sort("vol_24h", descending=True).head(5)
+            squeeze_candidates = []
+            for row in squeeze_df.iter_rows(named=True):
+                c = row["coin"]
+                px = float(row["price"])
+                funding_apr = float(row["funding_apr"])
+                chg = float(row["change_24h"])
+                squeeze_candidates.append({
+                    "coin": c,
+                    "bias": "LONG",
+                    "conviction_score": min(95, int(85 + abs(funding_apr) / 5.0)),
+                    "strategy": "Short Squeeze Pop",
+                    "mark_price": px,
+                    "target_entry": round(px * 0.997, 4),
+                    "stop_loss": round(px * long_sl_mult, 4),
+                    "take_profit": round(px * long_tp_mult, 4),
+                    "funding_apr_pct": funding_apr,
+                    "volume_24h_usd": float(row["vol_24h"]),
+                    "rationale": f"Short squeeze pop: Funding APR {funding_apr:.1f}% on ${row['vol_24h']/1e6:.1f}M vol with +{chg:.1f}% 24h gain; rapid squeeze momentum.",
+                })
+
+            # --- Hit-and-Run Group 2: Hot Breakout Momentum ---
+            # Rapid 24h momentum expansion (>3.5%) with institutional volume (> $10M)
+            breakout_filter = (
+                (pl.col("change_24h") > 3.5)
+                & (pl.col("vol_24h") > 10_000_000)
+            )
+            breakout_df = df.filter(breakout_filter).sort("change_24h", descending=True).head(5)
+            breakout_candidates = []
+            for row in breakout_df.iter_rows(named=True):
+                c = row["coin"]
+                px = float(row["price"])
+                funding_apr = float(row["funding_apr"])
+                chg = float(row["change_24h"])
+                breakout_candidates.append({
+                    "coin": c,
+                    "bias": "LONG",
+                    "conviction_score": min(95, int(82 + chg)),
+                    "strategy": "Hot Breakout Momentum",
+                    "mark_price": px,
+                    "target_entry": round(px * 0.996, 4),
+                    "stop_loss": round(px * long_sl_mult, 4),
+                    "take_profit": round(px * long_tp_mult, 4),
+                    "funding_apr_pct": funding_apr,
+                    "volume_24h_usd": float(row["vol_24h"]),
+                    "rationale": f"Hot breakout momentum: +{chg:.1f}% 24h pump on ${row['vol_24h']/1e6:.1f}M vol; high-velocity continuation.",
+                })
 
             # --- Group A: Spot-Led Long Momentum Candidates ---
             if regime_info.regime == "BEAR_MARKET_FLUSH":
@@ -1583,13 +1621,13 @@ class UnifiedEngine:
                     "rationale": f"Bear market breakdown: {chg:+.1f}% 24h drop on ${row['vol_24h']/1e6:.1f}M vol; heavy distribution.",
                 })
 
-            # Assemble prospects list in regime-aligned priority order
+            # Assemble prospects list in regime-aligned priority order (hit-and-run momentum & squeezes first)
             if is_bull_regime:
-                priority_groups = [long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
             elif regime_info.regime == "BEAR_MARKET_FLUSH":
-                priority_groups = [breakdown_candidates, fade_short_candidates, long_candidates]
+                priority_groups = [breakdown_candidates, fade_short_candidates, squeeze_candidates, breakout_candidates, long_candidates]
             else:
-                priority_groups = [long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, breakout_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
 
             for grp in priority_groups:
                 for p in grp:
