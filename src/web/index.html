@@ -119,6 +119,15 @@
         <span id="ws-status" class="text-slate-300">LIVE WS</span>
       </div>
 
+      <!-- Interactive Manual Order Entry Button -->
+      <button onclick="openManualOrderModal()" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-md shadow-cyan-600/30">
+        <i class="fa-solid fa-plus text-[10px]"></i> New Trade
+      </button>
+
+      <button onclick="resetCircuitBreaker()" id="btn-reset-breaker" class="hidden bg-amber-600/30 text-amber-300 border border-amber-500 hover:bg-amber-600 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all">
+        <i class="fa-solid fa-rotate-left mr-1"></i> Reset Breaker
+      </button>
+
       <!-- RED FLATTEN ALL BUTTON -->
       <button id="btn-flatten-all" onclick="openFlattenModal()" class="bg-red-600 hover:bg-red-500 text-white font-bold px-3.5 py-1.5 rounded-lg text-xs tracking-wider uppercase flex items-center gap-1.5 transition-all shadow-lg shadow-red-600/30 active:scale-95 border border-red-400/50">
         <i class="fa-solid fa-skull-crossbones text-white"></i>
@@ -697,6 +706,46 @@
       </div>
     </div>
   </div>
+
+  <!-- MANUAL ORDER MODAL -->
+  <div id="manual-order-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+    <div class="bg-[#0f172a] border border-cyan-500/60 rounded-2xl max-w-sm w-full p-5 shadow-2xl flex flex-col gap-4">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <h3 class="font-extrabold text-sm text-white flex items-center gap-2">
+          <i class="fa-solid fa-terminal text-cyan-400"></i> Place Order: <span id="modal-coin-name" class="text-cyan-400 font-mono">BTC</span>
+        </h3>
+        <button onclick="closeManualOrderModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      
+      <div class="flex flex-col gap-3 text-xs mono">
+        <div class="grid grid-cols-2 gap-2">
+          <button id="modal-side-long" onclick="setOrderSide('LONG')" class="py-2 rounded-lg font-bold bg-emerald-950 text-emerald-300 border border-emerald-600">LONG 🟢</button>
+          <button id="modal-side-short" onclick="setOrderSide('SHORT')" class="py-2 rounded-lg font-bold bg-slate-900 text-slate-400 border border-slate-800">SHORT 🔴</button>
+        </div>
+
+        <div>
+          <label class="text-[10px] text-slate-400 block mb-1">NOTIONAL SIZE (USD)</label>
+          <input id="modal-notional" type="number" value="25" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white font-bold text-sm focus:border-cyan-400 outline-none">
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">STOP LOSS ($)</label>
+            <input id="modal-sl" type="number" step="any" placeholder="Auto 1.2%" class="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-rose-400 font-semibold focus:border-rose-400 outline-none">
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">TAKE PROFIT ($)</label>
+            <input id="modal-tp" type="number" step="any" placeholder="Auto 2.5%" class="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-emerald-400 font-semibold focus:border-emerald-400 outline-none">
+          </div>
+        </div>
+      </div>
+
+      <button onclick="submitManualOrder()" id="btn-submit-order" class="w-full py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition-all shadow-lg shadow-cyan-500/20 active:scale-95">
+        Send Bracket Order
+      </button>
+    </div>
+  </div>
+
 
   <!-- DAILY PNL REPORT MODAL -->
   <div id="daily-pnl-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden transition-opacity duration-200">
@@ -1665,6 +1714,89 @@
       } finally {
         confirmBtn.disabled = false;
         confirmBtn.innerHTML = originalHtml;
+      }
+    }
+
+    // --- Manual Order Modal & Reset Breaker Functions ---
+    let manualSide = 'LONG';
+
+    function openManualOrderModal() {
+      const coinEl = document.getElementById('modal-coin-name');
+      if (coinEl) {
+        coinEl.textContent = (typeof currentSymbol !== 'undefined' && currentSymbol) ? currentSymbol : 'BTC';
+      }
+      const modal = document.getElementById('manual-order-modal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+      }
+    }
+
+    function closeManualOrderModal() {
+      const modal = document.getElementById('manual-order-modal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    }
+
+    function setOrderSide(side) {
+      manualSide = side;
+      const btnLong = document.getElementById('modal-side-long');
+      const btnShort = document.getElementById('modal-side-short');
+      if (side === 'LONG') {
+        if (btnLong) btnLong.className = "py-2 rounded-lg font-bold bg-emerald-950 text-emerald-300 border border-emerald-600";
+        if (btnShort) btnShort.className = "py-2 rounded-lg font-bold bg-slate-900 text-slate-400 border border-slate-800";
+      } else {
+        if (btnShort) btnShort.className = "py-2 rounded-lg font-bold bg-rose-950 text-rose-300 border border-rose-600";
+        if (btnLong) btnLong.className = "py-2 rounded-lg font-bold bg-slate-900 text-slate-400 border border-slate-800";
+      }
+    }
+
+    async function submitManualOrder() {
+      const notional = parseFloat(document.getElementById('modal-notional').value) || 25.0;
+      const sl = parseFloat(document.getElementById('modal-sl').value) || null;
+      const tp = parseFloat(document.getElementById('modal-tp').value) || null;
+      const coin = (typeof currentSymbol !== 'undefined' && currentSymbol) ? currentSymbol : 'BTC';
+
+      const payload = {
+        coin: coin,
+        side: manualSide,
+        notional_usd: notional,
+        stop_loss: sl,
+        take_profit: tp,
+        strategy: "Manual Cockpit"
+      };
+
+      try {
+        const res = await fetch('/api/trades/open', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.status === 'SUCCESS') {
+          playFillChime();
+          showToast(data.message, 'success', 'ORDER SUBMITTED');
+          closeManualOrderModal();
+        } else {
+          showToast(data.message, 'warning', 'ORDER REJECTED');
+        }
+      } catch (err) {
+        showToast(`Order failed: ${err}`, 'error', 'EXECUTION ERROR');
+      }
+    }
+
+    async function resetCircuitBreaker() {
+      if (!confirm("Reset the 24h daily circuit breaker?")) return;
+      try {
+        const res = await fetch('/api/risk/reset_breaker', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message, 'success', 'RISK GUARD');
+        const btn = document.getElementById('btn-reset-breaker');
+        if (btn) btn.classList.add('hidden');
+      } catch (e) {
+        showToast(`Failed: ${e}`, 'error');
       }
     }
 

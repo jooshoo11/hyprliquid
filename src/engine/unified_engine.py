@@ -862,10 +862,16 @@ class UnifiedEngine:
 
                         initial_sl = None
                         prospect_data = self.prospects.get(coin)
-                        if prospect_data and "stop_loss" in prospect_data and float(prospect_data["stop_loss"]) > 0:
-                            initial_sl = float(prospect_data["stop_loss"])
-                        else:
-                            sl_mult = 1.009 if side == "SHORT" else 0.991
+                        if prospect_data and prospect_data.get("bias", "").upper() == side:
+                            p_sl = float(prospect_data.get("stop_loss", 0.0))
+                            if p_sl > 0:
+                                if side == "LONG" and p_sl < cur_px:
+                                    initial_sl = p_sl
+                                elif side == "SHORT" and p_sl > cur_px:
+                                    initial_sl = p_sl
+
+                        if initial_sl is None:
+                            sl_mult = 1.012 if side == "SHORT" else 0.988  # 1.2% default safety stop
                             initial_sl = entry_px * sl_mult
 
                         action = self.trade_manager.update_position(
@@ -1042,19 +1048,26 @@ class UnifiedEngine:
                                     skew_ratio = b_depth / a_depth
                                     skew_threshold = max(3.5, getattr(self.scalp_strat.scalp_config, "skew_threshold", 3.5))
                                     p_bias = self.prospects.get(sc_coin, {}).get("bias")
+                                    min_sl_dist = wall_px * 0.012  # Minimum 1.2% stop distance
+                                    min_tp_dist = wall_px * 0.025  # Minimum 2.5% TP target
+
                                     if skew_ratio >= skew_threshold and p_bias != "SHORT":
                                         wall_px = float(bids[0]["px"])
                                         entry_px = wall_px
-                                        sl_px = wall_px - (self.scalp_strat.scalp_config.stop_ticks * tick_size)
-                                        tp_px = entry_px + (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
+                                        sl_dist = max(self.scalp_strat.scalp_config.stop_ticks * tick_size, min_sl_dist)
+                                        tp_dist = max(self.scalp_strat.scalp_config.take_profit_ticks * tick_size, min_tp_dist)
+                                        sl_px = wall_px - sl_dist
+                                        tp_px = entry_px + tp_dist
                                         self.scalp_strat._execute_scalp(instrument, OrderSide.BUY, entry_px, sl_px, tp_px, skew_ratio)
                                         break
                                     elif (a_depth / b_depth) >= skew_threshold and p_bias != "LONG":
                                         skew_rev = a_depth / b_depth
                                         wall_px = float(asks[0]["px"])
                                         entry_px = wall_px
-                                        sl_px = wall_px + (self.scalp_strat.scalp_config.stop_ticks * tick_size)
-                                        tp_px = entry_px - (self.scalp_strat.scalp_config.take_profit_ticks * tick_size)
+                                        sl_dist = max(self.scalp_strat.scalp_config.stop_ticks * tick_size, min_sl_dist)
+                                        tp_dist = max(self.scalp_strat.scalp_config.take_profit_ticks * tick_size, min_tp_dist)
+                                        sl_px = wall_px + sl_dist
+                                        tp_px = entry_px - tp_dist
                                         self.scalp_strat._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, skew_rev)
                                         break
 

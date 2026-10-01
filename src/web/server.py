@@ -87,6 +87,16 @@ class CloseTradeRequest(BaseModel):
     reason: Optional[str] = "Manual Web Cockpit Close"
 
 
+class OpenTradeRequest(BaseModel):
+    coin: str
+    side: str  # "LONG" or "SHORT"
+    notional_usd: float = 25.0
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    strategy: Optional[str] = "Manual Trade"
+
+
+
 def load_json_file(path: str, default: Any = None) -> Any:
     """Safe read of JSON files with fallback."""
     if not os.path.exists(path):
@@ -936,6 +946,60 @@ async def api_close_all():
         raise HTTPException(status_code=500, detail=f"Failed to submit close all: {e}")
 
 
+@app.post("/api/trades/open")
+async def api_open_trade(req: OpenTradeRequest):
+    """Execute manual trade through the UnifiedEngine."""
+    if not _active_engine:
+        raise HTTPException(status_code=503, detail="Trading engine not active")
+
+    prospect = {
+        "coin": req.coin.upper(),
+        "bias": req.side.upper(),
+        "conviction_score": 95,
+        "strategy": req.strategy,
+        "stop_loss": req.stop_loss or 0.0,
+        "take_profit": req.take_profit or 0.0,
+        "mark_price": 0.0,
+    }
+
+    try:
+        meta, asset_ctxs = await asyncio.to_thread(info_client.get_meta_and_asset_ctxs)
+        for u, ctx in zip(meta.get("universe", []), asset_ctxs):
+            if u.get("name") == req.coin.upper():
+                prospect["mark_price"] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+                break
+    except Exception:
+        pass
+
+    success = _active_engine.execute_prospect_entry(prospect)
+    if success:
+        return {"status": "SUCCESS", "message": f"Submitted manual {req.side} for {req.coin}"}
+    return {"status": "REJECTED", "message": f"PortfolioGuard rejected trade for {req.coin}"}
+
+
+@app.post("/api/risk/reset_breaker")
+async def api_reset_circuit_breaker():
+    """Administrative reset of daily circuit breaker."""
+    if _active_engine and hasattr(_active_engine, "guard"):
+        _active_engine.guard.is_circuit_breaker_triggered = False
+        _active_engine.guard.daily_high_water_mark = _active_engine.get_account_cash()
+        return {"status": "SUCCESS", "message": "Circuit breaker reset to NORMAL"}
+    raise HTTPException(status_code=503, detail="Risk guard not available")
+
+
+@app.get("/api/strategy_allocations")
+async def api_strategy_allocations():
+    """Return active strategy allocation caps and sizing multipliers from PortfolioGuard."""
+    if _active_engine and hasattr(_active_engine, "guard"):
+        return {
+            "allocation_caps": dict(_active_engine.guard.strategy_allocation_caps),
+            "sizing_multipliers": dict(_active_engine.guard.strategy_sizing_multipliers),
+            "performance_stats": dict(_active_engine.guard.strategy_performance_stats),
+        }
+    return {"allocation_caps": {}, "sizing_multipliers": {}, "performance_stats": {}}
+
+
+
 @app.get("/api/reports/daily_pnl")
 async def api_daily_pnl():
     """
@@ -991,7 +1055,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            state = get_live_state()
+            state = await asyncio.to_thread(get_live_state)
             await websocket.send_json(state)
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:

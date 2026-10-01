@@ -466,9 +466,24 @@ class DeltaNeutralCarryStrategy(Strategy):
                     freed_notional_usd=freed,
                 )
 
-    def _resolve_instrument(self, coin: str) -> Optional[Instrument]:
-        """Resolve coin name to Instrument in cache."""
+    def _resolve_instrument(self, coin: str, prefer_spot: bool = False) -> Optional[Instrument]:
+        """Resolve coin name to Instrument in cache with spot vs perp resolution."""
         coin_clean = coin.upper().split("-")[0].split(".")[0]
+        spot_aliases = [coin_clean, f"U{coin_clean}", f"{coin_clean}/USDC", f"{coin_clean}-SPOT"]
+
+        if prefer_spot:
+            for alias in spot_aliases:
+                for key, instr in self.instruments_map.items():
+                    if alias in key and ("SPOT" in key or "/" in key or key.startswith("U")):
+                        return instr
+            try:
+                for instr in self.cache.instruments():
+                    sym = str(instr.id.symbol)
+                    if any(alias in sym for alias in spot_aliases) and ("SPOT" in sym or "/" in sym or sym.startswith("U")):
+                        return instr
+            except Exception:
+                pass
+
         if coin_clean in self.instruments_map:
             return self.instruments_map[coin_clean]
         for key, instr in self.instruments_map.items():
@@ -483,6 +498,7 @@ class DeltaNeutralCarryStrategy(Strategy):
         except Exception:
             pass
         return None
+
 
     def _get_coin_funding_apr(self, coin: str) -> float:
         """Query current annualized funding rate APR for coin."""
