@@ -17,3 +17,13 @@
 | 2026-10-01 05:19:32 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
 | 2026-10-01 05:29:00 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
 | 2026-10-01 05:35:02 | NEAR | TrendContinuationSMC | Exhaustion Gate: 5m RSI deeply overbought (69.6 > 68) | rsi_5m=69.61024431422327, bias=LONG, mark_price=5.4672 | - |
+| 2026-10-01 06:05:27 | ENA | TrendContinuationSMC | Exhaustion Gate: 5m RSI deeply overbought (68.5 > 68) | rsi_5m=68.54880881905785, bias=LONG, mark_price=0.27543 | - |
+| 2026-10-01 06:37:28 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 06:48:58 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 06:55:09 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 07:06:52 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 07:29:03 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 07:42:59 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 07:44:39 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 07:56:10 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |
+| 2026-10-01 08:11:59 | SOL | OrderBookImbalance | L2 imbalance threshold not met | bid_ask_ratio=1.1 | Wait for ratio > 1.5 |

@@ -118,7 +118,7 @@ class UnifiedLLMClient:
                 "installed": GENAI_AVAILABLE,
                 "configured": bool(self.gemini_api_key),
                 "ready": self.is_gemini_ready(),
-                "default_model": "gemini-3-flash-preview",
+                "default_model": "gemini-3.5-flash-lite",
                 "search_grounding": True,
             },
         }
@@ -213,7 +213,7 @@ class UnifiedLLMClient:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        model: str = "gemini-3-flash-preview",
+        model: str = "gemini-3.5-flash-lite",
         use_search: bool = False,
         temperature: float = 0.2,
         retries: int = 3,
@@ -258,7 +258,7 @@ class UnifiedLLMClient:
                     "_latency_ms": round((time.time() - t0) * 1000, 1),
                     "_model": model,
                     "_provider": "google_ai_studio",
-                    "_grounded": use_search,
+                    "_grounded": bool(tools),
                 }
                 if isinstance(parsed, dict):
                     parsed.update(meta_info)

@@ -2,10 +2,12 @@
   "status": "HEALTHY",
   "action": "NONE",
   "target_coins": [],
-  "reason": "All positions and orders within risk tolerances.",
-  "confidence": 99.0,
-  "_provider": "groq_instructor",
-  "timestamp": "2026-10-01 05:51:11 UTC",
-  "active_positions_count": 2,
+  "reason": "No positions or orders, portfolio within risk limits.",
+  "confidence": 100,
+  "_latency_ms": 23485.9,
+  "_model": "openai/gpt-oss-20b",
+  "_provider": "groq",
+  "timestamp": "2026-10-01 08:09:34 UTC",
+  "active_positions_count": 0,
   "open_orders_count": 0
 }

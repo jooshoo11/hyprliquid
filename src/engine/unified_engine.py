@@ -110,10 +110,10 @@ class UnifiedEngine:
             bypass_risk_guard=False,
             allow_reversals=True,
         )
-        self.guard.reentry_cooldown_seconds = 300.0  # 5 minutes
+        self.guard.reentry_cooldown_seconds = 120.0  # 2 minutes for high-velocity scalping
         self.trade_manager = TradeManager(
             min_holding_seconds=45.0,
-            reentry_cooldown_seconds=300.0,
+            reentry_cooldown_seconds=120.0,
             take_profit_roi_pct=1.40,
             breakeven_roi_pct=0.60,
             breakeven_stop_roi_pct=0.12,
@@ -161,6 +161,8 @@ class UnifiedEngine:
         self._paper_starting_balance = 100.0
         self._paper_starting_equity = 100.0
         self._paper_realized_pnl = 0.0
+        self._cached_px_map: Dict[str, float] = {}
+        self._last_px_map_time: float = 0.0
         self.coin_atr_pct: Dict[str, float] = {}
         self._prospector_scan_count = 0
         self._last_prospector_scan = 0.0
@@ -366,12 +368,13 @@ class UnifiedEngine:
         )
 
         self.node.trader.add_strategy(self.continuation_strat)
-        self.node.trader.add_strategy(self.funding_strat)
+        # HourlyFundingFade disabled to dedicate all 3 execution slots to high-frequency momentum scalpers
+        # self.node.trader.add_strategy(self.funding_strat)
         self.node.trader.add_strategy(self.scalp_strat)
         self.node.trader.add_strategy(self.vwap_strat)
         self.node.trader.add_strategy(self.absorber_strat)
 
-        self.log("✅ All 5 modular strategies registered under PortfolioGuard.", "INFO")
+        self.log("✅ High-frequency momentum scalping strategies registered under PortfolioGuard.", "INFO")
 
     def get_open_positions(self) -> List[Any]:
         """Fetch active open positions directly from Nautilus cache, filtering out closed/in-flight positions."""
@@ -438,15 +441,20 @@ class UnifiedEngine:
         cash_balance = self.get_account_cash()
         open_positions = self.get_open_positions()
 
-        # Fetch live prices
-        px_map = {}
-        try:
-            meta, asset_ctxs = self.info_client.get_meta_and_asset_ctxs()
-            universe = meta.get("universe", [])
-            for u, ctx in zip(universe, asset_ctxs):
-                px_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
-        except Exception as err:
-            self.log(f"Error fetching live prices in get_state: {err}", "DEBUG")
+        # Fetch live prices with 5-second TTL caching to prevent 429 HTTP rate limits
+        now_ts = time.time()
+        if not self._cached_px_map or (now_ts - self._last_px_map_time) > 5.0:
+            try:
+                meta, asset_ctxs = self.info_client.get_meta_and_asset_ctxs()
+                universe = meta.get("universe", [])
+                new_map = {}
+                for u, ctx in zip(universe, asset_ctxs):
+                    new_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+                self._cached_px_map = new_map
+                self._last_px_map_time = now_ts
+            except Exception as err:
+                self.log(f"Error fetching live prices in get_state: {err}", "DEBUG")
+        px_map = self._cached_px_map
 
         positions_data = []
         total_unrealized = 0.0
@@ -691,8 +699,18 @@ class UnifiedEngine:
                         fallback_strategy=strat_id,
                     )
 
-                    # Set anti-churn cooldown (extended 2-hour penalty cooldown for MAE hard cuts)
-                    cooldown_dur = 7200.0 if "MAE" in str(reason) else 1800.0
+                    # Sync realized P&L and available cash immediately
+                    summary = self.trade_manager.get_summary()
+                    self._paper_realized_pnl = float(summary.get("net_realized_pnl", 0.0))
+                    total_equity = self._paper_starting_balance + self._paper_realized_pnl
+                    self.save_paper_state(
+                        equity=total_equity,
+                        realized_pnl=self._paper_realized_pnl,
+                        positions=[p for p in self.get_open_positions() if p.instrument_id != pos.instrument_id],
+                    )
+
+                    # Set anti-churn cooldown (180s on MAE cut, 120s on normal scalp exit)
+                    cooldown_dur = 180.0 if "MAE" in str(reason) else 120.0
                     if hasattr(self, "guard") and self.guard:
                         self.guard.set_cooldown(actual_coin, cooldown_dur)
                         self.guard.register_position_closed(
@@ -1246,6 +1264,49 @@ class UnifiedEngine:
         if mark_px <= 0:
             return False
 
+        # Strict Pre-Entry Spread (<= 8 bps) and Depth (>= $30k) Gates to prevent low-cap slippage traps
+        try:
+            l2_snap = self.info_client.get_l2_snapshot(coin)
+            if l2_snap.get("status") == "SUCCESS":
+                bids = l2_snap.get("bids", [])
+                asks = l2_snap.get("asks", [])
+                if bids and asks:
+                    best_bid = float(bids[0]["px"])
+                    best_ask = float(asks[0]["px"])
+                    spread_bps = ((best_ask - best_bid) / best_bid) * 10000.0 if best_bid > 0 else 999.0
+                    bid_depth_usd = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
+                    ask_depth_usd = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
+
+                    if spread_bps > 8.0:
+                        self.log(
+                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Spread {spread_bps:.1f} bps > 8.0 bps limit. "
+                            f"Preventing spread slippage.",
+                            "WARN",
+                        )
+                        self.log_missed_opportunity(
+                            coin=coin,
+                            strategy=strat_name,
+                            reason=f"Pre-Entry Gate: Spread {spread_bps:.1f} bps > 8 bps",
+                            metrics={"spread_bps": spread_bps, "bid_depth": bid_depth_usd, "ask_depth": ask_depth_usd},
+                        )
+                        return False
+
+                    if min(bid_depth_usd, ask_depth_usd) < 30000.0:
+                        self.log(
+                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Depth ${min(bid_depth_usd, ask_depth_usd):,.0f} < $30k limit. "
+                            f"Preventing illiquid slippage trap.",
+                            "WARN",
+                        )
+                        self.log_missed_opportunity(
+                            coin=coin,
+                            strategy=strat_name,
+                            reason=f"Pre-Entry Gate: Insufficient depth (${min(bid_depth_usd, ask_depth_usd):,.0f} < $30k)",
+                            metrics={"spread_bps": spread_bps, "bid_depth": bid_depth_usd, "ask_depth": ask_depth_usd},
+                        )
+                        return False
+        except Exception as l2_err:
+            self.log(f"Pre-entry L2 check error for {coin}: {l2_err}", "DEBUG")
+
         # Microstructure Exhaustion Gate: Block shorting into extreme oversold bottoms or longing into parabolic blow-offs
         rsi_5m = self.get_5m_rsi(coin)
         if rsi_5m is not None:
@@ -1317,14 +1378,19 @@ class UnifiedEngine:
         if equity <= 0 or mark_px <= 0:
             return False
 
-        # User allocation: 33.3% of total balance per trade (3 max coins) at coin's maximum exchange leverage
+        # User allocation: 33.3% of total balance per trade (3 max coins) at safe 15x leverage cap
         max_positions = float(self.guard.max_total_open_positions or 3)
         margin_allocated = equity / max_positions
-        coin_max_lev = float(get_coin_max_leverage(coin))  # Hyperliquid official exchange max leverage per coin (unconstrained)
+        coin_max_lev = min(float(get_coin_max_leverage(coin)), 15.0)  # Safe 15x operational ceiling
         target_notional = margin_allocated * coin_max_lev
         qty_val = target_notional / mark_px
 
-        quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
+        # Nautilus lot-step truncation to avoid Cython core crash
+        step = Decimal(str(instrument.size_increment.as_double()))
+        qty_dec = (Decimal(str(round(qty_val, instrument.size_precision))) // step) * step
+        if qty_dec <= 0:
+            return False
+        quantity = instrument.make_qty(qty_dec)
         if quantity.as_double() <= 0:
             return False
 

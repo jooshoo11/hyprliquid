@@ -1,29 +1,6 @@
 {
-  "timestamp": 1790833890.524851,
-  "equity": 99.03,
-  "cash_balance": 99.74,
-  "positions": [
-    {
-      "coin": "ETH",
-      "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
-      "side": "LONG",
-      "size": 0.3055,
-      "entry_price": 2720.3,
-      "mark_price": 2718.65,
-      "unrealized_pnl": -0.5,
-      "roi_pct": -0.06,
-      "strategy": "Book Imbalance"
-    },
-    {
-      "coin": "NEAR",
-      "instrument_id": "NEAR-USD-PERP.HYPERLIQUID",
-      "side": "LONG",
-      "size": 60.7,
-      "entry_price": 5.4785,
-      "mark_price": 5.4751,
-      "unrealized_pnl": -0.21,
-      "roi_pct": -0.06,
-      "strategy": "SMC Trend"
-    }
-  ]
+  "timestamp": 1790842173.5670958,
+  "equity": 95.6,
+  "cash_balance": 95.6,
+  "positions": []
 }
