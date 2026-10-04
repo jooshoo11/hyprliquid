@@ -4,10 +4,10 @@
   "target_coins": [],
   "reason": "No positions or orders, portfolio within risk limits.",
   "confidence": 100,
-  "_latency_ms": 23485.9,
+  "_latency_ms": 719.1,
   "_model": "openai/gpt-oss-20b",
   "_provider": "groq",
-  "timestamp": "2026-10-01 08:09:34 UTC",
+  "timestamp": "2026-10-04 14:38:50 UTC",
   "active_positions_count": 0,
   "open_orders_count": 0
 }
