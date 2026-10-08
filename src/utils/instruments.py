@@ -12,11 +12,14 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-from nautilus_trader.model.currencies import USD
-from nautilus_trader.model.data import BarType
-from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
-from nautilus_trader.model.instruments import CurrencyPair
-from nautilus_trader.model.objects import Price, Quantity
+try:
+    from nautilus_trader.model.currencies import USD
+    from nautilus_trader.model.data import BarType
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+    from nautilus_trader.model.instruments import CurrencyPair
+    from nautilus_trader.model.objects import Price, Quantity
+except ImportError:
+    USD = BarType = InstrumentId = Symbol = Venue = CurrencyPair = Price = Quantity = None
 
 _LEVERAGE_CACHE: Dict[str, float] = {}
 
@@ -112,7 +115,7 @@ DEFAULT_PX_DECIMALS: Dict[str, int] = {
     "WIF": 4,
 }
 
-VENUE = Venue("HYPERLIQUID")
+VENUE = Venue("HYPERLIQUID") if Venue is not None else None
 
 
 def get_hyperliquid_perp(

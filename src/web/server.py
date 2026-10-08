@@ -93,7 +93,9 @@ class CloseTradeRequest(BaseModel):
 class OpenTradeRequest(BaseModel):
     coin: str
     side: str  # "LONG" or "SHORT"
-    notional_usd: float = 25.0
+    margin_usd: Optional[float] = None
+    notional_usd: Optional[float] = None
+    leverage: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     strategy: Optional[str] = "Manual Trade"
@@ -162,6 +164,7 @@ def get_prospects_list() -> List[Dict[str, Any]]:
                     "change_24h": float(p.get("change_24h", 0.0)),
                     "volume_24h": float(p.get("volume_24h_usd") or p.get("volume_24h") or 0.0),
                     "funding_apr": float(p.get("funding_apr_pct") or p.get("funding_apr") or 0.0),
+                    "max_leverage": auto_trader.get_coin_max_leverage(coin),
                 })
     elif isinstance(raw_prospects, dict):
         for coin, p_data in raw_prospects.items():
@@ -439,12 +442,20 @@ def get_live_state() -> Dict[str, Any]:
                 entry_px = float(p.get("entry_price", 0.0))
                 qty = float(p.get("size", 0.0))
                 side = p.get("side", "LONG").upper()
+                lev = float(p.get("leverage") or auto_trader.get_coin_max_leverage(coin))
+                p["leverage"] = lev
+                pos_notional = round(cur_px * qty, 2)
+                p["notional"] = pos_notional
+                pos_margin = float(p.get("margin") or (pos_notional / lev if lev > 0 else pos_notional))
+                p["margin"] = round(pos_margin, 2)
+
                 if cur_px > 0 and entry_px > 0 and qty > 0:
                     pnl = (cur_px - entry_px) * qty * (1.0 if side == "LONG" else -1.0)
                     p["unrealized_pnl"] = round(pnl, 2)
                     p["mark_price"] = cur_px
+                    p["roi_pct"] = round((pnl / pos_margin * 100.0), 2) if pos_margin > 0 else 0.0
                     net_unrealized += pnl
-                    notional_exposure += (cur_px * qty)
+                    notional_exposure += pos_notional
                 else:
                     net_unrealized += float(p.get("unrealized_pnl", 0.0))
                     notional_exposure += (entry_px * qty)
@@ -567,13 +578,20 @@ def get_live_state() -> Dict[str, Any]:
             if c:
                 funding_rates[c.upper()] = round(float(f) * 24 * 365 * 100, 2)
 
+    total_margin_used = round(sum(float(p.get("margin", 0.0)) for p in positions), 2)
+    account_leverage = round(notional_exposure / live_equity, 2) if live_equity > 0 else 0.0
+    free_margin = round(max(0.0, cash_balance - total_margin_used), 2)
+
     return {
         "timestamp": time.time(),
         "equity": live_equity,
         "cash_balance": round(cash_balance, 2),
         "net_unrealized": round(net_unrealized, 2),
         "notional_exposure": round(notional_exposure, 2),
-        "roi_pct": round((net_unrealized / cash_balance * 100.0) if cash_balance > 0 else 0.0, 2),
+        "account_leverage": account_leverage,
+        "total_margin_used": total_margin_used,
+        "free_margin": free_margin,
+        "roi_pct": round((net_unrealized / total_margin_used * 100.0) if total_margin_used > 0 else 0.0, 2),
         "total_fees_paid": round(total_fees_paid, 4),
         "net_realized_pnl": round(net_realized_pnl, 2),
         "anti_churn_status": anti_churn_status,
@@ -587,7 +605,7 @@ def get_live_state() -> Dict[str, Any]:
         "market_regime": load_json_file(MARKET_REGIME_PATH, {}),
         "strategy_allocations": dynamic_allocator.evaluate_allocations(),
         "risk_guard": "ARMED",
-        "leverage_mode": "EXCHANGE_MAX",
+        "leverage_mode": "HYPERLIQUID_COIN_MAX",
         "paper_state": paper_state,
         "pending_ai_commands": pending_cmds,
         "sentinel_thoughts": generate_sentinel_thoughts(positions),
@@ -1008,9 +1026,21 @@ async def api_open_trade(req: OpenTradeRequest):
     if mark_px <= 0:
         raise HTTPException(status_code=400, detail=f"Could not fetch live price for {coin}")
 
+    # Fetch coin official maximum leverage from Hyperliquid
+    coin_max_lev = auto_trader.get_coin_max_leverage(coin)
+    active_leverage = float(req.leverage) if (req.leverage and req.leverage > 0) else coin_max_lev
+
     # Dynamic Capital Allocation: scale funds by strategy performance multiplier
     strat_mult = dynamic_allocator.get_multiplier(strat)
-    effective_notional = round(req.notional_usd * strat_mult, 2)
+
+    if req.notional_usd is not None and req.notional_usd > 0:
+        effective_notional = round(req.notional_usd * strat_mult, 2)
+        allocated_margin = round(effective_notional / active_leverage, 2)
+    else:
+        base_margin = req.margin_usd if (req.margin_usd and req.margin_usd > 0) else 15.0
+        allocated_margin = round(base_margin * strat_mult, 2)
+        effective_notional = round(allocated_margin * active_leverage, 2)
+
     qty = round(effective_notional / mark_px, 4)
 
     if _active_engine:
@@ -1027,8 +1057,9 @@ async def api_open_trade(req: OpenTradeRequest):
         if success:
             return {
                 "status": "SUCCESS",
-                "message": f"Submitted {side} for {coin} (${effective_notional:.2f} notional | {strat_mult:.1f}x strategy allocation)",
+                "message": f"Submitted {side} for {coin} ({active_leverage:.0f}x Lev | ${effective_notional:.2f} notional from ${allocated_margin:.2f} margin)",
                 "multiplier": strat_mult,
+                "leverage": active_leverage,
                 "effective_notional": effective_notional,
             }
         return {"status": "REJECTED", "message": f"PortfolioGuard rejected trade for {coin}"}
@@ -1042,8 +1073,11 @@ async def api_open_trade(req: OpenTradeRequest):
         if p.get("coin", "").upper() == coin:
             return {"status": "WARN", "message": f"Position already open for {coin}"}
 
-    sl_px = req.stop_loss or round(mark_px * (0.988 if side == "LONG" else 1.012), 4)
-    tp_px = req.take_profit or round(mark_px * (1.025 if side == "LONG" else 0.975), 4)
+    # Dynamic leverage-aware bracket stops (risking max 25% of margin, 2.5 RR)
+    sl_dist = min(0.025, max(0.006, 0.25 / active_leverage))
+    tp_dist = round(sl_dist * 2.5, 4)
+    sl_px = req.stop_loss or round(mark_px * (1.0 - sl_dist if side == "LONG" else 1.0 + sl_dist), 4)
+    tp_px = req.take_profit or round(mark_px * (1.0 + tp_dist if side == "LONG" else 1.0 - tp_dist), 4)
 
     new_pos = {
         "coin": coin,
@@ -1051,6 +1085,9 @@ async def api_open_trade(req: OpenTradeRequest):
         "size": qty,
         "entry_price": mark_px,
         "mark_price": mark_px,
+        "leverage": active_leverage,
+        "margin": allocated_margin,
+        "notional": effective_notional,
         "unrealized_pnl": 0.0,
         "roi_pct": 0.0,
         "strategy": strat,
@@ -1063,15 +1100,14 @@ async def api_open_trade(req: OpenTradeRequest):
     positions.append(new_pos)
     active_data["positions"] = positions
     active_data["timestamp"] = now
-
-    tmp_path = f"{ACTIVE_TRADES_PATH}.tmp"
-    with open(tmp_path, "w") as f:
+    with open(ACTIVE_TRADES_PATH, "w") as f:
         json.dump(active_data, f, indent=2)
-    os.replace(tmp_path, ACTIVE_TRADES_PATH)
 
     return {
         "status": "SUCCESS",
-        "message": f"Executed {side} {coin} (${effective_notional:.2f} notional | {strat_mult:.1f}x strategy multiplier)",
+        "message": f"Executed {side} {coin} ({active_leverage:.0f}x Max Lev | ${effective_notional:.2f} notional from ${allocated_margin:.2f} margin | {strat_mult:.1f}x multiplier)",
+        "leverage": active_leverage,
+        "margin": allocated_margin,
         "multiplier": strat_mult,
         "effective_notional": effective_notional,
         "coin": coin,
@@ -1167,6 +1203,19 @@ async def api_autotrade_toggle():
         "message": f"Autonomous Auto-Pilot {'Engaged 🟢' if new_state else 'Paused ⏸️'}",
         "autotrade": auto_trader.get_status(),
     }
+
+
+@app.get("/api/leverage/map")
+async def api_leverage_map():
+    """Return map of official Hyperliquid max leverage for all perpetual assets."""
+    try:
+        meta, _ = await asyncio.to_thread(info_client.get_meta_and_asset_ctxs)
+        return {
+            u["name"]: int(u.get("maxLeverage", 10))
+            for u in meta.get("universe", [])
+        }
+    except Exception:
+        return {"BTC": 40, "ETH": 25, "SOL": 20, "CRV": 10, "STRK": 5, "MET": 3}
 
 
 @app.get("/api/strategy_allocations")

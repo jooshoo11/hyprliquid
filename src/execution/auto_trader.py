@@ -3,16 +3,20 @@ Autonomous Multi-Strategy Execution Engine & Risk Sentinel (auto_trader.py)
 High-performance paper trading daemon that autonomously executes and manages trades:
 1. Evaluates live high-conviction prospects (from bridge/prospects.json) and
    extreme negative funding short squeeze setups (from bridge/market_regime.json).
-2. Applies PortfolioGuard risk rules:
+2. Applies Hyperliquid Coin-Specific Maximum Leverage:
+   - Queries exact official maxLeverage per coin from Hyperliquid's universe (e.g. 40x BTC, 25x ETH, 20x SOL, 10x CRV/ONDO, 5x STRK, 3x MET).
+   - Position Notional = Allocated Margin * Coin Max Leverage!
+   - Dynamic bracket Stop-Loss ensuring risk is safely capped at ~20-25% of margin, preventing liquidation.
+3. Applies PortfolioGuard risk rules:
    - Max concurrent open positions (default 3, preserving cash cushion).
    - Dynamic strategy allocation sizing via DynamicStrategyAllocator (0.4x - 1.8x).
    - Minimum conviction score gate (>= 85).
-   - Cooldown gate (120s anti-churn hold after closing a symbol).
-3. Active Watchdog Sentry:
+   - Cooldown gate (90s anti-churn hold after closing a symbol).
+4. Active Watchdog Sentry:
    - Evaluates open positions every 5s against live mark prices.
    - Executes Take-Profit (TP) and Stop-Loss (SL) exits.
-   - Breakeven trailing ratchet: locks in risk-free stop once ROI exceeds +1.5%.
-4. Closed Trades Feedback Loop:
+   - Breakeven trailing ratchet: locks in risk-free stop once ROI exceeds +15% on margin.
+5. Closed Trades Feedback Loop:
    - Feeds realized closed trades immediately into DynamicStrategyAllocator
      so winning strategies get awarded higher margin allocations.
 """
@@ -59,7 +63,7 @@ def save_json_atomic(path: str, data: Any) -> None:
 
 class AutoTrader:
     """
-    Autonomous Execution Agent managing auto-entries, dynamic exits, and risk limits.
+    Autonomous Execution Agent managing max-leverage auto-entries, dynamic exits, and risk limits.
     """
 
     def __init__(
@@ -68,7 +72,7 @@ class AutoTrader:
         dynamic_allocator: Optional[DynamicStrategyAllocator] = None,
         enabled: bool = True,
         max_open_positions: int = 3,
-        base_notional_usd: float = 20.0,
+        base_margin_usd: float = 15.0,
         min_conviction_score: int = 85,
         cooldown_seconds: float = 90.0,
     ):
@@ -80,28 +84,52 @@ class AutoTrader:
         saved_state = load_json(AUTOTRADE_STATE_PATH, {})
         self.enabled = saved_state.get("enabled", enabled)
         self.max_open_positions = saved_state.get("max_open_positions", max_open_positions)
-        self.base_notional_usd = saved_state.get("base_notional_usd", base_notional_usd)
+        self.base_margin_usd = saved_state.get("base_margin_usd", base_margin_usd)
         self.min_conviction_score = saved_state.get("min_conviction_score", min_conviction_score)
         self.cooldown_seconds = cooldown_seconds
 
+        self._leverage_map: Dict[str, float] = {}
         self._cooldowns: Dict[str, float] = {}
         self._ratcheted: Dict[str, bool] = {}
         self._thoughts_buffer: List[Dict[str, Any]] = []
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self.last_action: str = "Initialized auto-trader"
+        self.last_action: str = "Initialized auto-trader with Hyperliquid Max Leverage"
+
+    def get_coin_max_leverage(self, coin: str) -> float:
+        """Fetch the exact official Hyperliquid maximum leverage for a coin."""
+        coin = coin.upper()
+        if not self._leverage_map:
+            try:
+                meta, _ = self.info_client.get_meta_and_asset_ctxs()
+                self._leverage_map = {
+                    u["name"].upper(): float(u.get("maxLeverage", 10.0))
+                    for u in meta.get("universe", [])
+                }
+            except Exception:
+                self._leverage_map = {}
+        return self._leverage_map.get(coin, 10.0)
 
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
             active_data = load_json(ACTIVE_TRADES_PATH, {"positions": [], "equity": 100.0})
             positions = active_data.get("positions", [])
+            total_margin = sum(float(p.get("margin", 0.0)) for p in positions)
+            total_notional = sum(float(p.get("size", 0.0)) * float(p.get("mark_price", 0.0)) for p in positions)
+            equity = float(active_data.get("equity", 100.0))
+            acct_lev = round(total_notional / equity, 2) if equity > 0 else 0.0
+
             return {
                 "enabled": self.enabled,
-                "status_label": "ACTIVE 🟢" if self.enabled else "PAUSED ⏸️",
+                "status_label": "ACTIVE 🟢 (MAX LEV)" if self.enabled else "PAUSED ⏸️",
                 "open_positions_count": len(positions),
                 "max_open_positions": self.max_open_positions,
-                "base_notional_usd": self.base_notional_usd,
+                "base_margin_usd": self.base_margin_usd,
+                "total_margin_used": round(total_margin, 2),
+                "total_notional": round(total_notional, 2),
+                "account_leverage": acct_lev,
                 "min_conviction_score": self.min_conviction_score,
+                "leverage_mode": "HYPERLIQUID_COIN_MAX",
                 "last_action": self.last_action,
                 "timestamp": time.time(),
             }
@@ -112,7 +140,7 @@ class AutoTrader:
             save_json_atomic(AUTOTRADE_STATE_PATH, {
                 "enabled": self.enabled,
                 "max_open_positions": self.max_open_positions,
-                "base_notional_usd": self.base_notional_usd,
+                "base_margin_usd": self.base_margin_usd,
                 "min_conviction_score": self.min_conviction_score,
                 "updated_at": time.time(),
             })
@@ -121,7 +149,7 @@ class AutoTrader:
                 status="OPTIMAL" if enabled else "WARNING",
                 badge_color="emerald" if enabled else "slate",
                 coin="SYS",
-                msg=f"Autonomous Auto-Pilot {'ENGAGED 🟢 (Autonomous Execution Active)' if enabled else 'PAUSED ⏸️ (Manual Mode)'}",
+                msg=f"Autonomous Auto-Pilot {'ENGAGED 🟢 (Hyperliquid Max Leverage Active)' if enabled else 'PAUSED ⏸️ (Manual Mode)'}",
             )
             return self.enabled
 
@@ -151,13 +179,17 @@ class AutoTrader:
         coin: str,
         side: str,
         strategy: str,
-        notional_usd: float = 20.0,
+        margin_usd: Optional[float] = None,
+        leverage: Optional[float] = None,
+        notional_usd: Optional[float] = None,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         reason: str = "",
         score: int = 85,
     ) -> Optional[Dict[str, Any]]:
-        """Atomically execute paper trade position with dynamic allocation multiplier."""
+        """
+        Atomically execute paper trade using Hyperliquid's official maximum leverage per coin.
+        """
         coin = coin.upper()
         side = side.upper()
 
@@ -170,42 +202,60 @@ class AutoTrader:
                 if p.get("coin", "").upper() == coin:
                     return None
 
-            # Fetch live mark price
+            # Fetch live mark price & universe metadata
             mark_px = 0.0
+            coin_max_lev = self.get_coin_max_leverage(coin)
             try:
                 meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
                 for u, ctx in zip(meta.get("universe", []), ctxs):
                     if u.get("name") == coin:
                         mark_px = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+                        coin_max_lev = float(u.get("maxLeverage", coin_max_lev))
+                        self._leverage_map[coin] = coin_max_lev
                         break
-            except Exception as e:
-                return None
+            except Exception:
+                pass
 
             if mark_px <= 0:
                 return None
 
-            # Performance-weighted sizing
+            # User specified leverage or official Hyperliquid Coin Max Leverage
+            active_leverage = float(leverage) if leverage and leverage > 0 else coin_max_lev
             mult = self.allocator.get_multiplier(strategy)
-            effective_notional = round(notional_usd * mult, 2)
-            cash_balance = float(active_data.get("cash_balance", 100.0))
 
-            if cash_balance < 10.0:
+            # Determine margin and notional
+            cash_balance = float(active_data.get("cash_balance", 100.0))
+            if cash_balance < 5.0:
                 self.log_thought("[RISK]", "WARNING", "rose", coin, f"Insufficient cash (${cash_balance:.2f}) to open {coin}")
                 return None
 
-            # Cap notional to available cash balance
-            effective_notional = min(effective_notional, cash_balance)
+            if notional_usd is not None and notional_usd > 0:
+                # If explicit notional provided, derive margin
+                effective_notional = round(notional_usd * mult, 2)
+                allocated_margin = round(effective_notional / active_leverage, 2)
+            else:
+                # Maximize leverage: allocate base margin, scale notional to coin max leverage
+                base_margin = margin_usd if margin_usd is not None and margin_usd > 0 else self.base_margin_usd
+                allocated_margin = round(base_margin * mult, 2)
+                allocated_margin = min(allocated_margin, cash_balance * 0.40)  # Max 40% cash per position
+                effective_notional = round(allocated_margin * active_leverage, 2)
+
             qty = round(effective_notional / mark_px, 4)
             if qty <= 0:
                 return None
 
-            # Default SL/TP bracket
+            # Dynamic Leverage-Aware Bracket Stops:
+            # Risk capped at ~25% of margin, preventing liquidation on high leverage.
+            # 2.5:1 reward-to-risk ratio.
+            sl_dist_pct = min(0.025, max(0.006, 0.25 / active_leverage))
+            tp_dist_pct = round(sl_dist_pct * 2.5, 4)
+
             if side == "LONG":
-                sl = stop_loss if (stop_loss and stop_loss < mark_px) else round(mark_px * 0.985, 4)
-                tp = take_profit if (take_profit and take_profit > mark_px) else round(mark_px * 1.035, 4)
+                sl = stop_loss if (stop_loss and stop_loss < mark_px) else round(mark_px * (1.0 - sl_dist_pct), 4)
+                tp = take_profit if (take_profit and take_profit > mark_px) else round(mark_px * (1.0 + tp_dist_pct), 4)
             else:
-                sl = stop_loss if (stop_loss and stop_loss > mark_px) else round(mark_px * 1.015, 4)
-                tp = take_profit if (take_profit and take_profit < mark_px) else round(mark_px * 0.965, 4)
+                sl = stop_loss if (stop_loss and stop_loss > mark_px) else round(mark_px * (1.0 + sl_dist_pct), 4)
+                tp = take_profit if (take_profit and take_profit < mark_px) else round(mark_px * (1.0 - tp_dist_pct), 4)
 
             now = time.time()
             new_pos = {
@@ -214,6 +264,9 @@ class AutoTrader:
                 "size": qty,
                 "entry_price": mark_px,
                 "mark_price": mark_px,
+                "leverage": active_leverage,
+                "margin": allocated_margin,
+                "notional": effective_notional,
                 "unrealized_pnl": 0.0,
                 "roi_pct": 0.0,
                 "strategy": strategy,
@@ -235,7 +288,7 @@ class AutoTrader:
                 status="OPTIMAL",
                 badge_color="emerald",
                 coin=coin,
-                msg=f"Opened {side} {coin} (${effective_notional:.2f} @ ${mark_px:,.4f} | {mult:.1f}x {strategy}). TP: ${tp:,.4f}, SL: ${sl:,.4f}. {reason}",
+                msg=f"Opened {side} {coin} ({active_leverage:.0f}x Max Leverage | ${effective_notional:.2f} Notional from ${allocated_margin:.2f} Margin | {mult:.1f}x {strategy}). TP: ${tp:,.4f}, SL: ${sl:,.4f}. {reason}",
             )
             return new_pos
 
@@ -245,7 +298,7 @@ class AutoTrader:
         exit_px: Optional[float] = None,
         reason: str = "Autonomous Close",
     ) -> Optional[Dict[str, Any]]:
-        """Atomically close active position, realize PnL, deduct fees, and trigger allocator feedback."""
+        """Atomically close active position, realize PnL on margin, deduct fees, and trigger allocator feedback."""
         coin = coin.upper()
 
         with self.lock:
@@ -277,10 +330,14 @@ class AutoTrader:
             entry_px = float(pos_to_close.get("entry_price", exit_px))
             qty = float(pos_to_close.get("size", 0.0))
             side = pos_to_close.get("side", "LONG").upper()
+            lev = float(pos_to_close.get("leverage", 10.0))
+            margin_used = float(pos_to_close.get("margin", (entry_px * qty) / lev if lev > 0 else (entry_px * qty)))
+
             gross_pnl = (exit_px - entry_px) * qty * (1.0 if side == "LONG" else -1.0)
             fees = round((entry_px * qty * 0.00035) + (exit_px * qty * 0.00035), 4)
             net_pnl = round(gross_pnl - fees, 2)
-            roi_pct = round((gross_pnl / (entry_px * qty)) * 100.0, 2) if (entry_px * qty) > 0 else 0.0
+            # Return on Margin ROI %
+            roi_pct = round((gross_pnl / margin_used) * 100.0, 2) if margin_used > 0 else 0.0
 
             closed_record = {
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -289,6 +346,9 @@ class AutoTrader:
                 "size": qty,
                 "entry": entry_px,
                 "exit": exit_px,
+                "leverage": lev,
+                "margin": margin_used,
+                "notional": round(exit_px * qty, 2),
                 "gross_pnl": round(gross_pnl, 2),
                 "fees": fees,
                 "net_pnl": net_pnl,
@@ -323,7 +383,7 @@ class AutoTrader:
                 status=status_str,
                 badge_color=col_str,
                 coin=coin,
-                msg=f"Closed {side} {coin} ({'+' if net_pnl>=0 else ''}${net_pnl:.2f} Net PnL, {roi_pct:+.2f}% ROI). Reason: {reason}",
+                msg=f"Closed {side} {coin} ({lev:.0f}x Lev | {'+' if net_pnl>=0 else ''}${net_pnl:.2f} Net PnL, {roi_pct:+.2f}% ROI on Margin). Reason: {reason}",
             )
             return closed_record
 
@@ -351,13 +411,15 @@ class AutoTrader:
             entry_px = float(p.get("entry_price", mark_px))
             qty = float(p.get("size", 0.0))
             side = p.get("side", "LONG").upper()
+            lev = float(p.get("leverage", 10.0))
             sl = float(p.get("stop_loss", 0.0))
             tp = float(p.get("take_profit", 0.0))
 
-            roi_pct = ((mark_px - entry_px) / entry_px * 100.0) if side == "LONG" else ((entry_px - mark_px) / entry_px * 100.0)
+            price_pct = ((mark_px - entry_px) / entry_px * 100.0) if side == "LONG" else ((entry_px - mark_px) / entry_px * 100.0)
+            margin_roi_pct = price_pct * lev
 
-            # 1. Trailing Breakeven Ratchet: if ROI >= +1.5%, move SL to breakeven + 0.1%
-            if roi_pct >= 1.5 and not self._ratcheted.get(coin):
+            # 1. Trailing Breakeven Ratchet: if price moves favorably >= 0.8% (e.g. +16% ROI at 20x)
+            if price_pct >= 0.8 and not self._ratcheted.get(coin):
                 be_sl = round(entry_px * (1.001 if side == "LONG" else 0.999), 4)
                 p["stop_loss"] = be_sl
                 self._ratcheted[coin] = True
@@ -367,7 +429,7 @@ class AutoTrader:
                     status="OPTIMAL",
                     badge_color="cyan",
                     coin=coin,
-                    msg=f"Ratcheted stop for {coin} to Breakeven (${be_sl:,.4f}) to guarantee risk-free trade (+{roi_pct:.2f}% ROI).",
+                    msg=f"Ratcheted stop for {coin} ({lev:.0f}x) to Breakeven (${be_sl:,.4f}) to guarantee risk-free profit (+{margin_roi_pct:.1f}% ROI on margin).",
                 )
 
             # 2. Take-Profit Check
@@ -383,7 +445,7 @@ class AutoTrader:
                     continue
 
     def entry_cycle(self) -> None:
-        """Scan top prospects & extreme short squeeze alerts to autonomously open trades."""
+        """Scan top prospects & extreme short squeeze alerts to autonomously open trades using Hyperliquid max leverage."""
         if not self.enabled:
             return
 
@@ -409,7 +471,7 @@ class AutoTrader:
                         coin=coin,
                         side="LONG",
                         strategy="ShortSqueezeIgnition",
-                        notional_usd=self.base_notional_usd,
+                        margin_usd=self.base_margin_usd,
                         reason=f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol",
                         score=95,
                     )
@@ -424,8 +486,6 @@ class AutoTrader:
                 score = int(p.get("conviction_score", p.get("score", 0)))
                 bias = str(p.get("bias", "LONG")).upper()
                 strategy = str(p.get("strategy") or "TrendContinuationSMC")
-                sl = float(p.get("stop_loss", 0.0))
-                tp = float(p.get("take_profit", 0.0))
                 rationale = p.get("rationale") or f"Conviction Score {score}"
 
                 if coin and coin not in open_coins and score >= self.min_conviction_score:
@@ -434,9 +494,7 @@ class AutoTrader:
                             coin=coin,
                             side=bias,
                             strategy=strategy,
-                            notional_usd=self.base_notional_usd,
-                            stop_loss=sl if sl > 0 else None,
-                            take_profit=tp if tp > 0 else None,
+                            margin_usd=self.base_margin_usd,
                             reason=f"{rationale} (Conviction: {score})",
                             score=score,
                         )

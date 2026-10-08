@@ -159,10 +159,10 @@
 
       <!-- Active Exposure & Circuit Guard -->
       <div class="bg-[#0b1120] border border-slate-800/90 rounded-xl p-3 flex flex-col justify-between shadow-md">
-        <span class="text-[10px] font-bold text-slate-400 tracking-wider uppercase">RISK & LEVERAGE</span>
+        <span class="text-[10px] font-bold text-slate-400 tracking-wider uppercase">MAX LEVERAGE ENGINE</span>
         <div class="mt-1 flex items-baseline justify-between">
-          <span id="badge-guard" class="text-xs font-bold text-emerald-400 mono">ARMED (25% MAX)</span>
-          <span id="metric-pos-count" class="text-[10px] text-slate-400 mono">0 Pos</span>
+          <span id="badge-guard" class="text-xs font-bold text-cyan-400 mono">COIN MAX (UP TO 40x)</span>
+          <span id="metric-acct-lev" class="text-[10px] text-slate-300 mono font-semibold">0.0x Acct</span>
         </div>
       </div>
 
@@ -523,6 +523,15 @@
         <div class="grid grid-cols-2 gap-2">
           <button id="modal-side-long" onclick="setOrderSide('LONG')" class="py-2.5 rounded-xl font-bold bg-emerald-950 text-emerald-300 border border-emerald-600 shadow-md">LONG 🟢</button>
           <button id="modal-side-short" onclick="setOrderSide('SHORT')" class="py-2.5 rounded-xl font-bold bg-slate-900 text-slate-400 border border-slate-800">SHORT 🔴</button>
+        </div>
+
+        <!-- COIN MAX LEVERAGE BADGE -->
+        <div class="flex items-center justify-between bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+          <div class="flex items-center space-x-1.5">
+            <i class="fa-solid fa-bolt text-cyan-400"></i>
+            <span class="text-[10px] text-slate-300 font-bold uppercase">Hyperliquid Max Leverage:</span>
+          </div>
+          <span id="modal-coin-leverage" class="text-xs font-black text-cyan-400 mono">40x MAX</span>
         </div>
 
         <!-- NOTIONAL SIZE WITH PRESETS -->
@@ -887,7 +896,19 @@
     }
 
     // --- Order Placement Handlers ---
+    let liveCoinLeverageMap = {};
+    async function loadLeverageMap() {
+      try {
+        const resp = await fetch('/api/leverage/map');
+        liveCoinLeverageMap = await resp.json();
+      } catch (e) {}
+    }
+
     function openManualOrderModal() {
+      document.getElementById('modal-coin-name').textContent = currentSymbol;
+      const maxLev = liveCoinLeverageMap[currentSymbol] || 10;
+      const elLev = document.getElementById('modal-coin-leverage');
+      if (elLev) elLev.textContent = `${maxLev}x MAX`;
       document.getElementById('manual-order-modal').classList.remove('hidden');
     }
 
@@ -1010,7 +1031,9 @@
       document.getElementById('metric-roi').textContent = `${pnlSign}${roi.toFixed(2)}%`;
       document.getElementById('metric-roi').className = `text-xs font-semibold mono ${pnlColor}`;
 
-      document.getElementById('metric-pos-count').textContent = `${positions.length} Pos`;
+      const acctLev = data.account_leverage || 0.0;
+      const elAcctLev = document.getElementById('metric-acct-lev');
+      if (elAcctLev) elAcctLev.textContent = `${acctLev.toFixed(1)}x Acct`;
       document.getElementById('tab-positions-count').textContent = positions.length;
       document.getElementById('pos-active-badge').textContent = positions.length;
       const dockDot = document.getElementById('dock-pos-badge');
@@ -1199,26 +1222,35 @@
           const pnlVal = parseFloat(pos.unrealized_pnl || 0.0);
           const roiVal = parseFloat(pos.roi_pct || 0.0);
           const pCol = pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
+          const lev = pos.leverage || 10;
+          const posMargin = parseFloat(pos.margin || 0.0);
+          const posNotional = parseFloat(pos.notional || (pos.size * (pos.mark_price || pos.entry_price)) || 0.0);
 
           return `
             <div class="bg-[#0b1120] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
               <div class="flex items-start justify-between">
                 <div>
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-1.5 flex-wrap">
                     <span class="text-base font-extrabold text-white mono cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${coin}')">${coin}</span>
                     <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isLong ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
                       ${pos.side}
+                    </span>
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
+                      ${lev}x LEV
                     </span>
                     <span class="text-[10px] text-slate-400 mono">${pos.strategy || 'Trend SMC'}</span>
                   </div>
                   <div class="text-xs text-slate-400 mono mt-1">
                     Entry: $${parseFloat(pos.entry_price || 0).toLocaleString()} | Mark: $${parseFloat(pos.mark_price || pos.entry_price || 0).toLocaleString()}
                   </div>
+                  <div class="text-[10px] text-slate-500 mono mt-0.5">
+                    Margin: <strong class="text-slate-300">$${posMargin.toFixed(2)}</strong> | Notional: <strong class="text-slate-200">$${posNotional.toFixed(2)}</strong>
+                  </div>
                 </div>
 
                 <div class="text-right">
                   <span class="text-base font-black mono ${pCol}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>
-                  <span class="text-xs font-semibold mono ${pCol} block">${roiVal >= 0 ? '+' : ''}${roiVal.toFixed(2)}% ROI</span>
+                  <span class="text-xs font-semibold mono ${pCol} block">${roiVal >= 0 ? '+' : ''}${roiVal.toFixed(1)}% on Margin</span>
                 </div>
               </div>
 
@@ -1244,9 +1276,10 @@
       // 5. TOP AI PROSPECTS LIST
       const prospects = data.prospects || [];
       const prosCont = document.getElementById('prospects-cards-list');
-      if (prospects.length > 0) {
+      if (prosCont && prospects.length > 0) {
         prosCont.innerHTML = prospects.slice(0, 10).map((p, i) => {
           const isBull = p.bias === 'LONG';
+          const maxLev = p.max_leverage || 10;
           return `
             <div onclick="selectSymbol('${p.coin}')" class="p-3 bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800/80 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5">
               <div class="flex items-center justify-between">
@@ -1255,6 +1288,9 @@
                   <span class="font-extrabold text-sm text-white mono">${p.coin}</span>
                   <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isBull ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
                     ${p.bias}
+                  </span>
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
+                    ${maxLev}x Max
                   </span>
                 </div>
                 <span class="text-xs text-slate-400 mono">${p.change_24h ? (p.change_24h >= 0 ? '+' : '') + p.change_24h.toFixed(1) + '% 24h' : ''}</span>
@@ -1446,6 +1482,7 @@
     // Initialize On Load
     window.addEventListener('DOMContentLoaded', () => {
       initChart();
+      loadLeverageMap();
       loadKlines(currentSymbol, currentInterval);
       connectWebSocket();
       fetchRestFallback();
