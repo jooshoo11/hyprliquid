@@ -30,6 +30,8 @@ else
     nohup "$PROJECT_DIR/.venv/bin/python" -u run.py \
         --top-n 15 \
         --port 8000 \
+        --web \
+        --headless \
         --watchdog-interval 10 \
         --prospector-interval 45 \
         > "$PROJECT_DIR/logs/engine_daemon.log" 2>&1 &
@@ -74,17 +76,14 @@ if command -v notify-send > /dev/null 2>&1; then
         2>/dev/null || true
 fi
 
-# 6. Launch Web Dashboard in App Mode
-URL="http://localhost:8000"
-echo "🖥️ Opening Trading Cockpit: $URL"
-
-if command -v google-chrome > /dev/null 2>&1; then
-    # App mode opens a clean, distraction-free desktop window without browser URL bar
-    google-chrome --app="$URL" > /dev/null 2>&1 &
-elif command -v xdg-open > /dev/null 2>&1; then
-    xdg-open "$URL" > /dev/null 2>&1 &
+# 6. Launch WezTerm Trading Cockpit
+echo "🖥️  Launching Hyperliquid WezTerm Trading Cockpit..."
+if [ -x "$PROJECT_DIR/launch_wezterm.sh" ]; then
+    "$PROJECT_DIR/launch_wezterm.sh" &
+elif command -v wezterm >/dev/null 2>&1; then
+    wezterm --config-file "$PROJECT_DIR/wezterm.lua" start --cwd "$PROJECT_DIR" &
 else
-    echo "Please open $URL in your browser."
+    echo "WezTerm not found. Run: $PROJECT_DIR/.venv/bin/python run.py --tui"
 fi
 
 exit 0

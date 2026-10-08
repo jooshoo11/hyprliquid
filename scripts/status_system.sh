@@ -55,8 +55,24 @@ try:
 except Exception as e:
     print(f"Error parsing state: {e}")
 '
+elif [ -f "$PROJECT_DIR/bridge/paper_state.json" ]; then
+    "$PROJECT_DIR/.venv/bin/python" -c '
+import json, os
+try:
+    with open("bridge/paper_state.json") as f:
+        s = json.load(f)
+    print(f"💰 Equity:             ${s.get(\"equity\", 0):.2f}")
+    print(f"💵 Cash Balance:       ${s.get(\"cash_balance\", 0):.2f}")
+    print(f"📈 Realized PnL:       ${s.get(\"realized_pnl\", 0):+.2f}")
+    pos = s.get("positions", [])
+    print(f"🎯 Open Positions:     {len(pos)}")
+    for p in pos:
+        print(f"   • {p.get(\"coin\", \"?\")}: {p.get(\"side\", \"\")} | ROI: {p.get(\"roi_pct\", 0):+.2f}% | PnL: ${p.get(\"unrealized_pnl\", 0):+.2f}")
+except Exception as e:
+    print(f"Error reading bridge state: {e}")
+'
 else
-    echo "⚠️ Web Cockpit API not responding at http://localhost:8000"
+    echo "⚠️ Trading Engine state not available."
 fi
 
 echo "=================================================================="
