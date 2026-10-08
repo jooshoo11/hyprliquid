@@ -1,1 +1,56 @@
-[]
+[
+  {
+    "timestamp": "2026-10-08T15:16:19Z",
+    "coin": "MET",
+    "side": "LONG",
+    "size": 225.0059,
+    "entry": 0.442255,
+    "exit": 0.43625,
+    "leverage": 3.0,
+    "margin": 33.17,
+    "notional": 98.16,
+    "gross_pnl": -1.35,
+    "fees": 0.0692,
+    "net_pnl": -1.42,
+    "roi_pct": -4.07,
+    "strategy": "ShortSqueezeIgnition",
+    "reason": "Capital Rotation: Switched to higher-leverage ADA (10x vs 3x Lev, MET ROI: +0.0%)",
+    "is_rotation": true
+  },
+  {
+    "timestamp": "2026-10-08T15:19:27Z",
+    "coin": "STRK",
+    "side": "LONG",
+    "size": 2731.39,
+    "entry": 0.06072,
+    "exit": 0.06018,
+    "leverage": 5.0,
+    "margin": 33.17,
+    "notional": 164.38,
+    "gross_pnl": -1.47,
+    "fees": 0.1156,
+    "net_pnl": -1.59,
+    "roi_pct": -4.45,
+    "strategy": "Spot-Led Momentum",
+    "reason": "Capital Rotation: Switched to higher-leverage CRV (10x vs 5x Lev, STRK ROI: +0.0%)",
+    "is_rotation": true
+  },
+  {
+    "timestamp": "2026-10-08T15:22:35Z",
+    "coin": "LIT",
+    "side": "LONG",
+    "size": 45.4359,
+    "entry": 3.6491,
+    "exit": 3.6297,
+    "leverage": 5.0,
+    "margin": 33.16,
+    "notional": 164.92,
+    "gross_pnl": -0.88,
+    "fees": 0.1158,
+    "net_pnl": -1.0,
+    "roi_pct": -2.66,
+    "strategy": "Spot-Led Momentum",
+    "reason": "Capital Rotation: Switched to higher-leverage ONDO (10x vs 5x Lev, LIT ROI: +0.0%)",
+    "is_rotation": true
+  }
+]

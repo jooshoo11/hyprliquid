@@ -141,27 +141,17 @@ class DynamicStrategyAllocator:
             win_rate = (wins / total_cnt) * 100.0 if total_cnt > 0 else 50.0
             profit_factor = round(gross_wins / max(gross_losses, 0.01), 2) if gross_losses > 0 else (2.5 if gross_wins > 0 else 1.0)
 
-            # Dynamic Tier Assignment
+            # Dynamic Tier Assignment (floored at 1.0x so 100% of cash is always deployed across slots)
             if (win_rate >= 70.0 and net_pnl > 0) or profit_factor >= 2.0 or consecutive_wins >= 3:
-                multiplier = 1.8 if (win_rate >= 80.0 or consecutive_wins >= 4) else 1.6
+                multiplier = 1.20 if (win_rate >= 80.0 or consecutive_wins >= 4) else 1.15
                 tier = "HOT 🔥 (OVERPERFORMING)"
                 bonus_pct = f"+{int((multiplier - 1.0) * 100)}%"
-                status_label = f"Expanded Capital ({multiplier:.1f}x)"
+                status_label = f"Expanded Capital ({multiplier:.2f}x)"
             elif (win_rate >= 55.0 and net_pnl > 0) or profit_factor >= 1.4:
-                multiplier = 1.3
+                multiplier = 1.10
                 tier = "WARM ⚡ (SOLID WINNER)"
-                bonus_pct = "+30%"
-                status_label = "Boosted (+30%)"
-            elif win_rate < 35.0 or consecutive_losses >= 3 or net_pnl < -10.0:
-                multiplier = 0.4 if (consecutive_losses >= 3 or win_rate < 25.0) else 0.6
-                tier = "PROBATION 🛑 (THROTTLED)"
-                bonus_pct = f"-{int((1.0 - multiplier) * 100)}%"
-                status_label = f"Defensive Cut ({multiplier:.1f}x)"
-            elif net_pnl < 0 or win_rate < 45.0:
-                multiplier = 0.8
-                tier = "COLD ❄️ (REDUCED)"
-                bonus_pct = "-20%"
-                status_label = "Reduced (-20%)"
+                bonus_pct = "+10%"
+                status_label = "Boosted (+10%)"
             else:
                 multiplier = 1.0
                 tier = "NORMAL ⚖️"
@@ -200,3 +190,9 @@ class DynamicStrategyAllocator:
             return self.cached_multipliers[norm]
         self.evaluate_allocations()
         return self.cached_multipliers.get(norm, 1.0)
+
+    def reset(self) -> None:
+        """Reset all cached multipliers and statistics back to neutral baseline."""
+        self.cached_multipliers.clear()
+        self.cached_stats.clear()
+

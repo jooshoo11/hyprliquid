@@ -1179,6 +1179,8 @@ async def api_reset_ledger():
     if hasattr(performance_analytics, "trades"):
         performance_analytics.trades = []
 
+    dynamic_allocator.reset()
+
     return {"status": "SUCCESS", "message": "Paper trading ledger reset to $100.00 clean balance", "equity": 100.0}
 
 

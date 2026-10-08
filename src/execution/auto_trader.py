@@ -134,19 +134,24 @@ class AutoTrader:
         Deploy 100% of account cash evenly across position slots without exceeding total_cash.
         Guarantees: sum(margin for all positions) <= total_cash.
         Caps single position to max 38% of account to prevent over-concentration.
+        Always fully deploys cash across slots so no funds are left stranded (e.g. 33/33/33).
         """
-        if isinstance(current_positions, list):
-            already_locked = sum(float(p.get("margin", 0.0)) for p in current_positions)
-        else:
-            already_locked = 0.0
+        positions_list = current_positions if isinstance(current_positions, list) else []
+        already_locked = sum(float(p.get("margin", 0.0)) for p in positions_list)
         available_cash = max(0.0, total_cash - already_locked - 0.50)  # 0.50 fee buffer
 
-        # Base share per slot: e.g. ($100 - $0.50) / 3 slots = $33.17 per position
-        base_slot_share = (total_cash - 0.50) / max(1, self.max_open_positions)
-        target_margin = round(base_slot_share * strat_mult, 2)
-        # Cap single position to max 38% of total account cash to protect against drawdowns
+        remaining_slots = max(1, self.max_open_positions - len(positions_list))
         max_single_position = round(total_cash * 0.38, 2)
-        target_margin = min(target_margin, max_single_position)
+
+        if remaining_slots == 1:
+            # Final open slot: Deploy all remaining available cash up to 38% cap
+            target_margin = min(available_cash, max_single_position)
+        else:
+            share_per_slot = available_cash / remaining_slots
+            # Scale by strategy multiplier (floor at 1.0x so funds are not stranded)
+            target_margin = round(share_per_slot * max(1.0, strat_mult), 2)
+            target_margin = min(target_margin, max_single_position)
+
         allocated_margin = round(min(available_cash, target_margin), 2)
         return allocated_margin
 
