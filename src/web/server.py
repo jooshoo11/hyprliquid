@@ -987,6 +987,51 @@ async def api_reset_circuit_breaker():
     raise HTTPException(status_code=503, detail="Risk guard not available")
 
 
+@app.post("/api/ledger/reset")
+async def api_reset_ledger():
+    """Reset paper trading ledger and equity back to $100.00 clean starting balance."""
+    global _position_entry_times
+    _position_entry_times.clear()
+    now = time.time()
+    clean_trades = {
+        "timestamp": now,
+        "equity": 100.0,
+        "cash_balance": 100.0,
+        "positions": []
+    }
+    with open(ACTIVE_TRADES_PATH, "w") as f:
+        json.dump(clean_trades, f, indent=2)
+
+    iso_now = datetime.now(timezone.utc).isoformat()
+    clean_paper = {
+        "equity": 100.0,
+        "realized_pnl": 0.0,
+        "open_positions": [],
+        "session_start": iso_now,
+        "last_updated": iso_now,
+        "total_trades": 0,
+        "starting_balance": 100.0
+    }
+    with open(PAPER_STATE_PATH, "w") as f:
+        json.dump(clean_paper, f, indent=2)
+
+    with open(SESSION_TRADES_PATH, "w") as f:
+        json.dump([], f)
+
+    if hasattr(_trade_manager, "active_positions"):
+        with _trade_manager._lock:
+            _trade_manager.active_positions.clear()
+            _trade_manager.cumulative_fees = 0.0
+            if hasattr(_trade_manager, "_closed_trades_cache"):
+                _trade_manager._closed_trades_cache = []
+
+    if hasattr(performance_analytics, "trades"):
+        performance_analytics.trades = []
+
+    return {"status": "SUCCESS", "message": "Paper trading ledger reset to $100.00 clean balance", "equity": 100.0}
+
+
+
 @app.get("/api/strategy_allocations")
 async def api_strategy_allocations():
     """Return active strategy allocation caps and sizing multipliers from PortfolioGuard."""

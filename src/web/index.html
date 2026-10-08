@@ -116,6 +116,12 @@
         <span class="hidden sm:inline">Trade</span>
       </button>
 
+      <!-- Reset to $100 Button -->
+      <button onclick="resetLedgerTo100()" title="Reset Paper Ledger to $100.00" class="px-2 py-1.5 rounded-lg bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-800 text-xs font-bold flex items-center gap-1 active:scale-95 transition-all shadow-sm">
+        <i class="fa-solid fa-rotate-left text-[10px]"></i>
+        <span class="hidden sm:inline">$100</span>
+      </button>
+
       <!-- Emergency Flatten All -->
       <button onclick="openFlattenModal()" class="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 active:scale-95 transition-all shadow-md shadow-rose-600/30">
         <i class="fa-solid fa-skull-crossbones text-[10px]"></i>
@@ -1314,6 +1320,21 @@
         };
       } catch (e) {
         setTimeout(connectWebSocket, 3000);
+      }
+    }
+
+    async function resetLedgerTo100() {
+      if (!confirm("Reset paper trading balance to $100.00 and clear all open positions?")) return;
+      try {
+        const resp = await fetch('/api/ledger/reset', { method: 'POST' });
+        const res = await resp.json();
+        if (res.status === 'SUCCESS') {
+          playTone(520, 0.2);
+          showToast('Paper balance reset to $100.00', 'success', 'LEDGER RESET');
+          fetchRestFallback();
+        }
+      } catch (e) {
+        showToast(e.message, 'error');
       }
     }
 
