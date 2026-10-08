@@ -384,6 +384,7 @@ class AutoTrader:
                 "roi_pct": roi_pct,
                 "strategy": pos_to_close.get("strategy", "AutoTrader"),
                 "reason": reason,
+                "is_rotation": ("rotation" in str(reason).lower()),
             }
 
             trades_list = load_json(SESSION_TRADES_PATH, [])
@@ -473,6 +474,67 @@ class AutoTrader:
                     self.close_trade(coin, exit_px=mark_px, reason=f"Stop Loss Hit (${mark_px:,.4f} hit SL stop ${sl:,.4f})")
                     continue
 
+    def find_rotation_candidate(
+        self,
+        new_coin: str,
+        new_leverage: float,
+        new_score: int,
+        current_positions: List[Dict[str, Any]],
+        now: float,
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Identify if an active position should be rotated out for a superior play.
+        Triggers when:
+        1. All position slots are full (len(positions) >= max_open_positions).
+        2. Candidate has been held >= 90s (anti-churn minimum hold).
+        3. Candidate is not an active high runner (ROI < +3.0%).
+        4. Either:
+           - Significant Leverage Upgrade: new_leverage >= current_leverage * 1.5 AND new_score >= current_score - 5
+           - Substantial Conviction Upgrade: new_score >= current_score + 8
+        """
+        if len(current_positions) < self.max_open_positions:
+            return None
+
+        new_coin_clean = new_coin.upper()
+        if any(p.get("coin", "").upper() == new_coin_clean for p in current_positions):
+            return None
+
+        candidates = []
+        for p in current_positions:
+            coin = p.get("coin", "").upper()
+            entry_t = float(p.get("entry_time", now))
+            dur = now - entry_t
+            if dur < 90.0:  # Respect anti-churn minimum hold
+                continue
+
+            roi = float(p.get("roi_pct", 0.0))
+            if roi >= 3.0:  # Protect profitable runners
+                continue
+
+            cur_lev = float(p.get("leverage", 10.0))
+            cur_score = int(p.get("conviction_score", 80))
+
+            is_lev_upgrade = (new_leverage >= cur_lev * 1.5) and (new_score >= cur_score - 5)
+            is_conv_upgrade = (new_score >= cur_score + 8)
+
+            if is_lev_upgrade or is_conv_upgrade:
+                # Priority: lowest existing leverage, lowest ROI, longest duration
+                rank_score = (cur_lev - new_leverage) + (roi * 2.0)
+                candidates.append((rank_score, coin, cur_lev, roi, is_lev_upgrade))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0])
+        _, best_coin, old_lev, old_roi, was_lev_up = candidates[0]
+
+        if was_lev_up:
+            reason = f"Capital Rotation: Switched to higher-leverage {new_coin} ({new_leverage:.0f}x vs {old_lev:.0f}x Lev, {best_coin} ROI: {old_roi:+.1f}%)"
+        else:
+            reason = f"Capital Rotation: Reallocated stagnant {best_coin} ({old_roi:+.1f}%) to high-conviction {new_coin} (Score: {new_score})"
+
+        return best_coin, reason
+
     def entry_cycle(self) -> None:
         """Scan top prospects & extreme short squeeze alerts to autonomously open trades using Hyperliquid max leverage."""
         if not self.enabled:
@@ -480,8 +542,7 @@ class AutoTrader:
 
         active_data = load_json(ACTIVE_TRADES_PATH, {"positions": [], "equity": 100.0, "cash_balance": 100.0})
         positions = active_data.get("positions", [])
-        if len(positions) >= self.max_open_positions:
-            return
+        is_full = len(positions) >= self.max_open_positions
 
         open_coins = {p.get("coin", "").upper() for p in positions}
         now = time.time()
@@ -496,14 +557,29 @@ class AutoTrader:
 
             if coin and coin not in open_coins and funding_apr < -20.0 and vol_24h > 3000000:
                 if (now - self._cooldowns.get(coin, 0)) > self.cooldown_seconds:
-                    self.open_trade(
-                        coin=coin,
-                        side="LONG",
-                        strategy="ShortSqueezeIgnition",
-                        reason=f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol",
-                        score=95,
-                    )
-                    return  # Open at most 1 trade per cycle
+                    coin_max_lev = self.get_coin_max_leverage(coin)
+                    if not is_full:
+                        self.open_trade(
+                            coin=coin,
+                            side="LONG",
+                            strategy="ShortSqueezeIgnition",
+                            reason=f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol",
+                            score=95,
+                        )
+                        return  # Open at most 1 trade per cycle
+                    else:
+                        rot = self.find_rotation_candidate(coin, coin_max_lev, 95, positions, now)
+                        if rot:
+                            old_coin, rot_reason = rot
+                            self.close_trade(old_coin, reason=rot_reason)
+                            self.open_trade(
+                                coin=coin,
+                                side="LONG",
+                                strategy="ShortSqueezeIgnition",
+                                reason=f"[ROTATION] {rot_reason}",
+                                score=95,
+                            )
+                            return
 
         # Priority 2: Check High-Conviction AI Prospects (Conviction Score >= min_conviction_score)
         prospects_data = load_json(PROSPECTS_PATH, {})
@@ -518,14 +594,29 @@ class AutoTrader:
 
                 if coin and coin not in open_coins and score >= self.min_conviction_score:
                     if (now - self._cooldowns.get(coin, 0)) > self.cooldown_seconds:
-                        self.open_trade(
-                            coin=coin,
-                            side=bias,
-                            strategy=strategy,
-                            reason=f"{rationale} (Conviction: {score})",
-                            score=score,
-                        )
-                        return  # Open at most 1 trade per cycle
+                        coin_max_lev = self.get_coin_max_leverage(coin)
+                        if not is_full:
+                            self.open_trade(
+                                coin=coin,
+                                side=bias,
+                                strategy=strategy,
+                                reason=f"{rationale} (Conviction: {score})",
+                                score=score,
+                            )
+                            return  # Open at most 1 trade per cycle
+                        else:
+                            rot = self.find_rotation_candidate(coin, coin_max_lev, score, positions, now)
+                            if rot:
+                                old_coin, rot_reason = rot
+                                self.close_trade(old_coin, reason=rot_reason)
+                                self.open_trade(
+                                    coin=coin,
+                                    side=bias,
+                                    strategy=strategy,
+                                    reason=f"[ROTATION] {rot_reason}",
+                                    score=score,
+                                )
+                                return
 
     def loop(self) -> None:
         """Main autonomous execution background thread loop."""

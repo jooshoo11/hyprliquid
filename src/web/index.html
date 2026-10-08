@@ -1238,6 +1238,7 @@
                     <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
                       ${lev}x LEV
                     </span>
+                    ${(pos.entry_reason || '').includes('[ROTATION]') ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800 mono"><i class="fa-solid fa-arrows-rotate text-[8px] mr-0.5 text-indigo-400"></i>ROTATED</span>' : ''}
                     <span class="text-[10px] text-slate-400 mono">${pos.strategy || 'Trend SMC'}</span>
                   </div>
                   <div class="text-xs text-slate-400 mono mt-1">
@@ -1367,6 +1368,8 @@
         tbody.innerHTML = trades.map(t => {
           const net = parseFloat(t.net_pnl || t.pnl || 0.0);
           const netCol = net >= 0 ? 'text-emerald-400' : 'text-rose-400';
+          const isRot = Boolean(t.is_rotation) || (t.reason && t.reason.toLowerCase().includes('rotation'));
+          const rotBadge = isRot ? '<span class="px-1.5 py-0.5 rounded bg-indigo-950/90 text-indigo-300 border border-indigo-700/70 font-mono text-[9px] font-bold tracking-tight inline-flex items-center gap-1 shadow-sm mr-1"><i class="fa-solid fa-arrows-rotate text-[8px] text-indigo-400"></i>[ROTATION]</span>' : '';
           return `
             <tr class="hover:bg-slate-800/40 transition-colors">
               <td class="py-2 px-2 text-slate-500">${t.timestamp || '--'}</td>
@@ -1376,7 +1379,7 @@
               <td class="py-2 px-2 text-slate-300">$${parseFloat(t.exit || 0).toLocaleString()}</td>
               <td class="py-2 px-2 font-bold ${netCol}">${net >= 0 ? '+' : ''}$${net.toFixed(2)}</td>
               <td class="py-2 px-2 ${netCol}">${parseFloat(t.roi_pct || 0).toFixed(2)}%</td>
-              <td class="py-2 px-2 text-slate-400 text-[10px]">${t.reason || 'Closed'}</td>
+              <td class="py-2 px-2 text-slate-400 text-[10px]">${rotBadge}${t.reason || 'Closed'}</td>
             </tr>
           `;
         }).join('');

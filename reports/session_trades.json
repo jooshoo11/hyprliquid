@@ -1,1 +1,55 @@
-[]
+[
+  {
+    "timestamp": "2026-10-08T14:38:18Z",
+    "coin": "LIT",
+    "side": "LONG",
+    "size": 45.1163,
+    "entry": 3.67495,
+    "exit": 3.67465,
+    "leverage": 5.0,
+    "margin": 33.16,
+    "notional": 165.79,
+    "gross_pnl": -0.01,
+    "fees": 0.1161,
+    "net_pnl": -0.13,
+    "roi_pct": -0.04,
+    "strategy": "Spot-Led Momentum",
+    "reason": "Stop Loss Hit ($3.6747 hit SL stop $3.6786)"
+  },
+  {
+    "timestamp": "2026-10-08T14:41:52Z",
+    "coin": "STRK",
+    "side": "LONG",
+    "size": 2705.1052,
+    "entry": 0.06131,
+    "exit": 0.06139,
+    "leverage": 5.0,
+    "margin": 33.17,
+    "notional": 166.07,
+    "gross_pnl": 0.22,
+    "fees": 0.1162,
+    "net_pnl": 0.1,
+    "roi_pct": 0.65,
+    "strategy": "Spot-Led Momentum",
+    "reason": "Capital Rotation: Switched to higher-leverage ONDO (10x vs 5x Lev, STRK ROI: +0.0%)",
+    "is_rotation": true
+  },
+  {
+    "timestamp": "2026-10-08T14:42:08Z",
+    "coin": "MET",
+    "side": "LONG",
+    "size": 223.2918,
+    "entry": 0.44565,
+    "exit": 0.43989,
+    "leverage": 3.0,
+    "margin": 33.17,
+    "notional": 98.22,
+    "gross_pnl": -1.29,
+    "fees": 0.0692,
+    "net_pnl": -1.36,
+    "roi_pct": -3.88,
+    "strategy": "ShortSqueezeIgnition",
+    "reason": "Capital Rotation: Switched to higher-leverage KPEPE (10x vs 3x Lev, MET ROI: +0.0%)",
+    "is_rotation": true
+  }
+]
