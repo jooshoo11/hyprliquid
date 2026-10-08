@@ -3,48 +3,63 @@
   "hottest_sector": "MAJORS",
   "active_perpetuals": 234,
   "new_listings": [],
-  "squeeze_alerts": [],
+  "squeeze_alerts": [
+    {
+      "coin": "VVV",
+      "funding_apr": 148.0,
+      "change_24h": -15.47,
+      "vol_24h": 34826914.47,
+      "bias": "SHORT"
+    },
+    {
+      "coin": "USELESS",
+      "funding_apr": 53.5,
+      "change_24h": -9.02,
+      "vol_24h": 4717523.12,
+      "bias": "SHORT"
+    }
+  ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": -3.3,
-      "total_volume_usd": 39395463.5,
+      "avg_change_24h": -5.37,
+      "total_volume_usd": 46691640.35,
       "leader_coin": "BOME",
-      "leader_change_24h": 10.77,
+      "leader_change_24h": 7.17,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "AI_COMPUTE": {
       "active_count": 6,
-      "avg_change_24h": -4.72,
-      "total_volume_usd": 452060390.13,
+      "avg_change_24h": -7.57,
+      "total_volume_usd": 484354895.36,
       "leader_coin": "FET",
-      "leader_change_24h": -1.86,
+      "leader_change_24h": -4.94,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": -3.14,
-      "total_volume_usd": 362699486.08,
+      "avg_change_24h": -5.34,
+      "total_volume_usd": 402884836.49,
       "leader_coin": "TIA",
-      "leader_change_24h": 5.54,
+      "leader_change_24h": 1.39,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "DEFI": {
       "active_count": 9,
-      "avg_change_24h": -2.7,
-      "total_volume_usd": 117672045.34,
-      "leader_coin": "CRV",
-      "leader_change_24h": 1.82,
+      "avg_change_24h": -4.89,
+      "total_volume_usd": 139227051.33,
+      "leader_coin": "MKR",
+      "leader_change_24h": -0.81,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -2.47,
-      "total_volume_usd": 3678700588.14,
+      "avg_change_24h": -3.89,
+      "total_volume_usd": 4333596012.58,
       "leader_coin": "BTC",
-      "leader_change_24h": -1.56,
+      "leader_change_24h": -2.68,
       "rotation_status": "COOLING \u2744\ufe0f"
     }
   },
-  "timestamp": 1791473039.1614273
+  "timestamp": 1791474949.3813176
 }

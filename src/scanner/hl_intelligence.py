@@ -147,15 +147,17 @@ class HyperliquidIntelligence:
                 max_sector_perf = avg_perf
                 hottest_sector = sector_name
 
-        # Detect Squeeze Outliers (< -15% APR funding with positive momentum)
+        # Detect Funding Outliers (Squeezes < -15% APR or Crowded Longs > +35% APR)
         squeeze_outliers = []
         for name, m in coin_metrics.items():
-            if m["funding_apr"] < -15.0 and m["change_24h"] > 1.0 and m["vol_24h"] > 1_000_000:
+            if (m["funding_apr"] < -15.0 and m["change_24h"] > 1.0 and m["vol_24h"] > 1_000_000) or \
+               (m["funding_apr"] > 35.0 and m["vol_24h"] > 1_000_000):
                 squeeze_outliers.append({
                     "coin": name,
                     "funding_apr": round(m["funding_apr"], 1),
                     "change_24h": round(m["change_24h"], 2),
-                    "vol_24h": round(m["vol_24h"], 2)
+                    "vol_24h": round(m["vol_24h"], 2),
+                    "bias": "SHORT" if m["funding_apr"] > 35.0 else "LONG"
                 })
 
         return {
@@ -199,7 +201,7 @@ class HyperliquidIntelligence:
         # 1. Spot-Led Long Momentum (positive 24h change, healthy low funding < +35% APR)
         long_candidates = [r for r in top50 if r["change_24h"] > 1.5 and 0.0 <= r["funding_apr"] < 35.0]
         long_candidates.sort(key=lambda r: r["vol_24h"], reverse=True)
-        for r in long_candidates[:4]:
+        for r in long_candidates[:3]:
             c = r["coin"]
             prospects[c] = {
                 "coin": c,
@@ -216,10 +218,31 @@ class HyperliquidIntelligence:
                 "updated_at": now_iso,
             }
 
-        # 2. Extreme Negative Funding (Short Squeeze Candidates)
+        # 2. Bearish Breakdown Momentum (negative 24h change < -1.5%, strong volume) -> SHORT!
+        breakdown_candidates = [r for r in top50 if r["change_24h"] < -1.5 and r["funding_apr"] > -10.0]
+        breakdown_candidates.sort(key=lambda r: r["vol_24h"], reverse=True)
+        for r in breakdown_candidates[:3]:
+            c = r["coin"]
+            if c not in prospects:
+                prospects[c] = {
+                    "coin": c,
+                    "bias": "SHORT",
+                    "conviction_score": 88,
+                    "target_entry": round(r["price"] * 1.002, 4),
+                    "stop_loss": round(r["price"] * 1.012, 4),
+                    "take_profit": round(r["price"] * 0.975, 4),
+                    "strategy": "TrendContinuationSMC",
+                    "change_24h": round(r["change_24h"], 2),
+                    "volume_24h_usd": round(r["vol_24h"], 2),
+                    "funding_apr_pct": round(r["funding_apr"], 2),
+                    "rationale": f"Bearish breakdown: {r['change_24h']:.1f}% 24h drop on ${r['vol_24h']/1e6:.1f}M vol; downward momentum continuation.",
+                    "updated_at": now_iso,
+                }
+
+        # 3. Extreme Negative Funding (Short Squeeze Candidates) -> LONG
         squeeze_candidates = [r for r in top50 if r["funding_apr"] < -15.0]
         squeeze_candidates.sort(key=lambda r: r["funding_apr"])
-        for r in squeeze_candidates[:3]:
+        for r in squeeze_candidates[:2]:
             c = r["coin"]
             if c not in prospects:
                 prospects[c] = {
@@ -237,8 +260,8 @@ class HyperliquidIntelligence:
                     "updated_at": now_iso,
                 }
 
-        # 3. Crowded Long Fades (High Positive Funding > +40% APR)
-        fade_candidates = [r for r in top50 if r["funding_apr"] > 40.0]
+        # 4. Crowded Long Fades (High Positive Funding > +35% APR) -> SHORT!
+        fade_candidates = [r for r in top50 if r["funding_apr"] > 35.0]
         fade_candidates.sort(key=lambda r: r["funding_apr"], reverse=True)
         for r in fade_candidates[:3]:
             c = r["coin"]
@@ -246,15 +269,15 @@ class HyperliquidIntelligence:
                 prospects[c] = {
                     "coin": c,
                     "bias": "SHORT",
-                    "conviction_score": 82,
+                    "conviction_score": 92,  # Upgraded to 92 for equal top priority with short squeeze!
                     "target_entry": round(r["price"] * 1.002, 4),
                     "stop_loss": round(r["price"] * 1.012, 4),
                     "take_profit": round(r["price"] * 0.975, 4),
-                    "strategy": "Funding Rate Fade",
+                    "strategy": "HourlyFundingFade",
                     "change_24h": round(r["change_24h"], 2),
                     "volume_24h_usd": round(r["vol_24h"], 2),
                     "funding_apr_pct": round(r["funding_apr"], 2),
-                    "rationale": f"Crowded long fade: Funding APR {r['funding_apr']:+.1f}% on ${r['vol_24h']/1e6:.1f}M vol; long carry penalty.",
+                    "rationale": f"Crowded long fade: Funding APR {r['funding_apr']:+.1f}% on ${r['vol_24h']/1e6:.1f}M vol; long carry penalty flush.",
                     "updated_at": now_iso,
                 }
 
@@ -267,7 +290,7 @@ class HyperliquidIntelligence:
                     prospects[c] = {
                         "coin": c,
                         "bias": bias,
-                        "conviction_score": 75,
+                        "conviction_score": 86,
                         "target_entry": round(r["price"], 4),
                         "stop_loss": round(r["price"] * (0.988 if bias == "LONG" else 1.012), 4),
                         "take_profit": round(r["price"] * (1.025 if bias == "LONG" else 0.975), 4),
@@ -275,7 +298,7 @@ class HyperliquidIntelligence:
                         "change_24h": round(r["change_24h"], 2),
                         "volume_24h_usd": round(r["vol_24h"], 2),
                         "funding_apr_pct": round(r["funding_apr"], 2),
-                        "rationale": f"Volume leader: ${r['vol_24h']/1e6:.1f}M vol, {r['change_24h']:+.1f}% 24h.",
+                        "rationale": f"Volume leader: ${r['vol_24h']/1e6:.1f}M vol, {r['change_24h']:+.1f}% 24h ({bias}).",
                         "updated_at": now_iso,
                     }
                 if len(prospects) >= 10:

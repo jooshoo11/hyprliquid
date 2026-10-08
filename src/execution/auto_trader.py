@@ -513,7 +513,7 @@ class AutoTrader:
         3. Candidate is not an active high runner (ROI < +3.0%).
         4. Either:
            - Significant Leverage Upgrade: new_leverage >= current_leverage * 1.5 AND new_score >= current_score - 5
-           - Substantial Conviction Upgrade: new_score >= current_score + 8
+           - Substantial Conviction Upgrade: new_score >= current_score + 4
         """
         if len(current_positions) < self.max_open_positions:
             return None
@@ -538,7 +538,7 @@ class AutoTrader:
             cur_score = int(p.get("conviction_score", 80))
 
             is_lev_upgrade = (new_leverage >= cur_lev * 1.5) and (new_score >= cur_score - 5)
-            is_conv_upgrade = (new_score >= cur_score + 8)
+            is_conv_upgrade = (new_score >= cur_score + 4)
 
             if is_lev_upgrade or is_conv_upgrade:
                 # Priority: lowest existing leverage, lowest ROI, longest duration
@@ -570,7 +570,7 @@ class AutoTrader:
         open_coins = {p.get("coin", "").upper() for p in positions}
         now = time.time()
 
-        # Priority 1: Check Extreme Short Squeeze Outliers (< -20% APR funding)
+        # Priority 1: Check Extreme Funding Outliers (Squeeze Longs < -20% or Crowded Fade Shorts > +40%)
         regime_data = load_json(MARKET_REGIME_PATH, {})
         squeeze_alerts = regime_data.get("squeeze_alerts", []) if isinstance(regime_data, dict) else []
         for sq in squeeze_alerts:
@@ -578,15 +578,26 @@ class AutoTrader:
             funding_apr = float(sq.get("funding_apr", 0.0))
             vol_24h = float(sq.get("vol_24h", 0.0))
 
-            if coin and coin not in open_coins and funding_apr < -20.0 and vol_24h > 3000000:
+            is_squeeze_long = (funding_apr < -20.0 and vol_24h > 3000000)
+            is_crowded_short = (funding_apr > 40.0 and vol_24h > 3000000)
+
+            if coin and coin not in open_coins and (is_squeeze_long or is_crowded_short):
                 if (now - self._cooldowns.get(coin, 0)) > self.cooldown_seconds:
                     coin_max_lev = self.get_coin_max_leverage(coin)
+                    trade_side = "LONG" if is_squeeze_long else "SHORT"
+                    strat = "ShortSqueezeIgnition" if is_squeeze_long else "HourlyFundingFade"
+                    reason_msg = (
+                        f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol"
+                        if is_squeeze_long
+                        else f"Crowded Long Fade (+{funding_apr:.1f}% APR carry bleed) on ${vol_24h/1e6:.1f}M 24h Vol"
+                    )
+
                     if not is_full:
                         self.open_trade(
                             coin=coin,
-                            side="LONG",
-                            strategy="ShortSqueezeIgnition",
-                            reason=f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol",
+                            side=trade_side,
+                            strategy=strat,
+                            reason=reason_msg,
                             score=95,
                         )
                         return  # Open at most 1 trade per cycle
@@ -601,8 +612,8 @@ class AutoTrader:
                                     self._last_rotation_time = now
                                     self.open_trade(
                                         coin=coin,
-                                        side="LONG",
-                                        strategy="ShortSqueezeIgnition",
+                                        side=trade_side,
+                                        strategy=strat,
                                         reason=f"[ROTATION] {rot_reason}",
                                         score=95,
                                     )
