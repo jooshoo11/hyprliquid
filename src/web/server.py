@@ -57,6 +57,7 @@ app = FastAPI(title="Hyperliquid AI Trading Cockpit", version="2.0.0")
 info_client = HyperliquidInfoClient()
 _trade_manager = TradeManager()
 dynamic_allocator = DynamicStrategyAllocator()
+from src.execution.auto_trader import auto_trader
 _position_entry_times: Dict[str, float] = {}
 
 ACTIVE_TRADES_PATH = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
@@ -256,6 +257,11 @@ def generate_sentinel_thoughts(current_positions: Optional[List[Dict[str, Any]]]
                 "thought": thought_msg,
                 "text": thought_msg,
             })
+
+    # 2b. Autonomous Auto-Trader Thoughts
+    if auto_trader:
+        for t in auto_trader.get_thoughts()[-15:]:
+            all_thoughts.append(dict(t))
 
     # 3. Engine Watchdog Internal Sentinel Thoughts
     if _active_engine and hasattr(_active_engine, "sentinel_thoughts") and _active_engine.sentinel_thoughts:
@@ -585,6 +591,7 @@ def get_live_state() -> Dict[str, Any]:
         "paper_state": paper_state,
         "pending_ai_commands": pending_cmds,
         "sentinel_thoughts": generate_sentinel_thoughts(positions),
+        "autotrade": auto_trader.get_status(),
     }
 
 
@@ -1142,6 +1149,24 @@ async def api_trigger_prospect_scan():
     return {"status": "FAILED", "message": "Failed to scan prospects"}
 
 
+
+
+@app.get("/api/autotrade/status")
+async def api_autotrade_status():
+    """Return autonomous execution status, limits, and last action."""
+    return auto_trader.get_status()
+
+
+@app.post("/api/autotrade/toggle")
+async def api_autotrade_toggle():
+    """Toggle autonomous execution on / off."""
+    new_state = auto_trader.set_enabled(not auto_trader.enabled)
+    return {
+        "status": "SUCCESS",
+        "enabled": new_state,
+        "message": f"Autonomous Auto-Pilot {'Engaged 🟢' if new_state else 'Paused ⏸️'}",
+        "autotrade": auto_trader.get_status(),
+    }
 
 
 @app.get("/api/strategy_allocations")

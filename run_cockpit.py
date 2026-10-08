@@ -26,6 +26,7 @@ from rich.panel import Panel
 
 from src.scanner.hl_intelligence import HyperliquidIntelligence
 from src.scanner.sonar_bridge import SonarBridge
+from src.execution.auto_trader import auto_trader
 
 console = Console()
 
@@ -107,6 +108,10 @@ def main():
     # Start background intelligence thread
     t_intel = threading.Thread(target=background_intelligence_loop, daemon=True, name="HLIntelligence")
     t_intel.start()
+
+    # Start autonomous auto-trader execution & sentinel watchdog daemon
+    auto_trader.start()
+    console.print("[bold green]🤖 Autonomous Auto-Pilot Daemon started (Watchdog 5s | Entry 15s | Max 3 Pos)[/bold green]")
 
     # Run uvicorn server directly
     uvicorn.run(

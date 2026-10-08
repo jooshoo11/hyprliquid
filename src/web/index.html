@@ -105,6 +105,12 @@
 
     <!-- Quick Action Controls -->
     <div class="flex items-center space-x-1.5">
+      <!-- Autonomous Auto-Pilot Toggle Button -->
+      <button id="btn-autopilot" onclick="toggleAutoPilot()" title="Autonomous Auto-Pilot: ACTIVE - Tap to toggle" class="px-2.5 py-1.5 rounded-lg bg-emerald-950/90 text-emerald-300 border border-emerald-600/80 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all shadow-md shadow-emerald-950/40">
+        <div id="autopilot-dot" class="w-2 h-2 rounded-full bg-emerald-400 pulse-live"></div>
+        <span id="autopilot-label" class="hidden sm:inline">AUTO: ON 🟢</span>
+      </button>
+
       <!-- Audio Toggle -->
       <button id="btn-audio-toggle" onclick="toggleAudioMute()" title="Audio Alerts: Enabled" class="w-8 h-8 rounded-lg bg-slate-900 hover:bg-slate-800 text-cyan-400 border border-slate-800 flex items-center justify-center text-xs active:scale-95 transition-all">
         <i id="audio-icon" class="fa-solid fa-volume-high"></i>
@@ -1013,6 +1019,27 @@
         else dockDot.classList.add('hidden');
       }
 
+      // Auto-Pilot Status Pill
+      if (data.autotrade) {
+        const at = data.autotrade;
+        const btn = document.getElementById('btn-autopilot');
+        const dot = document.getElementById('autopilot-dot');
+        const label = document.getElementById('autopilot-label');
+        if (btn && dot && label) {
+          if (at.enabled) {
+            btn.className = "px-2.5 py-1.5 rounded-lg bg-emerald-950/90 text-emerald-300 border border-emerald-600/80 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all shadow-md shadow-emerald-950/40";
+            dot.className = "w-2 h-2 rounded-full bg-emerald-400 pulse-live";
+            label.textContent = "AUTO: ON 🟢";
+            btn.title = `Autonomous Auto-Pilot: ACTIVE (${at.open_positions_count}/${at.max_open_positions} pos) - Tap to pause`;
+          } else {
+            btn.className = "px-2.5 py-1.5 rounded-lg bg-slate-900 text-slate-400 border border-slate-700 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all";
+            dot.className = "w-2 h-2 rounded-full bg-slate-500";
+            label.textContent = "AUTO: PAUSED ⏸️";
+            btn.title = "Autonomous Auto-Pilot: PAUSED - Tap to engage";
+          }
+        }
+      }
+
       // Quant Analytics
       const analytics = data.analytics || {};
       const winRate = analytics.win_rate_pct || 0.0;
@@ -1374,6 +1401,22 @@
         };
       } catch (e) {
         setTimeout(connectWebSocket, 3000);
+      }
+    }
+
+    async function toggleAutoPilot() {
+      try {
+        const resp = await fetch('/api/autotrade/toggle', { method: 'POST' });
+        const res = await resp.json();
+        if (res.status === 'SUCCESS') {
+          playTone(res.enabled ? 640 : 380, 0.2);
+          showToast(res.message, res.enabled ? 'success' : 'info', 'AUTO-PILOT');
+          if (res.autotrade) {
+            updateCockpitUI({ autotrade: res.autotrade });
+          }
+        }
+      } catch (e) {
+        showToast(e.message, 'error');
       }
     }
 
