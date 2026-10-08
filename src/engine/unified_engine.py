@@ -1583,13 +1583,39 @@ class UnifiedEngine:
                     "rationale": f"Bear market breakdown: {chg:+.1f}% 24h drop on ${row['vol_24h']/1e6:.1f}M vol; heavy distribution.",
                 })
 
+            # --- Group D: Short Squeeze Momentum Ignition Candidates ---
+            squeeze_df = df.filter(
+                (pl.col("funding_apr") < -10.0)
+                & (pl.col("change_24h") > 0.5)
+                & (pl.col("vol_24h") > 1_000_000)
+            ).sort("change_24h", descending=True).head(3)
+            squeeze_candidates = []
+            for row in squeeze_df.iter_rows(named=True):
+                c = row["coin"]
+                px = float(row["price"])
+                funding_apr = float(row["funding_apr"])
+                chg = float(row["change_24h"])
+                squeeze_candidates.append({
+                    "coin": c,
+                    "bias": "LONG",
+                    "conviction_score": min(98, int(88 + abs(funding_apr) / 5.0)),
+                    "strategy": "Short Squeeze Liquidity Surge",
+                    "mark_price": px,
+                    "target_entry": round(px * 0.996, 4),
+                    "stop_loss": round(px * long_sl_mult, 4),
+                    "take_profit": round(px * (long_tp_mult * 1.2), 4),
+                    "funding_apr_pct": funding_apr,
+                    "volume_24h_usd": float(row["vol_24h"]),
+                    "rationale": f"Short squeeze ignition: Negative funding ({funding_apr:+.1f}% APR) with +{chg:.1f}% 24h momentum on ${row['vol_24h']/1e6:.1f}M vol; bears trapped.",
+                })
+
             # Assemble prospects list in regime-aligned priority order
             if is_bull_regime:
-                priority_groups = [long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
             elif regime_info.regime == "BEAR_MARKET_FLUSH":
-                priority_groups = [breakdown_candidates, fade_short_candidates, long_candidates]
+                priority_groups = [breakdown_candidates, squeeze_candidates, fade_short_candidates, long_candidates]
             else:
-                priority_groups = [long_candidates, fade_short_candidates, breakdown_candidates]
+                priority_groups = [squeeze_candidates, long_candidates, fade_short_candidates, breakdown_candidates]
 
             for grp in priority_groups:
                 for p in grp:
@@ -1637,6 +1663,16 @@ class UnifiedEngine:
                     prospects_list = ai_prospector.enhance_prospects(prospects_list, use_search=True)
             except Exception as ai_p_err:
                 self.log(f"AI Studio prospector pass-through: {ai_p_err}", "DEBUG")
+
+            # Dual-Confirmation: Enrich prospects with Crypto_Sonar Social & Catalyst Intelligence
+            try:
+                from src.scanner.sonar_bridge import SonarBridge
+                sonar = SonarBridge()
+                if sonar.sonar_available:
+                    self.log("📡 [CryptoSonar Bridge] Cross-referencing candidates with Sonar social sentiment & scam checks...", "INFO")
+                    prospects_list = sonar.vet_candidates(prospects_list)
+            except Exception as sonar_err:
+                self.log(f"Sonar bridge pass-through: {sonar_err}", "DEBUG")
 
             # Update in-memory prospects map
             self.prospects = {p["coin"]: p for p in prospects_list}
