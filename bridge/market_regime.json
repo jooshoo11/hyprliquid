@@ -1,17 +1,57 @@
 {
-  "regime": "BULL_MOMENTUM_EXPANSION",
-  "breadth_pct": 82.0,
-  "avg_change_24h": 2.61,
-  "avg_funding_apr": 16.7,
-  "volatility_score": 5.79,
-  "high_funding_count": 3,
-  "negative_funding_count": 0,
-  "sentiment": "Broad-Based Bull Expansion (82% green, avg +2.6% 24h). Institutional accumulation with healthy carry (+16.7% APR).",
-  "active_tweaks": [
-    "SMC Trend Continuation max positions expanded to 4 (Alloc: 2.5x)",
-    "VWAP/OI Momentum max positions expanded to 3 (Alloc: 2.0x)",
-    "Trend profit target expanded to 3.0 R:R for runners",
-    "Funding Fade entry threshold raised to +80% APR (avoid fighting trend)"
+  "regime": "MOMENTUM_EXPANSION",
+  "hottest_sector": "MEMES",
+  "active_perpetuals": 234,
+  "new_listings": [],
+  "squeeze_alerts": [
+    {
+      "coin": "MET",
+      "funding_apr": -186.6,
+      "change_24h": 39.07,
+      "vol_24h": 27174027.39
+    }
   ],
-  "timestamp": 1790833803.2290564
+  "sectors": {
+    "MEMES": {
+      "active_count": 12,
+      "avg_change_24h": 2.02,
+      "total_volume_usd": 31487122.53,
+      "leader_coin": "BOME",
+      "leader_change_24h": 16.29,
+      "rotation_status": "NEUTRAL"
+    },
+    "AI_COMPUTE": {
+      "active_count": 6,
+      "avg_change_24h": 0.71,
+      "total_volume_usd": 414990661.59,
+      "leader_coin": "FET",
+      "leader_change_24h": 3.04,
+      "rotation_status": "NEUTRAL"
+    },
+    "HIGH_BETA_L1": {
+      "active_count": 8,
+      "avg_change_24h": 1.62,
+      "total_volume_usd": 301719936.52,
+      "leader_coin": "TIA",
+      "leader_change_24h": 12.01,
+      "rotation_status": "NEUTRAL"
+    },
+    "DEFI": {
+      "active_count": 9,
+      "avg_change_24h": 1.54,
+      "total_volume_usd": 98876579.85,
+      "leader_coin": "CRV",
+      "leader_change_24h": 7.21,
+      "rotation_status": "NEUTRAL"
+    },
+    "MAJORS": {
+      "active_count": 2,
+      "avg_change_24h": -0.74,
+      "total_volume_usd": 3371560978.21,
+      "leader_coin": "BTC",
+      "leader_change_24h": -0.42,
+      "rotation_status": "NEUTRAL"
+    }
+  },
+  "timestamp": 1791470014.9305508
 }

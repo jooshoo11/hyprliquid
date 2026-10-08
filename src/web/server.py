@@ -1034,17 +1034,25 @@ async def api_open_trade(req: OpenTradeRequest):
     active_data = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
     positions = active_data.get("positions", [])
     cash_balance = float(active_data.get("cash_balance", 100.0))
+    already_locked = sum(float(p.get("margin", 0.0)) for p in positions)
+    available_cash = max(0.0, cash_balance - already_locked - 0.50)
     strat_mult = dynamic_allocator.get_multiplier(strat)
+
+    if available_cash < 5.0:
+        raise HTTPException(status_code=400, detail=f"Insufficient free margin (${available_cash:.2f}) to open {coin}")
 
     if req.notional_usd is not None and req.notional_usd > 0:
         effective_notional = round(req.notional_usd * strat_mult, 2)
-        allocated_margin = round(effective_notional / active_leverage, 2)
+        allocated_margin = round(min(available_cash, effective_notional / active_leverage), 2)
     elif req.margin_usd is not None and req.margin_usd > 0:
-        allocated_margin = round(min(max(5.0, cash_balance - 0.50), req.margin_usd * strat_mult), 2)
+        allocated_margin = round(min(available_cash, req.margin_usd * strat_mult), 2)
         effective_notional = round(allocated_margin * active_leverage, 2)
     else:
-        allocated_margin = auto_trader.calculate_position_margin(cash_balance, len(positions), strat_mult)
+        allocated_margin = auto_trader.calculate_position_margin(cash_balance, positions, strat_mult)
         effective_notional = round(allocated_margin * active_leverage, 2)
+
+    if allocated_margin < 5.0:
+        raise HTTPException(status_code=400, detail=f"Allocated margin (${allocated_margin:.2f}) is below minimum viable margin ($5.00)")
 
     qty = round(effective_notional / mark_px, 4)
 

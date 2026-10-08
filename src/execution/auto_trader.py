@@ -110,17 +110,27 @@ class AutoTrader:
                 self._leverage_map = {}
         return self._leverage_map.get(coin, 10.0)
 
-    def calculate_position_margin(self, cash_balance: float, current_positions_count: int, strat_mult: float = 1.0) -> float:
+    def calculate_position_margin(
+        self,
+        total_cash: float,
+        current_positions: Any = 0,
+        strat_mult: float = 1.0,
+    ) -> float:
         """
-        Deploy 100% of available cash with ZERO idle buffer.
-        Allocates equal margin share across remaining open position slots.
+        Deploy 100% of account cash evenly across position slots without exceeding total_cash.
+        Guarantees: sum(margin for all positions) <= total_cash.
         """
-        remaining_slots = max(1, self.max_open_positions - current_positions_count)
-        # Leave only $0.50 for exchange taker fees, deploy everything else
-        available_cash = max(5.0, cash_balance - 0.50)
-        margin_per_slot = round(available_cash / remaining_slots, 2)
-        allocated_margin = round(min(available_cash, margin_per_slot * strat_mult), 2)
-        return max(5.0, allocated_margin)
+        if isinstance(current_positions, list):
+            already_locked = sum(float(p.get("margin", 0.0)) for p in current_positions)
+        else:
+            already_locked = 0.0
+        available_cash = max(0.0, total_cash - already_locked - 0.50)  # 0.50 fee buffer
+
+        # Base share per slot: e.g. ($100 - $0.50) / 3 slots = $33.17 per position
+        base_slot_share = (total_cash - 0.50) / max(1, self.max_open_positions)
+        target_margin = round(base_slot_share * strat_mult, 2)
+        allocated_margin = round(min(available_cash, target_margin), 2)
+        return allocated_margin
 
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
@@ -237,21 +247,27 @@ class AutoTrader:
 
             # Determine margin and notional
             cash_balance = float(active_data.get("cash_balance", 100.0))
-            if cash_balance < 5.0:
-                self.log_thought("[RISK]", "WARNING", "rose", coin, f"Insufficient cash (${cash_balance:.2f}) to open {coin}")
+            already_locked = sum(float(p.get("margin", 0.0)) for p in positions)
+            available_cash = max(0.0, cash_balance - already_locked - 0.50)
+
+            if available_cash < 5.0:
+                self.log_thought("[RISK]", "WARNING", "rose", coin, f"Insufficient free margin (${available_cash:.2f}) to open {coin}")
                 return None
 
             if notional_usd is not None and notional_usd > 0:
                 # If explicit notional provided, derive margin
                 effective_notional = round(notional_usd * mult, 2)
-                allocated_margin = round(effective_notional / active_leverage, 2)
+                allocated_margin = round(min(available_cash, effective_notional / active_leverage), 2)
             elif margin_usd is not None and margin_usd > 0:
-                allocated_margin = round(min(max(5.0, cash_balance - 0.50), margin_usd * mult), 2)
+                allocated_margin = round(min(available_cash, margin_usd * mult), 2)
                 effective_notional = round(allocated_margin * active_leverage, 2)
             else:
-                # ZERO CASH BUFFER: Dynamically deploy all remaining cash across remaining position slots
-                allocated_margin = self.calculate_position_margin(cash_balance, len(positions), mult)
+                # ZERO CASH BUFFER: Evenly divide account cash across max_open_positions
+                allocated_margin = self.calculate_position_margin(cash_balance, positions, mult)
                 effective_notional = round(allocated_margin * active_leverage, 2)
+
+            if allocated_margin < 5.0:
+                return None
 
             qty = round(effective_notional / mark_px, 4)
             if qty <= 0:

@@ -1,32 +1,9 @@
 {
-  "equity": 99.03,
-  "realized_pnl": -0.26,
-  "open_positions": [
-    {
-      "coin": "ETH",
-      "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
-      "side": "LONG",
-      "size": 0.3055,
-      "entry_price": 2720.3,
-      "mark_price": 2718.65,
-      "unrealized_pnl": -0.5,
-      "roi_pct": -0.06,
-      "strategy": "Book Imbalance"
-    },
-    {
-      "coin": "NEAR",
-      "instrument_id": "NEAR-USD-PERP.HYPERLIQUID",
-      "side": "LONG",
-      "size": 60.7,
-      "entry_price": 5.4785,
-      "mark_price": 5.4751,
-      "unrealized_pnl": -0.21,
-      "roi_pct": -0.06,
-      "strategy": "SMC Trend"
-    }
-  ],
-  "session_start": "2026-10-01T05:51:30Z",
-  "last_updated": "2026-10-01T05:51:30Z",
-  "total_trades": 1,
+  "equity": 100.0,
+  "realized_pnl": 0.0,
+  "open_positions": [],
+  "session_start": "2026-10-08T11:37:03.677322+00:00",
+  "last_updated": "2026-10-08T11:37:03.677322+00:00",
+  "total_trades": 0,
   "starting_balance": 100.0
 }
