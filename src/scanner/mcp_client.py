@@ -13,56 +13,118 @@ import math
 from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
 
-import polars as pl
+try:
+    import polars as pl
+except ImportError:
+    pl = None
 
 # Load environment
 load_dotenv()
 
-from hyperliquid.utils import constants
+try:
+    from hyperliquid.utils import constants
+    from hyperliquid.info import Info
+except ImportError:
+    class _Constants:
+        MAINNET_API_URL = "https://api.hyperliquid.xyz"
+        TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz"
+    constants = _Constants()
+
+    class Info:
+        """Lightweight pure-Python fallback for Hyperliquid Info client without C-extensions."""
+        def __init__(self, base_url: str, skip_ws: bool = True):
+            self.base_url = base_url.rstrip("/")
+            if not self.base_url.endswith("/info"):
+                self.api_url = f"{self.base_url}/info"
+            else:
+                self.api_url = self.base_url
+            import requests
+            self._session = requests.Session()
+
+        def l2_snapshot(self, coin: str) -> Dict[str, Any]:
+            try:
+                resp = self._session.post(self.api_url, json={"type": "l2Book", "coin": coin}, timeout=10)
+                return resp.json() if resp.status_code == 200 else {}
+            except Exception:
+                return {}
+
+        def candles_snapshot(self, coin: str, interval: str, start_time: int, end_time: int) -> List[Dict[str, Any]]:
+            try:
+                resp = self._session.post(self.api_url, json={"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": start_time, "endTime": end_time}}, timeout=10)
+                return resp.json() if resp.status_code == 200 else []
+            except Exception:
+                return []
+
+        def funding_history(self, coin: str, start_time: int, end_time: int) -> List[Dict[str, Any]]:
+            try:
+                resp = self._session.post(self.api_url, json={"type": "fundingHistory", "coin": coin, "startTime": start_time, "endTime": end_time}, timeout=10)
+                return resp.json() if resp.status_code == 200 else []
+            except Exception:
+                return []
 
 
-def compute_candle_features(candles: List[Dict[str, Any]]) -> pl.DataFrame:
+
+def compute_candle_features(candles: List[Dict[str, Any]]):
     """
-    Computes displacement candles, True Range, and ATR volatility using Polars expressions.
-
-    Parameters
-    ----------
-    candles : list[dict]
-        Raw candle records with keys 't'/'T', 'o', 'h', 'l', 'c', 'v'.
-
-    Returns
-    -------
-    pl.DataFrame
-        Polars DataFrame with calculated displacement, True Range (tr), and 14-period ATR.
+    Computes displacement candles, True Range, and ATR volatility.
+    Uses Polars if available, otherwise falls back to pure Python dictionaries.
     """
     if not candles:
-        return pl.DataFrame()
+        return pl.DataFrame() if pl is not None else []
 
-    df = pl.DataFrame({
-        "timestamp": [int(c.get("t") or c.get("T") or 0) for c in candles],
-        "open": [float(c["o"]) for c in candles],
-        "high": [float(c["h"]) for c in candles],
-        "low": [float(c["l"]) for c in candles],
-        "close": [float(c["c"]) for c in candles],
-        "volume": [float(c["v"]) for c in candles],
-    })
+    if pl is not None:
+        df = pl.DataFrame({
+            "timestamp": [int(c.get("t") or c.get("T") or 0) for c in candles],
+            "open": [float(c["o"]) for c in candles],
+            "high": [float(c["h"]) for c in candles],
+            "low": [float(c["l"]) for c in candles],
+            "close": [float(c["c"]) for c in candles],
+            "volume": [float(c["v"]) for c in candles],
+        })
 
-    # Polars expressions for displacement candles (close - open) and True Range
-    window_size = min(14, len(df)) if len(df) > 0 else 1
-    df = df.with_columns([
-        (pl.col("close") - pl.col("open")).alias("displacement"),
-        (pl.col("close") - pl.col("open")).abs().alias("abs_displacement"),
-        pl.max_horizontal(
-            pl.col("high") - pl.col("low"),
-            (pl.col("high") - pl.col("close").shift(1)).abs(),
-            (pl.col("low") - pl.col("close").shift(1)).abs(),
-        ).fill_null(pl.col("high") - pl.col("low")).alias("tr"),
-        ((pl.col("close") - pl.col("close").shift(1)) / pl.col("close").shift(1)).alias("returns"),
-    ]).with_columns([
-        pl.col("tr").rolling_mean(window_size=window_size).alias("atr_14"),
-    ])
+        window_size = min(14, len(df)) if len(df) > 0 else 1
+        df = df.with_columns([
+            (pl.col("close") - pl.col("open")).alias("displacement"),
+            (pl.col("close") - pl.col("open")).abs().alias("abs_displacement"),
+            pl.max_horizontal(
+                pl.col("high") - pl.col("low"),
+                (pl.col("high") - pl.col("close").shift(1)).abs(),
+                (pl.col("low") - pl.col("close").shift(1)).abs(),
+            ).fill_null(pl.col("high") - pl.col("low")).alias("tr"),
+            ((pl.col("close") - pl.col("close").shift(1)) / pl.col("close").shift(1)).alias("returns"),
+        ]).with_columns([
+            pl.col("tr").rolling_mean(window_size=window_size).alias("atr_14"),
+        ])
+        return df
 
-    return df
+    # Pure-Python fallback when polars is unavailable
+    res = []
+    prev_close = None
+    trs = []
+    for c in candles:
+        ts = int(c.get("t") or c.get("T") or 0)
+        o = float(c["o"])
+        h = float(c["h"])
+        l = float(c["l"])
+        close = float(c["c"])
+        v = float(c["v"])
+        disp = close - o
+        abs_disp = abs(disp)
+        if prev_close is not None:
+            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+            ret = (close - prev_close) / prev_close if prev_close != 0 else 0.0
+        else:
+            tr = h - l
+            ret = 0.0
+        prev_close = close
+        trs.append(tr)
+        window = trs[-14:]
+        atr_14 = sum(window) / len(window)
+        res.append({
+            "timestamp": ts, "open": o, "high": h, "low": l, "close": close, "volume": v,
+            "displacement": disp, "abs_displacement": abs_disp, "tr": tr, "returns": ret, "atr_14": atr_14
+        })
+    return res
 
 
 class HyperliquidInfoClient:
@@ -94,7 +156,6 @@ class HyperliquidInfoClient:
             self.api_url = self.base_url
         import requests
         self._session = requests.Session()
-        from hyperliquid.info import Info
         self._info = Info(self.base_url, skip_ws=True)
 
     def _resolve_meta_cache_path(self) -> str:
@@ -439,23 +500,45 @@ class HyperliquidInfoClient:
         if not records:
             return []
 
-        # 1. Polars LazyFrame with 24h volume and price filters
-        df_universe = pl.DataFrame(records).lazy()
-        filtered_lf = df_universe.filter(
-            (pl.col("volume_24h") >= min_volume_usd) & (pl.col("oracle_price") > 0.0)
-        ).sort(by="volume_24h", descending=True)
+        if pl is not None:
+            # 1. Polars LazyFrame with 24h volume and price filters
+            df_universe = pl.DataFrame(records).lazy()
+            filtered_lf = df_universe.filter(
+                (pl.col("volume_24h") >= min_volume_usd) & (pl.col("oracle_price") > 0.0)
+            ).sort(by="volume_24h", descending=True)
 
-        liquid_pool = filtered_lf.collect()
-        
-        # PROXY: Use abs(return_24h_pct) as a real-time proxy for volatility
-        # This requires ZERO additional REST requests, eliminating 429 rate limits!
-        ranked_df = liquid_pool.with_columns([
-            pl.col("return_24h_pct").abs().alias("volatility_proxy")
-        ]).with_columns([
-            pl.col("volume_24h").rank(descending=True).alias("vol_rank"),
-            pl.col("volatility_proxy").rank(descending=True).alias("volat_rank"),
-        ]).with_columns([
-            (pl.col("vol_rank") * 0.5 + pl.col("volat_rank") * 0.5).alias("composite_rank")
-        ]).sort(by="composite_rank").head(top_n)
+            liquid_pool = filtered_lf.collect()
+            
+            # PROXY: Use abs(return_24h_pct) as a real-time proxy for volatility
+            ranked_df = liquid_pool.with_columns([
+                pl.col("return_24h_pct").abs().alias("volatility_proxy")
+            ]).with_columns([
+                pl.col("volume_24h").rank(descending=True).alias("vol_rank"),
+                pl.col("volatility_proxy").rank(descending=True).alias("volat_rank"),
+            ]).with_columns([
+                (pl.col("vol_rank") * 0.5 + pl.col("volat_rank") * 0.5).alias("composite_rank")
+            ]).sort(by="composite_rank").head(top_n)
 
-        return ranked_df.to_dicts()
+            return ranked_df.to_dicts()
+
+        # Pure-Python fallback
+        filtered = [r for r in records if r["volume_24h"] >= min_volume_usd and r["oracle_price"] > 0.0]
+        if not filtered:
+            return []
+
+        for r in filtered:
+            r["volatility_proxy"] = abs(r["return_24h_pct"])
+
+        by_vol = sorted(filtered, key=lambda x: x["volume_24h"], reverse=True)
+        for rank, item in enumerate(by_vol, start=1):
+            item["vol_rank"] = float(rank)
+
+        by_volat = sorted(filtered, key=lambda x: x["volatility_proxy"], reverse=True)
+        for rank, item in enumerate(by_volat, start=1):
+            item["volat_rank"] = float(rank)
+
+        for item in filtered:
+            item["composite_rank"] = item["vol_rank"] * 0.5 + item["volat_rank"] * 0.5
+
+        filtered.sort(key=lambda x: x["composite_rank"])
+        return filtered[:top_n]
