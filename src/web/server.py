@@ -1031,14 +1031,19 @@ async def api_open_trade(req: OpenTradeRequest):
     active_leverage = float(req.leverage) if (req.leverage and req.leverage > 0) else coin_max_lev
 
     # Dynamic Capital Allocation: scale funds by strategy performance multiplier
+    active_data = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
+    positions = active_data.get("positions", [])
+    cash_balance = float(active_data.get("cash_balance", 100.0))
     strat_mult = dynamic_allocator.get_multiplier(strat)
 
     if req.notional_usd is not None and req.notional_usd > 0:
         effective_notional = round(req.notional_usd * strat_mult, 2)
         allocated_margin = round(effective_notional / active_leverage, 2)
+    elif req.margin_usd is not None and req.margin_usd > 0:
+        allocated_margin = round(min(max(5.0, cash_balance - 0.50), req.margin_usd * strat_mult), 2)
+        effective_notional = round(allocated_margin * active_leverage, 2)
     else:
-        base_margin = req.margin_usd if (req.margin_usd and req.margin_usd > 0) else 15.0
-        allocated_margin = round(base_margin * strat_mult, 2)
+        allocated_margin = auto_trader.calculate_position_margin(cash_balance, len(positions), strat_mult)
         effective_notional = round(allocated_margin * active_leverage, 2)
 
     qty = round(effective_notional / mark_px, 4)

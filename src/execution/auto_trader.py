@@ -110,6 +110,18 @@ class AutoTrader:
                 self._leverage_map = {}
         return self._leverage_map.get(coin, 10.0)
 
+    def calculate_position_margin(self, cash_balance: float, current_positions_count: int, strat_mult: float = 1.0) -> float:
+        """
+        Deploy 100% of available cash with ZERO idle buffer.
+        Allocates equal margin share across remaining open position slots.
+        """
+        remaining_slots = max(1, self.max_open_positions - current_positions_count)
+        # Leave only $0.50 for exchange taker fees, deploy everything else
+        available_cash = max(5.0, cash_balance - 0.50)
+        margin_per_slot = round(available_cash / remaining_slots, 2)
+        allocated_margin = round(min(available_cash, margin_per_slot * strat_mult), 2)
+        return max(5.0, allocated_margin)
+
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
             active_data = load_json(ACTIVE_TRADES_PATH, {"positions": [], "equity": 100.0})
@@ -233,11 +245,12 @@ class AutoTrader:
                 # If explicit notional provided, derive margin
                 effective_notional = round(notional_usd * mult, 2)
                 allocated_margin = round(effective_notional / active_leverage, 2)
+            elif margin_usd is not None and margin_usd > 0:
+                allocated_margin = round(min(max(5.0, cash_balance - 0.50), margin_usd * mult), 2)
+                effective_notional = round(allocated_margin * active_leverage, 2)
             else:
-                # Maximize leverage: allocate base margin, scale notional to coin max leverage
-                base_margin = margin_usd if margin_usd is not None and margin_usd > 0 else self.base_margin_usd
-                allocated_margin = round(base_margin * mult, 2)
-                allocated_margin = min(allocated_margin, cash_balance * 0.40)  # Max 40% cash per position
+                # ZERO CASH BUFFER: Dynamically deploy all remaining cash across remaining position slots
+                allocated_margin = self.calculate_position_margin(cash_balance, len(positions), mult)
                 effective_notional = round(allocated_margin * active_leverage, 2)
 
             qty = round(effective_notional / mark_px, 4)
@@ -471,7 +484,6 @@ class AutoTrader:
                         coin=coin,
                         side="LONG",
                         strategy="ShortSqueezeIgnition",
-                        margin_usd=self.base_margin_usd,
                         reason=f"Extreme Negative Funding ({funding_apr:.1f}% APR) on ${vol_24h/1e6:.1f}M 24h Vol",
                         score=95,
                     )
@@ -494,7 +506,6 @@ class AutoTrader:
                             coin=coin,
                             side=bias,
                             strategy=strategy,
-                            margin_usd=self.base_margin_usd,
                             reason=f"{rationale} (Conviction: {score})",
                             score=score,
                         )
