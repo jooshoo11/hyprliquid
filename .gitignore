@@ -63,3 +63,4 @@ Thumbs.db
 logs/
 *.log
 reports/codebase_context.txt
+src/scanner/hl_universe_cache.json
