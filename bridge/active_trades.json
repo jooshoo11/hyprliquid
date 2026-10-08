@@ -1,7 +1,7 @@
 {
-  "timestamp": 1791470544.2078085,
-  "equity": 98.61,
-  "cash_balance": 98.61,
+  "timestamp": 1791471727.698865,
+  "equity": 98.04,
+  "cash_balance": 98.04,
   "positions": [
     {
       "coin": "CRV",
@@ -44,24 +44,24 @@
       "conviction_score": 88
     },
     {
-      "coin": "LIT",
+      "coin": "ADA",
       "side": "LONG",
-      "size": 43.0662,
-      "entry_price": 3.69315,
-      "mark_price": 3.69315,
-      "leverage": 5.0,
-      "margin": 31.81,
-      "notional": 159.05,
+      "size": 527.8426,
+      "entry_price": 0.246475,
+      "mark_price": 0.246475,
+      "leverage": 10.0,
+      "margin": 13.01,
+      "notional": 130.1,
       "unrealized_pnl": 0.0,
       "roi_pct": 0.0,
-      "strategy": "Spot-Led Momentum",
-      "strategy_multiplier": 1.6,
-      "stop_loss": 3.6008,
-      "take_profit": 3.924,
-      "entry_time": 1791470544.2078085,
+      "strategy": "Short Squeeze Ignition",
+      "strategy_multiplier": 0.4,
+      "stop_loss": 0.2403,
+      "take_profit": 0.2619,
+      "entry_time": 1791471727.698865,
       "duration_seconds": 0.0,
-      "entry_reason": "Spot-led trend: +4.5% 24h on $24.3M vol; low funding +11.0% APR. (Conviction: 88)",
-      "conviction_score": 88
+      "entry_reason": "[ROTATION] Capital Rotation: Switched to higher-leverage ADA (10x vs 5x Lev, STRK ROI: +0.0%)",
+      "conviction_score": 92
     }
   ]
 }

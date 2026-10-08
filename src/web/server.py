@@ -113,6 +113,14 @@ def load_json_file(path: str, default: Any = None) -> Any:
         return default
 
 
+def save_json_file(path: str, data: Any) -> None:
+    """Atomic write of JSON files with safe rename."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 DAILY_PNL_REPORT_PATH = os.path.join(REPO_ROOT, "reports", "daily_pnl.md")
 MARKET_REGIME_PATH = os.path.join(REPO_ROOT, "bridge", "market_regime.json")
 
@@ -951,14 +959,12 @@ async def api_close_trade(req: CloseTradeRequest):
     if not isinstance(trades_list, list):
         trades_list = []
     trades_list.append(closed_record)
-    with open(SESSION_TRADES_PATH, "w") as f:
-        json.dump(trades_list, f, indent=2)
+    save_json_file(SESSION_TRADES_PATH, trades_list)
 
     active_data["positions"] = remaining_positions
     active_data["cash_balance"] = round(active_data.get("cash_balance", 100.0) + net_pnl, 2)
     active_data["equity"] = active_data["cash_balance"]
-    with open(ACTIVE_TRADES_PATH, "w") as f:
-        json.dump(active_data, f, indent=2)
+    save_json_file(ACTIVE_TRADES_PATH, active_data)
 
     # Immediately re-evaluate dynamic strategy allocations so outperforming strategies get boosted
     dynamic_allocator.evaluate_allocations(trades_list)
@@ -995,8 +1001,7 @@ async def api_close_all():
 
     closed_coins = [p.get("coin", "").upper() for p in positions if p.get("coin")]
     active_data["positions"] = []
-    with open(ACTIVE_TRADES_PATH, "w") as f:
-        json.dump(active_data, f, indent=2)
+    save_json_file(ACTIVE_TRADES_PATH, active_data)
 
     return {
         "status": "SUCCESS",
@@ -1113,8 +1118,7 @@ async def api_open_trade(req: OpenTradeRequest):
     positions.append(new_pos)
     active_data["positions"] = positions
     active_data["timestamp"] = now
-    with open(ACTIVE_TRADES_PATH, "w") as f:
-        json.dump(active_data, f, indent=2)
+    save_json_file(ACTIVE_TRADES_PATH, active_data)
 
     return {
         "status": "SUCCESS",
@@ -1150,8 +1154,7 @@ async def api_reset_ledger():
         "cash_balance": 100.0,
         "positions": []
     }
-    with open(ACTIVE_TRADES_PATH, "w") as f:
-        json.dump(clean_trades, f, indent=2)
+    save_json_file(ACTIVE_TRADES_PATH, clean_trades)
 
     iso_now = datetime.now(timezone.utc).isoformat()
     clean_paper = {
@@ -1163,11 +1166,8 @@ async def api_reset_ledger():
         "total_trades": 0,
         "starting_balance": 100.0
     }
-    with open(PAPER_STATE_PATH, "w") as f:
-        json.dump(clean_paper, f, indent=2)
-
-    with open(SESSION_TRADES_PATH, "w") as f:
-        json.dump([], f)
+    save_json_file(PAPER_STATE_PATH, clean_paper)
+    save_json_file(SESSION_TRADES_PATH, [])
 
     if hasattr(_trade_manager, "active_positions"):
         with _trade_manager._lock:
@@ -1190,8 +1190,7 @@ async def api_trigger_prospect_scan():
         hl = HyperliquidIntelligence()
         prospects = hl.generate_top_prospects()
         if prospects:
-            with open(PROSPECTS_PATH, "w") as f:
-                json.dump({"prospects": prospects, "timestamp": time.time()}, f, indent=2)
+            save_json_file(PROSPECTS_PATH, {"prospects": prospects, "timestamp": time.time()})
             return {"status": "SUCCESS", "message": f"Scanned and ranked {len(prospects)} top prospects", "count": len(prospects)}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
