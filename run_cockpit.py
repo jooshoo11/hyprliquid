@@ -49,12 +49,15 @@ def background_intelligence_loop():
     bridge_dir = Path(REPO_ROOT) / "bridge"
     bridge_dir.mkdir(exist_ok=True)
     regime_file = bridge_dir / "market_regime.json"
+    prospects_file = bridge_dir / "prospects.json"
 
     # Initial brief sleep to let server bind
     time.sleep(2)
 
+    iteration = 0
     while True:
         try:
+            # 1. Update Sector Radar & Squeeze Alerts every 45s
             intel = hl.analyze_sector_momentum()
             if intel.get("status") == "success":
                 regime_data = {
@@ -68,9 +71,17 @@ def background_intelligence_loop():
                 }
                 with open(regime_file, "w") as f:
                     json.dump(regime_data, f, indent=2)
+
+            # 2. Update Top 10 Ranked Prospects autonomously on startup and every ~3.5 minutes
+            if iteration % 5 == 0:
+                top_prospects = hl.generate_top_prospects()
+                if top_prospects:
+                    with open(prospects_file, "w") as f:
+                        json.dump({"prospects": top_prospects, "timestamp": time.time()}, f, indent=2)
         except Exception:
             pass
 
+        iteration += 1
         # Scan every 45 seconds
         time.sleep(45)
 

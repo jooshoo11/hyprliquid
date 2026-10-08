@@ -166,3 +166,120 @@ class HyperliquidIntelligence:
             "sectors": sector_results,
             "squeeze_alerts": squeeze_outliers
         }
+
+    def generate_top_prospects(self) -> List[Dict[str, Any]]:
+        """Scans all perpetual markets and generates top 10 ranked actionable prospects."""
+        universe, contexts = self.fetch_meta_and_contexts()
+        if not universe or not contexts:
+            return []
+
+        import time
+        records = []
+        for u, ctx in zip(universe, contexts):
+            name = u.get("name")
+            px = float(ctx.get("oraclePx", 0.0))
+            prev_px = float(ctx.get("prevDayPx", 0.0))
+            funding_apr = float(ctx.get("funding", 0.0)) * 24 * 365 * 100.0
+            vol_24h = float(ctx.get("dayNtlVlm", 0.0))
+            chg_24h = ((px - prev_px) / prev_px * 100.0) if prev_px > 0 else 0.0
+            if px > 0 and vol_24h > 100_000:
+                records.append({
+                    "coin": name,
+                    "price": px,
+                    "funding_apr": funding_apr,
+                    "vol_24h": vol_24h,
+                    "change_24h": chg_24h,
+                })
+
+        records.sort(key=lambda r: r["vol_24h"], reverse=True)
+        top50 = records[:50]
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        prospects = {}
+
+        # 1. Spot-Led Long Momentum (positive 24h change, healthy low funding < +35% APR)
+        long_candidates = [r for r in top50 if r["change_24h"] > 1.5 and 0.0 <= r["funding_apr"] < 35.0]
+        long_candidates.sort(key=lambda r: r["vol_24h"], reverse=True)
+        for r in long_candidates[:4]:
+            c = r["coin"]
+            prospects[c] = {
+                "coin": c,
+                "bias": "LONG",
+                "conviction_score": 88,
+                "target_entry": round(r["price"] * 0.998, 4),
+                "stop_loss": round(r["price"] * 0.988, 4),
+                "take_profit": round(r["price"] * 1.025, 4),
+                "strategy": "Spot-Led Momentum",
+                "change_24h": round(r["change_24h"], 2),
+                "volume_24h_usd": round(r["vol_24h"], 2),
+                "funding_apr_pct": round(r["funding_apr"], 2),
+                "rationale": f"Spot-led trend: +{r['change_24h']:.1f}% 24h on ${r['vol_24h']/1e6:.1f}M vol; low funding {r['funding_apr']:+.1f}% APR.",
+                "updated_at": now_iso,
+            }
+
+        # 2. Extreme Negative Funding (Short Squeeze Candidates)
+        squeeze_candidates = [r for r in top50 if r["funding_apr"] < -15.0]
+        squeeze_candidates.sort(key=lambda r: r["funding_apr"])
+        for r in squeeze_candidates[:3]:
+            c = r["coin"]
+            if c not in prospects:
+                prospects[c] = {
+                    "coin": c,
+                    "bias": "LONG",
+                    "conviction_score": 92,
+                    "target_entry": round(r["price"] * 0.995, 4),
+                    "stop_loss": round(r["price"] * 0.985, 4),
+                    "take_profit": round(r["price"] * 1.035, 4),
+                    "strategy": "Short Squeeze Ignition",
+                    "change_24h": round(r["change_24h"], 2),
+                    "volume_24h_usd": round(r["vol_24h"], 2),
+                    "funding_apr_pct": round(r["funding_apr"], 2),
+                    "rationale": f"Short squeeze ignition: {r['funding_apr']:+.1f}% APR carry bleed; cascading liquidations likely.",
+                    "updated_at": now_iso,
+                }
+
+        # 3. Crowded Long Fades (High Positive Funding > +40% APR)
+        fade_candidates = [r for r in top50 if r["funding_apr"] > 40.0]
+        fade_candidates.sort(key=lambda r: r["funding_apr"], reverse=True)
+        for r in fade_candidates[:3]:
+            c = r["coin"]
+            if c not in prospects:
+                prospects[c] = {
+                    "coin": c,
+                    "bias": "SHORT",
+                    "conviction_score": 82,
+                    "target_entry": round(r["price"] * 1.002, 4),
+                    "stop_loss": round(r["price"] * 1.012, 4),
+                    "take_profit": round(r["price"] * 0.975, 4),
+                    "strategy": "Funding Rate Fade",
+                    "change_24h": round(r["change_24h"], 2),
+                    "volume_24h_usd": round(r["vol_24h"], 2),
+                    "funding_apr_pct": round(r["funding_apr"], 2),
+                    "rationale": f"Crowded long fade: Funding APR {r['funding_apr']:+.1f}% on ${r['vol_24h']/1e6:.1f}M vol; long carry penalty.",
+                    "updated_at": now_iso,
+                }
+
+        # Fill up to 10 with volume leaders
+        if len(prospects) < 10:
+            for r in top50:
+                c = r["coin"]
+                if c not in prospects:
+                    bias = "LONG" if r["change_24h"] >= 0 else "SHORT"
+                    prospects[c] = {
+                        "coin": c,
+                        "bias": bias,
+                        "conviction_score": 75,
+                        "target_entry": round(r["price"], 4),
+                        "stop_loss": round(r["price"] * (0.988 if bias == "LONG" else 1.012), 4),
+                        "take_profit": round(r["price"] * (1.025 if bias == "LONG" else 0.975), 4),
+                        "strategy": "Top Volume Leader",
+                        "change_24h": round(r["change_24h"], 2),
+                        "volume_24h_usd": round(r["vol_24h"], 2),
+                        "funding_apr_pct": round(r["funding_apr"], 2),
+                        "rationale": f"Volume leader: ${r['vol_24h']/1e6:.1f}M vol, {r['change_24h']:+.1f}% 24h.",
+                        "updated_at": now_iso,
+                    }
+                if len(prospects) >= 10:
+                    break
+
+        return list(prospects.values())
+

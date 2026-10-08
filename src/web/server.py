@@ -1031,6 +1031,23 @@ async def api_reset_ledger():
     return {"status": "SUCCESS", "message": "Paper trading ledger reset to $100.00 clean balance", "equity": 100.0}
 
 
+@app.post("/api/prospects/scan")
+async def api_trigger_prospect_scan():
+    """Trigger on-demand market scan across 234 Hyperliquid perpetuals."""
+    try:
+        from src.scanner.hl_intelligence import HyperliquidIntelligence
+        hl = HyperliquidIntelligence()
+        prospects = hl.generate_top_prospects()
+        if prospects:
+            with open(PROSPECTS_PATH, "w") as f:
+                json.dump({"prospects": prospects, "timestamp": time.time()}, f, indent=2)
+            return {"status": "SUCCESS", "message": f"Scanned and ranked {len(prospects)} top prospects", "count": len(prospects)}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+    return {"status": "FAILED", "message": "Failed to scan prospects"}
+
+
+
 
 @app.get("/api/strategy_allocations")
 async def api_strategy_allocations():

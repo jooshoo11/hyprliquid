@@ -1283,12 +1283,24 @@
       showToast('Orders history refreshed', 'info');
     }
 
-    function triggerProspectScan() {
-      showToast('Triggering 15m deep prospector scan...', 'info');
+    async function triggerProspectScan() {
+      showToast('Scanning 234 Hyperliquid markets for top setups...', 'info', 'AI PROSPECTOR');
+      try {
+        const resp = await fetch('/api/prospects/scan', { method: 'POST' });
+        const res = await resp.json();
+        if (res.status === 'SUCCESS') {
+          playTone(580, 0.2);
+          showToast(`Ranked ${res.count} high-conviction prospects`, 'success', 'SCAN COMPLETE');
+          fetchRestFallback();
+        }
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
     }
 
     function refreshSqueezeScan() {
       showToast('Refreshing 234 Hyperliquid markets...', 'info');
+      fetchRestFallback();
     }
 
     // --- WebSocket Stream Connection ---
