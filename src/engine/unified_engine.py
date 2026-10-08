@@ -1285,9 +1285,11 @@ class UnifiedEngine:
         if equity <= 0 or mark_px <= 0:
             return False
 
-        # User allocation: 33.3% of total balance per trade (3 max coins) at coin's maximum exchange leverage
+        # Performance-Weighted Capital Allocation: scale funds dynamically by strategy performance
+        strat_multiplier = self.guard.get_strategy_sizing_multiplier(strat_name) if hasattr(self.guard, "get_strategy_sizing_multiplier") else 1.0
         max_positions = float(self.guard.max_total_open_positions or 3)
-        margin_allocated = equity / max_positions
+        base_margin = equity / max_positions
+        margin_allocated = base_margin * strat_multiplier
         coin_max_lev = float(get_coin_max_leverage(coin))  # Hyperliquid official exchange max leverage per coin (unconstrained)
         target_notional = margin_allocated * coin_max_lev
         qty_val = target_notional / mark_px

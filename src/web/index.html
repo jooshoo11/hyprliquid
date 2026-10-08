@@ -169,6 +169,17 @@
         </div>
       </div>
     </div>
+
+    <!-- PERFORMANCE-WEIGHTED STRATEGY ALLOCATION BAR -->
+    <div class="mt-2 bg-[#0b1120] border border-slate-800 rounded-xl px-3 py-2 flex items-center justify-between gap-2 overflow-x-auto touch-scroll text-xs">
+      <div class="flex items-center space-x-1.5 whitespace-nowrap">
+        <i class="fa-solid fa-scale-balanced text-cyan-400 text-xs"></i>
+        <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">STRATEGY ALLOCATION:</span>
+      </div>
+      <div id="strategy-allocation-pills" class="flex items-center space-x-2 whitespace-nowrap mono text-[11px]">
+        <span class="text-slate-500 text-[10px] italic">Evaluating strategy performance tiers...</span>
+      </div>
+    </div>
   </div>
 
   <!-- NAVIGATION TABS (TOUCH FRIENDLY HORIZONTAL PILLS) -->
@@ -1008,6 +1019,37 @@
       const pf = analytics.profit_factor || 0.0;
       document.getElementById('quant-win-rate').textContent = `${winRate.toFixed(1)}%`;
       document.getElementById('quant-pf').textContent = `PF ${pf.toFixed(2)}`;
+
+      // Dynamic Strategy Allocation Multipliers
+      const allocData = data.strategy_allocations || {};
+      const allocs = allocData.allocations || {};
+      const allocCont = document.getElementById('strategy-allocation-pills');
+      if (allocCont && Object.keys(allocs).length > 0) {
+        allocCont.innerHTML = Object.keys(allocs).map(stratKey => {
+          const a = allocs[stratKey];
+          const mult = a.multiplier || 1.0;
+          let color = 'bg-slate-900 text-slate-300 border-slate-700';
+          let icon = '⚖️';
+          if (mult >= 1.5) {
+            color = 'bg-emerald-950 text-emerald-300 border-emerald-600 font-bold';
+            icon = '🔥';
+          } else if (mult >= 1.2) {
+            color = 'bg-cyan-950 text-cyan-300 border-cyan-600 font-bold';
+            icon = '⚡';
+          } else if (mult <= 0.6) {
+            color = 'bg-rose-950 text-rose-300 border-rose-800 font-bold';
+            icon = '❄️';
+          }
+          const shortName = stratKey.replace('TrendContinuation', '').replace('Hourly', '').replace('VwapOi', 'VWAP/').replace('OrderBook', 'Book ');
+          return `
+            <span class="px-2 py-0.5 rounded-lg border ${color} flex items-center gap-1 shadow-sm" title="${stratKey}: ${a.tier} (${a.bonus_pct} funds allocated)">
+              <span>${icon} ${shortName}:</span>
+              <span class="font-extrabold">${mult.toFixed(1)}x</span>
+              <span class="text-[9px] opacity-80">(${a.bonus_pct})</span>
+            </span>
+          `;
+        }).join('');
+      }
 
       // 2. EXTREME SHORT SQUEEZE RADAR RENDERING
       const regime = data.market_regime || {};

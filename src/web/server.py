@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.risk.trade_manager import TradeManager
+from src.risk.dynamic_allocator import DynamicStrategyAllocator
 
 try:
     from src.risk.performance_analytics import PerformanceAnalytics
@@ -55,6 +56,7 @@ app = FastAPI(title="Hyperliquid AI Trading Cockpit", version="2.0.0")
 
 info_client = HyperliquidInfoClient()
 _trade_manager = TradeManager()
+dynamic_allocator = DynamicStrategyAllocator()
 _position_entry_times: Dict[str, float] = {}
 
 ACTIVE_TRADES_PATH = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
@@ -577,6 +579,7 @@ def get_live_state() -> Dict[str, Any]:
         "funding_arbitrage": funding_pairs,
         "funding_arbitrage_summary": funding_arb_data,
         "market_regime": load_json_file(MARKET_REGIME_PATH, {}),
+        "strategy_allocations": dynamic_allocator.evaluate_allocations(),
         "risk_guard": "ARMED",
         "leverage_mode": "EXCHANGE_MAX",
         "paper_state": paper_state,
@@ -872,25 +875,75 @@ async def api_close_trade(req: CloseTradeRequest):
         else:
             return {"status": "WARN", "message": f"No active position found to close for {coin_clean}"}
 
-    cmds = load_json_file(AI_COMMANDS_PATH, [])
-    if not isinstance(cmds, list):
-        cmds = []
+    # Standalone Paper Execution Close
+    active_data = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
+    positions = active_data.get("positions", [])
+    pos_to_close = None
+    remaining_positions = []
+    for p in positions:
+        if p.get("coin", "").upper() == coin_clean:
+            pos_to_close = p
+        else:
+            remaining_positions.append(p)
 
-    cmds.append({
-        "action": "CLOSE_POSITION",
-        "coin": coin_clean,
-        "reason": req.reason or "Manual Web Cockpit Close",
-        "timestamp": time.time(),
-    })
+    if not pos_to_close:
+        return {"status": "WARN", "message": f"No active position found for {coin_clean}"}
 
+    exit_px = float(pos_to_close.get("mark_price", pos_to_close.get("entry_price", 0.0)))
     try:
-        tmp_path = f"{AI_COMMANDS_PATH}.tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(cmds, f, indent=2)
-        os.replace(tmp_path, AI_COMMANDS_PATH)
-        return {"status": "SUCCESS", "message": f"Market close submitted for {coin_clean}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to submit close: {e}")
+        meta, asset_ctxs = await asyncio.to_thread(info_client.get_meta_and_asset_ctxs)
+        for u, ctx in zip(meta.get("universe", []), asset_ctxs):
+            if u.get("name") == coin_clean:
+                exit_px = float(ctx.get("midPx") or ctx.get("oraclePx", exit_px))
+                break
+    except Exception:
+        pass
+
+    entry_px = float(pos_to_close.get("entry_price", exit_px))
+    qty = float(pos_to_close.get("size", 0.0))
+    side = pos_to_close.get("side", "LONG").upper()
+    gross_pnl = (exit_px - entry_px) * qty * (1.0 if side == "LONG" else -1.0)
+    fees = round((entry_px * qty * 0.00035) + (exit_px * qty * 0.00035), 4)
+    net_pnl = round(gross_pnl - fees, 2)
+    roi_pct = round((gross_pnl / (entry_px * qty)) * 100.0, 2) if (entry_px * qty) > 0 else 0.0
+
+    closed_record = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "coin": coin_clean,
+        "side": side,
+        "size": qty,
+        "entry": entry_px,
+        "exit": exit_px,
+        "gross_pnl": round(gross_pnl, 2),
+        "fees": fees,
+        "net_pnl": net_pnl,
+        "roi_pct": roi_pct,
+        "strategy": pos_to_close.get("strategy", "Manual Trade"),
+        "reason": req.reason or "Manual Close",
+    }
+
+    trades_list = load_json_file(SESSION_TRADES_PATH, [])
+    if not isinstance(trades_list, list):
+        trades_list = []
+    trades_list.append(closed_record)
+    with open(SESSION_TRADES_PATH, "w") as f:
+        json.dump(trades_list, f, indent=2)
+
+    active_data["positions"] = remaining_positions
+    active_data["cash_balance"] = round(active_data.get("cash_balance", 100.0) + net_pnl, 2)
+    active_data["equity"] = active_data["cash_balance"]
+    with open(ACTIVE_TRADES_PATH, "w") as f:
+        json.dump(active_data, f, indent=2)
+
+    # Immediately re-evaluate dynamic strategy allocations so outperforming strategies get boosted
+    dynamic_allocator.evaluate_allocations(trades_list)
+
+    return {
+        "status": "SUCCESS",
+        "message": f"Closed {coin_clean} ({'+' if net_pnl>=0 else ''}${net_pnl:.2f} Net PnL, {roi_pct:+.2f}% ROI)",
+        "net_pnl": net_pnl,
+        "roi_pct": roi_pct,
+    }
 
 
 @app.post("/api/trades/close_all")
@@ -907,74 +960,116 @@ async def api_close_all():
                 "message": f"Close-all executed for: {', '.join(closed) if closed else 'none'}",
                 "closed_positions": closed or []
             }
-        except Exception as e:
-            # Fall back to writing to bridge/ai_commands.json if in-memory engine execution fails
+        except Exception:
             pass
 
-    state = get_live_state()
-    positions = state.get("positions", [])
+    active_data = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
+    positions = active_data.get("positions", [])
     if not positions:
         return {"status": "SUCCESS", "message": "No active positions to close", "closed_positions": []}
 
-    cmds = load_json_file(AI_COMMANDS_PATH, [])
-    if not isinstance(cmds, list):
-        cmds = []
+    closed_coins = [p.get("coin", "").upper() for p in positions if p.get("coin")]
+    active_data["positions"] = []
+    with open(ACTIVE_TRADES_PATH, "w") as f:
+        json.dump(active_data, f, indent=2)
 
-    closed_coins = []
-    for pos in positions:
-        coin = pos.get("coin", "").upper()
-        if coin:
-            cmds.append({
-                "action": "CLOSE_POSITION",
-                "coin": coin,
-                "reason": "Emergency Web Cockpit Close All",
-                "timestamp": time.time(),
-            })
-            closed_coins.append(coin)
-
-    try:
-        tmp_path = f"{AI_COMMANDS_PATH}.tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(cmds, f, indent=2)
-        os.replace(tmp_path, AI_COMMANDS_PATH)
-        return {
-            "status": "SUCCESS",
-            "message": f"Close-all submitted for: {', '.join(closed_coins)}",
-            "closed_positions": closed_coins
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to submit close all: {e}")
+    return {
+        "status": "SUCCESS",
+        "message": f"Close-all executed for: {', '.join(closed_coins)}",
+        "closed_positions": closed_coins
+    }
 
 
 @app.post("/api/trades/open")
 async def api_open_trade(req: OpenTradeRequest):
-    """Execute manual trade through the UnifiedEngine."""
-    if not _active_engine:
-        raise HTTPException(status_code=503, detail="Trading engine not active")
+    """Execute trade with performance-weighted dynamic strategy sizing."""
+    coin = req.coin.upper()
+    side = req.side.upper()
+    strat = req.strategy or "TrendContinuationSMC"
 
-    prospect = {
-        "coin": req.coin.upper(),
-        "bias": req.side.upper(),
-        "conviction_score": 95,
-        "strategy": req.strategy,
-        "stop_loss": req.stop_loss or 0.0,
-        "take_profit": req.take_profit or 0.0,
-        "mark_price": 0.0,
-    }
-
+    # Fetch live mark price
+    mark_px = 0.0
     try:
         meta, asset_ctxs = await asyncio.to_thread(info_client.get_meta_and_asset_ctxs)
         for u, ctx in zip(meta.get("universe", []), asset_ctxs):
-            if u.get("name") == req.coin.upper():
-                prospect["mark_price"] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+            if u.get("name") == coin:
+                mark_px = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
                 break
     except Exception:
         pass
 
-    success = _active_engine.execute_prospect_entry(prospect)
-    if success:
-        return {"status": "SUCCESS", "message": f"Submitted manual {req.side} for {req.coin}"}
-    return {"status": "REJECTED", "message": f"PortfolioGuard rejected trade for {req.coin}"}
+    if mark_px <= 0:
+        raise HTTPException(status_code=400, detail=f"Could not fetch live price for {coin}")
+
+    # Dynamic Capital Allocation: scale funds by strategy performance multiplier
+    strat_mult = dynamic_allocator.get_multiplier(strat)
+    effective_notional = round(req.notional_usd * strat_mult, 2)
+    qty = round(effective_notional / mark_px, 4)
+
+    if _active_engine:
+        prospect = {
+            "coin": coin,
+            "bias": side,
+            "conviction_score": 95,
+            "strategy": strat,
+            "stop_loss": req.stop_loss or 0.0,
+            "take_profit": req.take_profit or 0.0,
+            "mark_price": mark_px,
+        }
+        success = _active_engine.execute_prospect_entry(prospect)
+        if success:
+            return {
+                "status": "SUCCESS",
+                "message": f"Submitted {side} for {coin} (${effective_notional:.2f} notional | {strat_mult:.1f}x strategy allocation)",
+                "multiplier": strat_mult,
+                "effective_notional": effective_notional,
+            }
+        return {"status": "REJECTED", "message": f"PortfolioGuard rejected trade for {coin}"}
+
+    # Standalone Paper Execution directly to bridge/active_trades.json
+    now = time.time()
+    active_data = load_json_file(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
+    positions = active_data.get("positions", [])
+
+    for p in positions:
+        if p.get("coin", "").upper() == coin:
+            return {"status": "WARN", "message": f"Position already open for {coin}"}
+
+    sl_px = req.stop_loss or round(mark_px * (0.988 if side == "LONG" else 1.012), 4)
+    tp_px = req.take_profit or round(mark_px * (1.025 if side == "LONG" else 0.975), 4)
+
+    new_pos = {
+        "coin": coin,
+        "side": side,
+        "size": qty,
+        "entry_price": mark_px,
+        "mark_price": mark_px,
+        "unrealized_pnl": 0.0,
+        "roi_pct": 0.0,
+        "strategy": strat,
+        "strategy_multiplier": strat_mult,
+        "stop_loss": sl_px,
+        "take_profit": tp_px,
+        "entry_time": now,
+        "duration_seconds": 0.0,
+    }
+    positions.append(new_pos)
+    active_data["positions"] = positions
+    active_data["timestamp"] = now
+
+    tmp_path = f"{ACTIVE_TRADES_PATH}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(active_data, f, indent=2)
+    os.replace(tmp_path, ACTIVE_TRADES_PATH)
+
+    return {
+        "status": "SUCCESS",
+        "message": f"Executed {side} {coin} (${effective_notional:.2f} notional | {strat_mult:.1f}x strategy multiplier)",
+        "multiplier": strat_mult,
+        "effective_notional": effective_notional,
+        "coin": coin,
+        "price": mark_px,
+    }
 
 
 @app.post("/api/risk/reset_breaker")
@@ -1051,14 +1146,14 @@ async def api_trigger_prospect_scan():
 
 @app.get("/api/strategy_allocations")
 async def api_strategy_allocations():
-    """Return active strategy allocation caps and sizing multipliers from PortfolioGuard."""
-    if _active_engine and hasattr(_active_engine, "guard"):
+    """Return active strategy allocation caps and dynamic sizing multipliers."""
+    if _active_engine and hasattr(_active_engine, "guard") and _active_engine.guard.strategy_sizing_multipliers:
         return {
             "allocation_caps": dict(_active_engine.guard.strategy_allocation_caps),
             "sizing_multipliers": dict(_active_engine.guard.strategy_sizing_multipliers),
             "performance_stats": dict(_active_engine.guard.strategy_performance_stats),
         }
-    return {"allocation_caps": {}, "sizing_multipliers": {}, "performance_stats": {}}
+    return dynamic_allocator.evaluate_allocations()
 
 
 
