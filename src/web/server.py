@@ -1022,7 +1022,7 @@ async def api_open_trade(req: OpenTradeRequest):
     try:
         meta, asset_ctxs = await asyncio.to_thread(info_client.get_meta_and_asset_ctxs)
         for u, ctx in zip(meta.get("universe", []), asset_ctxs):
-            if u.get("name") == coin:
+            if u.get("name", "").upper() == coin:
                 mark_px = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
                 break
     except Exception:

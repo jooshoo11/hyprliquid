@@ -92,6 +92,8 @@ class AutoTrader:
         self._cooldowns: Dict[str, float] = {}
         self._ratcheted: Dict[str, bool] = {}
         self._thoughts_buffer: List[Dict[str, Any]] = []
+        self._last_rotation_time: float = 0.0
+        self.min_rotation_interval: float = 180.0  # Min 3 minutes between rotations to prevent fee churn
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.last_action: str = "Initialized auto-trader with Hyperliquid Max Leverage"
@@ -110,6 +112,18 @@ class AutoTrader:
                 self._leverage_map = {}
         return self._leverage_map.get(coin, 10.0)
 
+    def get_mark_price(self, coin: str) -> float:
+        """Fetch live mark price for a coin with case-insensitive symbol resolution."""
+        coin_up = coin.upper()
+        try:
+            meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
+            for u, ctx in zip(meta.get("universe", []), ctxs):
+                if u.get("name", "").upper() == coin_up:
+                    return float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+        except Exception:
+            pass
+        return 0.0
+
     def calculate_position_margin(
         self,
         total_cash: float,
@@ -119,6 +133,7 @@ class AutoTrader:
         """
         Deploy 100% of account cash evenly across position slots without exceeding total_cash.
         Guarantees: sum(margin for all positions) <= total_cash.
+        Caps single position to max 38% of account to prevent over-concentration.
         """
         if isinstance(current_positions, list):
             already_locked = sum(float(p.get("margin", 0.0)) for p in current_positions)
@@ -129,6 +144,9 @@ class AutoTrader:
         # Base share per slot: e.g. ($100 - $0.50) / 3 slots = $33.17 per position
         base_slot_share = (total_cash - 0.50) / max(1, self.max_open_positions)
         target_margin = round(base_slot_share * strat_mult, 2)
+        # Cap single position to max 38% of total account cash to protect against drawdowns
+        max_single_position = round(total_cash * 0.38, 2)
+        target_margin = min(target_margin, max_single_position)
         allocated_margin = round(min(available_cash, target_margin), 2)
         return allocated_margin
 
@@ -230,7 +248,7 @@ class AutoTrader:
             try:
                 meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
                 for u, ctx in zip(meta.get("universe", []), ctxs):
-                    if u.get("name") == coin:
+                    if u.get("name", "").upper() == coin:
                         mark_px = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
                         coin_max_lev = float(u.get("maxLeverage", coin_max_lev))
                         self._leverage_map[coin] = coin_max_lev
@@ -350,7 +368,7 @@ class AutoTrader:
                 try:
                     meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
                     for u, ctx in zip(meta.get("universe", []), ctxs):
-                        if u.get("name") == coin:
+                        if u.get("name", "").upper() == coin:
                             exit_px = float(ctx.get("midPx") or ctx.get("oraclePx", exit_px))
                             break
                 except Exception:
@@ -428,7 +446,7 @@ class AutoTrader:
             meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
             px_map = {}
             for u, ctx in zip(meta.get("universe", []), ctxs):
-                px_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+                px_map[u.get("name", "").upper()] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
         except Exception:
             return
 
@@ -568,18 +586,22 @@ class AutoTrader:
                         )
                         return  # Open at most 1 trade per cycle
                     else:
-                        rot = self.find_rotation_candidate(coin, coin_max_lev, 95, positions, now)
-                        if rot:
-                            old_coin, rot_reason = rot
-                            self.close_trade(old_coin, reason=rot_reason)
-                            self.open_trade(
-                                coin=coin,
-                                side="LONG",
-                                strategy="ShortSqueezeIgnition",
-                                reason=f"[ROTATION] {rot_reason}",
-                                score=95,
-                            )
-                            return
+                        if (now - self._last_rotation_time) >= self.min_rotation_interval:
+                            cand_px = self.get_mark_price(coin)
+                            if cand_px > 0:
+                                rot = self.find_rotation_candidate(coin, coin_max_lev, 95, positions, now)
+                                if rot:
+                                    old_coin, rot_reason = rot
+                                    self.close_trade(old_coin, reason=rot_reason)
+                                    self._last_rotation_time = now
+                                    self.open_trade(
+                                        coin=coin,
+                                        side="LONG",
+                                        strategy="ShortSqueezeIgnition",
+                                        reason=f"[ROTATION] {rot_reason}",
+                                        score=95,
+                                    )
+                                    return
 
         # Priority 2: Check High-Conviction AI Prospects (Conviction Score >= min_conviction_score)
         prospects_data = load_json(PROSPECTS_PATH, {})
@@ -605,18 +627,22 @@ class AutoTrader:
                             )
                             return  # Open at most 1 trade per cycle
                         else:
-                            rot = self.find_rotation_candidate(coin, coin_max_lev, score, positions, now)
-                            if rot:
-                                old_coin, rot_reason = rot
-                                self.close_trade(old_coin, reason=rot_reason)
-                                self.open_trade(
-                                    coin=coin,
-                                    side=bias,
-                                    strategy=strategy,
-                                    reason=f"[ROTATION] {rot_reason}",
-                                    score=score,
-                                )
-                                return
+                            if (now - self._last_rotation_time) >= self.min_rotation_interval:
+                                cand_px = self.get_mark_price(coin)
+                                if cand_px > 0:
+                                    rot = self.find_rotation_candidate(coin, coin_max_lev, score, positions, now)
+                                    if rot:
+                                        old_coin, rot_reason = rot
+                                        self.close_trade(old_coin, reason=rot_reason)
+                                        self._last_rotation_time = now
+                                        self.open_trade(
+                                            coin=coin,
+                                            side=bias,
+                                            strategy=strategy,
+                                            reason=f"[ROTATION] {rot_reason}",
+                                            score=score,
+                                        )
+                                        return
 
     def loop(self) -> None:
         """Main autonomous execution background thread loop."""

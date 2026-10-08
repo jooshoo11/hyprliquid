@@ -6,52 +6,52 @@
   "squeeze_alerts": [
     {
       "coin": "MET",
-      "funding_apr": -84.2,
-      "change_24h": 37.48,
-      "vol_24h": 28033146.16
+      "funding_apr": -74.8,
+      "change_24h": 39.88,
+      "vol_24h": 28448072.57
     }
   ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": 1.04,
-      "total_volume_usd": 31560042.08,
+      "avg_change_24h": 0.09,
+      "total_volume_usd": 31585422.0,
       "leader_coin": "BOME",
-      "leader_change_24h": 12.66,
+      "leader_change_24h": 12.45,
       "rotation_status": "NEUTRAL"
     },
     "AI_COMPUTE": {
       "active_count": 6,
-      "avg_change_24h": 0.08,
-      "total_volume_usd": 415440759.72,
+      "avg_change_24h": -1.13,
+      "total_volume_usd": 416155583.6,
       "leader_coin": "FET",
-      "leader_change_24h": 3.64,
+      "leader_change_24h": 2.35,
       "rotation_status": "NEUTRAL"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": 0.77,
-      "total_volume_usd": 307032838.4,
+      "avg_change_24h": -0.04,
+      "total_volume_usd": 320101789.45,
       "leader_coin": "TIA",
-      "leader_change_24h": 9.7,
+      "leader_change_24h": 10.94,
       "rotation_status": "NEUTRAL"
     },
     "DEFI": {
       "active_count": 9,
-      "avg_change_24h": 0.81,
-      "total_volume_usd": 98631997.02,
+      "avg_change_24h": 0.01,
+      "total_volume_usd": 99009284.7,
       "leader_coin": "CRV",
-      "leader_change_24h": 6.21,
+      "leader_change_24h": 5.25,
       "rotation_status": "NEUTRAL"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -0.89,
-      "total_volume_usd": 3361882914.38,
+      "avg_change_24h": -1.39,
+      "total_volume_usd": 3370336092.64,
       "leader_coin": "BTC",
-      "leader_change_24h": -0.45,
+      "leader_change_24h": -0.88,
       "rotation_status": "NEUTRAL"
     }
   },
-  "timestamp": 1791471747.4331126
+  "timestamp": 1791472347.5181618
 }
