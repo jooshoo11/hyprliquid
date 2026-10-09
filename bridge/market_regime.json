@@ -1,58 +1,66 @@
 {
-  "regime": "MOMENTUM_EXPANSION",
+  "regime": "LIQUIDATION_CHOP",
   "hottest_sector": "HIGH_BETA_L1",
   "active_perpetuals": 234,
   "new_listings": [],
   "squeeze_alerts": [
     {
       "coin": "GRIFFAIN",
-      "funding_apr": 70.2,
-      "change_24h": 16.68,
-      "vol_24h": 1980503.0,
+      "funding_apr": 56.8,
+      "change_24h": 14.26,
+      "vol_24h": 1852326.49,
       "bias": "SHORT"
     }
   ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": -1.86,
-      "total_volume_usd": 57005499.84,
+      "avg_change_24h": -2.1,
+      "total_volume_usd": 56869515.14,
       "leader_coin": "BOME",
-      "leader_change_24h": 1.15,
-      "rotation_status": "NEUTRAL"
+      "leader_change_24h": 1.91,
+      "rotation_status": "COOLING \u2744\ufe0f"
     },
     "AI_COMPUTE": {
       "active_count": 6,
-      "avg_change_24h": -6.03,
-      "total_volume_usd": 499619587.48,
+      "avg_change_24h": -5.93,
+      "total_volume_usd": 488571374.55,
       "leader_coin": "TAO",
-      "leader_change_24h": -2.97,
+      "leader_change_24h": -3.07,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": -0.6,
-      "total_volume_usd": 487871582.71,
-      "leader_coin": "TIA",
-      "leader_change_24h": 6.43,
+      "avg_change_24h": -0.88,
+      "total_volume_usd": 487395161.5,
+      "leader_coin": "APT",
+      "leader_change_24h": 7.52,
       "rotation_status": "NEUTRAL"
     },
     "DEFI": {
       "active_count": 9,
-      "avg_change_24h": -3.61,
-      "total_volume_usd": 168245737.16,
+      "avg_change_24h": -3.93,
+      "total_volume_usd": 167819158.88,
       "leader_coin": "DYDX",
-      "leader_change_24h": 1.53,
+      "leader_change_24h": 1.67,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -1.7,
-      "total_volume_usd": 5466145337.89,
+      "avg_change_24h": -1.63,
+      "total_volume_usd": 5399520645.48,
       "leader_coin": "BTC",
-      "leader_change_24h": -0.5,
+      "leader_change_24h": -0.56,
       "rotation_status": "NEUTRAL"
     }
   },
-  "timestamp": 1791526518.9375415
+  "timestamp": 1791530305.5352044,
+  "tp_rr_ratio": 2.2,
+  "margin_sizing_mult": 0.5,
+  "allow_counter_trend": true,
+  "pause_entries": false,
+  "ratchet_breakeven_all": false,
+  "rationale": "Mean-reverting dispersion with balanced market breadth.",
+  "confidence": 85,
+  "macro_vector": "[MACRO BREADTH] BREADTH: 50.0% BULL | BTC_5M: +0.00% | ETH_5M: +0.00%\n[DERIV AGGREGATE] AVG_FUND: +5.4% APR (Neg Extremes: 5, High Extremes: 1)\n[TAPE AGGREGATE] BTC_CVD_5M: $-6,788 | 24H_VOL: $8,883M"
 }

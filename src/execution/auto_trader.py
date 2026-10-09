@@ -37,6 +37,9 @@ if REPO_ROOT not in sys.path:
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.risk.dynamic_allocator import DynamicStrategyAllocator
 from src.risk.self_improving_engine import self_improving_engine
+from src.risk.regime_governor import regime_governor
+from src.utils.pixel_ai import pixel_ai
+from src.scanner.live_ws_feed import live_feed
 
 ACTIVE_TRADES_PATH = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
 SESSION_TRADES_PATH = os.path.join(REPO_ROOT, "reports", "session_trades.json")
@@ -80,6 +83,9 @@ class AutoTrader:
         self.info_client = info_client or HyperliquidInfoClient()
         self.allocator = dynamic_allocator or DynamicStrategyAllocator()
         self.self_improving_engine = self_improving_engine
+        self.regime_governor = regime_governor
+        self.live_feed = live_feed
+        self.pixel_ai = pixel_ai
         self.lock = threading.RLock()
 
         # Load persisted toggle state if present
@@ -272,6 +278,58 @@ class AutoTrader:
         side = side.upper()
 
         with self.lock:
+            # 1. Check Mid-Frequency Market Regime Governor
+            playbook = self.regime_governor.get_playbook()
+            if playbook.get("pause_entries", False):
+                self.log_thought(
+                    category="[REGIME GATE]",
+                    status="WARNING",
+                    badge_color="rose",
+                    coin=coin,
+                    msg=f"Entry blocked: Market regime '{playbook.get('regime')}' has paused new entries (Flight-to-Cash mode).",
+                )
+                return None
+
+            if not playbook.get("allow_counter_trend", True) and ("Fade" in strategy or "Reversion" in strategy):
+                self.log_thought(
+                    category="[REGIME GATE]",
+                    status="WARNING",
+                    badge_color="amber",
+                    coin=coin,
+                    msg=f"Counter-trend setup '{strategy}' blocked: Regime '{playbook.get('regime')}' prohibits fades.",
+                )
+                return None
+
+            # 2. Check Self-Improving Engine Parameter Gates
+            adaptive_params = self.self_improving_engine.get_adaptive_params()
+            disabled_strats = adaptive_params.get("disabled_strategies", [])
+            if strategy in disabled_strats:
+                self.log_thought(
+                    category="[RISK SENTINEL]",
+                    status="WARNING",
+                    badge_color="rose",
+                    coin=coin,
+                    msg=f"Strategy '{strategy}' temporarily disabled by post-mortem learning engine.",
+                )
+                return None
+
+            eff_min_score = max(self.min_conviction_score, int(adaptive_params.get("min_conviction_score", 85)))
+            if score < eff_min_score:
+                return None
+
+            # 3. Pre-Trade Adversarial Gatekeeper ("Devil's Advocate")
+            dense_vector = self.live_feed.get_compact_feature_vector(coin)
+            gate_eval = self.pixel_ai.evaluate_pre_trade_gatekeeper(coin, side, strategy, dense_vector)
+            if gate_eval.get("veto", False):
+                self.log_thought(
+                    category="[DEVIL'S ADVOCATE VETO]",
+                    status="WARNING",
+                    badge_color="rose",
+                    coin=coin,
+                    msg=f"Pre-Trade VETO for {side} {coin}: {gate_eval.get('reason')} ({gate_eval.get('_latency_ms', 0):.0f}ms | {gate_eval.get('_provider', 'quant')})",
+                )
+                return None
+
             active_data = load_json(ACTIVE_TRADES_PATH, {"equity": 100.0, "cash_balance": 100.0, "positions": []})
             positions = active_data.get("positions", [])
 
@@ -320,6 +378,10 @@ class AutoTrader:
             else:
                 # ZERO CASH BUFFER: Evenly divide account cash across max_open_positions
                 allocated_margin = self.calculate_position_margin(cash_balance, positions, mult)
+                # Modulate by Regime Playbook margin sizing multiplier
+                playbook_sizing = float(playbook.get("margin_sizing_mult", 1.0))
+                if playbook_sizing > 0:
+                    allocated_margin = round(allocated_margin * playbook_sizing, 2)
                 effective_notional = round(allocated_margin * active_leverage, 2)
 
             if allocated_margin < 5.0:
@@ -330,10 +392,10 @@ class AutoTrader:
                 return None
 
             # Adaptive Self-Tuning Bracket Stops:
-            # Dynamically scaled by Pixel 9 on-device learning engine
-            adaptive_params = self.self_improving_engine.get_adaptive_params()
+            # Dynamically scaled by Playbook & On-device learning engine
             sl_multiplier = float(adaptive_params.get("sl_multiplier", 1.0))
-            tp_rr_ratio = float(adaptive_params.get("tp_rr_ratio", 2.5))
+            playbook_rr = float(playbook.get("tp_rr_ratio", 0.0))
+            tp_rr_ratio = playbook_rr if playbook_rr > 0 else float(adaptive_params.get("tp_rr_ratio", 2.5))
 
             sl_dist_pct = min(0.025, max(0.008, (0.25 / active_leverage) * sl_multiplier))
             # Enforce minimum 1.8% Take-Profit price move (covering round-trip fees 25x over)
@@ -522,6 +584,8 @@ class AutoTrader:
 
         adaptive_params = self.self_improving_engine.get_adaptive_params()
         ratchet_threshold = float(adaptive_params.get("ratchet_pct", 0.8))
+        playbook = self.regime_governor.get_playbook()
+        cascade_active = bool(playbook.get("ratchet_breakeven_all", False))
 
         positions_updated = False
         for p in list(positions):
@@ -546,6 +610,21 @@ class AutoTrader:
             p["unrealized_pnl"] = round(unrealized, 2)
             p["roi_pct"] = round(margin_roi_pct, 2)
             positions_updated = True
+
+            # 0. Emergency Breakeven Ratchet under CASCADE_RISK regime
+            if cascade_active and not self._ratcheted.get(coin):
+                be_sl = round(entry_px * (1.0020 if side == "LONG" else 0.9980), 4)
+                if (side == "LONG" and sl < be_sl and mark_px > be_sl) or (side == "SHORT" and (sl <= 0 or sl > be_sl) and mark_px < be_sl):
+                    p["stop_loss"] = be_sl
+                    self._ratcheted[coin] = True
+                    positions_updated = True
+                    self.log_thought(
+                        category="[CASCADE RISK]",
+                        status="WARNING",
+                        badge_color="rose",
+                        coin=coin,
+                        msg=f"Emergency ratcheted {coin} stop to Net Breakeven (${be_sl:,.4f}) under CASCADE_RISK regime.",
+                    )
 
             # 1. Trailing Breakeven Ratchet (Fee-Protective: +0.20% Net Profit Guard)
             eff_ratchet_thresh = max(1.0, ratchet_threshold)
@@ -745,6 +824,11 @@ class AutoTrader:
         open_coins = {p.get("coin", "").upper() for p in positions}
         now = time.time()
 
+        # Adaptive dynamic cooldown and conviction thresholds from meta-learning
+        adaptive_params = self.self_improving_engine.get_adaptive_params()
+        eff_cooldown = float(adaptive_params.get("cooldown_seconds", self.cooldown_seconds))
+        eff_min_score = max(self.min_conviction_score, int(adaptive_params.get("min_conviction_score", 85)))
+
         # Priority 1: Check Extreme Funding Outliers (Squeeze Longs < -20% or Crowded Fade Shorts > +40%)
         regime_data = load_json(MARKET_REGIME_PATH, {})
         squeeze_alerts = regime_data.get("squeeze_alerts", []) if isinstance(regime_data, dict) else []
@@ -757,7 +841,7 @@ class AutoTrader:
             is_crowded_short = (funding_apr > 40.0 and vol_24h > 3000000)
 
             if coin and coin not in open_coins and (is_squeeze_long or is_crowded_short):
-                if (now - self._cooldowns.get(coin, 0)) > self.cooldown_seconds:
+                if (now - self._cooldowns.get(coin, 0)) > eff_cooldown:
                     coin_max_lev = self.get_coin_max_leverage(coin)
                     trade_side = "LONG" if is_squeeze_long else "SHORT"
                     strat = "ShortSqueezeIgnition" if is_squeeze_long else "HourlyFundingFade"
@@ -794,7 +878,7 @@ class AutoTrader:
                                     )
                                     return
 
-        # Priority 2: Check High-Conviction AI Prospects (Conviction Score >= min_conviction_score)
+        # Priority 2: Check High-Conviction AI Prospects (Conviction Score >= eff_min_score)
         prospects_data = load_json(PROSPECTS_PATH, {})
         prospects_list = prospects_data.get("prospects", []) if isinstance(prospects_data, dict) else prospects_data
         if isinstance(prospects_list, list):
@@ -805,8 +889,8 @@ class AutoTrader:
                 strategy = str(p.get("strategy") or "TrendContinuationSMC")
                 rationale = p.get("rationale") or f"Conviction Score {score}"
 
-                if coin and coin not in open_coins and score >= self.min_conviction_score:
-                    if (now - self._cooldowns.get(coin, 0)) > self.cooldown_seconds:
+                if coin and coin not in open_coins and score >= eff_min_score:
+                    if (now - self._cooldowns.get(coin, 0)) > eff_cooldown:
                         coin_max_lev = self.get_coin_max_leverage(coin)
                         if not is_full:
                             self.open_trade(

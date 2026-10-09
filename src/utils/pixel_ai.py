@@ -362,6 +362,76 @@ class PixelOnboardAI:
                     "_provider": "pixel_onboard_quant",
                 }
 
+    def evaluate_pre_trade_gatekeeper(
+        self,
+        coin: str,
+        side: str,
+        strategy: str,
+        dense_vector: str,
+    ) -> Dict[str, Any]:
+        """
+        Pre-Trade Adversarial Gatekeeper ("Devil's Advocate").
+        Evaluates a candidate trade setup against real-time temporal order flow and macro benchmarks
+        to veto setups that are traps (e.g. CVD divergence, dumping into bids, negative BTC drag).
+        """
+        t0 = time.time()
+        coin = coin.upper()
+        side = side.upper()
+
+        if self.is_online():
+            system_prompt = (
+                "You are a skeptical quantitative risk manager acting as Devil's Advocate on Pixel 9 Tensor G4.\n"
+                "Given this candidate trade setup and real-time temporal order flow vector, evaluate whether this is a trap.\n"
+                "Identify disqualifying risks:\n"
+                "1. CVD Divergence: e.g. Positive OBI but aggressively negative CVD indicates dumping into passive bids (TRAP).\n"
+                "2. Adverse Beta Drag: e.g. Trying to Long an altcoin while BTC 5M Delta is sharply negative (TRAP).\n"
+                "3. Squeeze Exhaustion: e.g. Price moving up while OI is contracting rapidly (covering exhaustion, not new demand).\n"
+                "Respond STRICTLY in valid JSON matching:\n"
+                '{"veto": true|false, "reason": "1 concise sentence", "confidence": 85}'
+            )
+            user_prompt = (
+                f"Proposed Setup: {side} {coin} | Strategy: {strategy}\n"
+                f"{dense_vector}\n"
+                f"Should this trade be VETOED as a trap or APPROVED?"
+            )
+            res = self.query(user_prompt, system_prompt, max_tokens=100)
+            if res and isinstance(res, dict) and "veto" in res:
+                res["_latency_ms"] = round((time.time() - t0) * 1000, 2)
+                res["_provider"] = "pixel_onboard_llm"
+                return res
+
+        # High-precision deterministic fallback (<1ms)
+        veto = False
+        reason = "Order flow and macro aligned with setup."
+
+        # 1. Check CVD divergence traps
+        if "BEARISH_ABSORPTION" in dense_vector and side == "LONG":
+            veto = True
+            reason = "CVD Divergent from price (aggressive selling into passive bids); dumping trap detected."
+        elif "BULLISH_ABSORPTION" in dense_vector and side == "SHORT":
+            veto = True
+            reason = "CVD Divergent from price (passive buying absorbing market sells); short trap detected."
+        elif "BTC_5M: -" in dense_vector and side == "LONG":
+            try:
+                btc_part = dense_vector.split("BTC_5M: -")[1].split("%")[0]
+                if float(btc_part) >= 0.8:
+                    veto = True
+                    reason = f"BTC dropping (-{btc_part}%) indicates severe market-wide beta drag against Long setup."
+            except Exception:
+                pass
+        elif "SHORT_SQUEEZE" in dense_vector and side == "LONG":
+            veto = True
+            reason = "OI contracting on upward move indicates short covering exhaustion; high reversal risk."
+
+        return {
+            "veto": veto,
+            "reason": reason,
+            "confidence": 90 if veto else 85,
+            "_latency_ms": round((time.time() - t0) * 1000, 2),
+            "_provider": "pixel_onboard_quant",
+        }
+
 
 # Global singleton instance
 pixel_ai = PixelOnboardAI()
+

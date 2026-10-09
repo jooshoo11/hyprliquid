@@ -659,6 +659,17 @@ def api_reports_analytics():
     return {"status": "SUCCESS", "analytics": performance_analytics.get_metrics()}
 
 
+@app.api_route("/api/ai/post_mortem", methods=["GET", "POST"])
+def api_post_mortem():
+    """Trigger on-demand post-mortem reflection across closed trade loss clusters."""
+    try:
+        from src.risk.self_improving_engine import self_improving_engine
+        res = self_improving_engine.run_post_mortem_reflection()
+        return {"status": "SUCCESS", "adaptive_params": res}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
+
+
 @app.get("/api/state")
 def api_state():
     """Fetch current system state snapshot."""

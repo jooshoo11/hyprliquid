@@ -31,6 +31,7 @@ from src.scanner.neural_l2_scanner import neural_scanner
 from src.execution.auto_trader import auto_trader
 from src.utils.pixel_ai import pixel_ai
 from src.risk.self_improving_engine import self_improving_engine
+from src.risk.regime_governor import regime_governor
 
 console = Console()
 
@@ -106,8 +107,9 @@ def main():
         f"• [bold]On-Device AI:[/bold]         [green]{hw_info['engine_status']}[/green] ({hw_info['token_cost']})\n"
         f"• [bold]Self-Improving Engine:[/bold] [green]ACTIVE[/green] (Win Rate: {adaptive_info.get('win_rate_recent', 60.0):.1f}%, TP RR: {adaptive_info.get('tp_rr_ratio', 2.5):.1f}x)\n"
         f"• [bold]Live L2 Streaming:[/bold]   [green]ACTIVE[/green] (WebSocket allMids + L2 Book Depth Walls)\n"
-        f"• [bold]Neural L2 Scanner:[/bold]   [green]ACTIVE[/green] (Tensor G4 Onboard Reasoning + OBI Synthesis)\n"
-        f"• [bold]Auto-Pilot Risk:[/bold]       PortfolioGuard + Dynamic Max Leverage + Ratchet Stops\n"
+        f"• [bold]Neural L2 Scanner:[/bold]   [green]ACTIVE[/green] (Temporal Microstructure + Hard Mathematical Brackets)\n"
+        f"• [bold]Regime Governor:[/bold]     [green]ACTIVE[/green] (Tensor G4 5m Playbook Modulation: Momentum / Chop / Cascade)\n"
+        f"• [bold]Auto-Pilot Risk:[/bold]       PortfolioGuard + Devil's Advocate Gatekeeper + Dynamic Max Leverage\n"
         f"[dim]Access from Chrome on this phone or any device on the same Wi-Fi network.[/dim]",
         title="📱 Pixel 9 Autonomous Trading Node",
         border_style="cyan",
@@ -117,6 +119,10 @@ def main():
     # Start real-time WebSocket L2 streaming feed
     live_feed.start()
     console.print("[bold green]⚡ Real-Time WebSocket L2 Streaming Feed Connected (wss://api.hyperliquid.xyz/ws)[/bold green]")
+
+    # Start Mid-Frequency Market Regime Governor
+    regime_governor.start()
+    console.print("[bold green]🛡️ On-Device Market Regime Governor Active (Macro Breadth & Playbook Modulation)[/bold green]")
 
     # Start Onboard Neural L2 Market Scanner (Tensor G4 + Qwen 2.5 1.5B)
     neural_scanner.start()

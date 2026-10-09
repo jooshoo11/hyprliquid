@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import time
+import threading
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 from datetime import datetime, timezone
@@ -48,7 +49,11 @@ class SelfImprovingEngine:
 
         self.journal: List[Dict[str, Any]] = self._load_json(self.journal_path, [])
         self.learned_rules: List[Dict[str, Any]] = self._load_json(self.learned_rules_path, self._default_rules())
-        self.adaptive_params: Dict[str, Any] = self._load_json(self.adaptive_params_path, self._default_params())
+        loaded_params = self._load_json(self.adaptive_params_path, {})
+        default_p = self._default_params()
+        if isinstance(loaded_params, dict):
+            default_p.update(loaded_params)
+        self.adaptive_params = default_p
 
     def _load_json(self, path: str, default: Any) -> Any:
         if os.path.exists(path):
@@ -102,6 +107,9 @@ class SelfImprovingEngine:
             "sl_multiplier": 1.0,
             "tp_rr_ratio": 2.5,
             "ratchet_pct": 0.8,
+            "min_conviction_score": 85,
+            "cooldown_seconds": 90.0,
+            "disabled_strategies": [],
             "sector_modifiers": {
                 "AI_COMPUTE": 1.15,
                 "HIGH_BETA_L1": 1.0,
@@ -138,6 +146,11 @@ class SelfImprovingEngine:
 
         # Trigger self-tuning optimization
         self.optimize_parameters()
+
+        # Low-Frequency Post-Mortem Reflection: trigger if consecutive losses detected
+        recent_3 = self.journal[-3:]
+        if len(recent_3) >= 2 and all(not t.get("is_win") for t in recent_3):
+            threading.Thread(target=self.run_post_mortem_reflection, daemon=True, name="PostMortemReflection").start()
 
     def optimize_parameters(self) -> Dict[str, Any]:
         """
@@ -246,8 +259,117 @@ class SelfImprovingEngine:
 
         return is_allowed, adapted_score, reason_str
 
+    def run_post_mortem_reflection(self) -> Dict[str, Any]:
+        """
+        Low-Frequency Post-Mortem Reflection & Loss Clustering Engine.
+        Analyzes recent closed trade failure modes from reports/session_trades.json and reports/learning_journal.json.
+        Uses On-Device Tensor G4 LLM (with deterministic quant fallback) to auto-tune:
+        - adjust_min_conviction (85 to 95)
+        - adjust_cooldown_seconds (90.0 to 300.0)
+        - disable_strategies (e.g. ['OrderBookImbalance'])
+        """
+        now = time.time()
+        session_trades_path = os.path.join(REPO_ROOT, "reports", "session_trades.json")
+        trades = self._load_json(session_trades_path, [])
+        if not trades:
+            trades = self.journal
+
+        if len(trades) < 3:
+            return self.adaptive_params
+
+        recent = trades[-20:]
+        losses = [t for t in recent if float(t.get("net_pnl", 0.0)) < 0 or float(t.get("roi_pct", 0.0)) < 0]
+        wins = [t for t in recent if float(t.get("net_pnl", 0.0)) > 0]
+        win_rate = (len(wins) / len(recent) * 100.0) if recent else 50.0
+
+        if not losses:
+            if self.adaptive_params.get("disabled_strategies"):
+                self.adaptive_params["disabled_strategies"] = []
+                self._save_json(self.adaptive_params_path, self.adaptive_params)
+            return self.adaptive_params
+
+        # Cluster losses by strategy and failure mode
+        strat_losses: Dict[str, List[Dict[str, Any]]] = {}
+        total_loss_usd = 0.0
+        for l in losses:
+            s = l.get("strategy", "Unknown")
+            strat_losses.setdefault(s, []).append(l)
+            total_loss_usd += abs(float(l.get("net_pnl", 0.0)))
+
+        # Format tabular telemetry summary for LLM
+        lines = [
+            f"[POST-MORTEM TELEMETRY] Recent Window: {len(recent)} trades | Losses: {len(losses)} | Win Rate: {win_rate:.1f}% | Total Realized Loss: -${total_loss_usd:.2f}",
+            "Loss Clustering by Strategy:"
+        ]
+        for s_name, s_list in strat_losses.items():
+            s_sum = sum(abs(float(x.get("net_pnl", 0.0))) for x in s_list)
+            sample_reasons = "; ".join(set(str(x.get("reason", ""))[:45] for x in s_list[:2]))
+            lines.append(f"• {s_name}: {len(s_list)} trades (-${s_sum:.2f}) | Sample Exit: {sample_reasons}")
+
+        dense_telemetry = "\n".join(lines)
+
+        reflection_res = None
+        if pixel_ai.is_online():
+            system_prompt = (
+                "You are the Chief Quantitative Post-Mortem Officer on Pixel 9 Tensor G4.\n"
+                "Analyze the trade loss cluster and formulate immediate parameter adaptations to prevent drawdowns.\n"
+                "If a specific strategy dominates losses (e.g. >= 50% of losses), include it in disable_strategies.\n"
+                "Respond STRICTLY in valid JSON matching:\n"
+                '{"adjust_min_conviction": 90, "adjust_cooldown_seconds": 180.0, "disable_strategies": ["OrderBookImbalance"], "rationale": "1 concise sentence"}'
+            )
+            res = pixel_ai.query(dense_telemetry, system_prompt, max_tokens=150)
+            if res and isinstance(res, dict) and "adjust_min_conviction" in res:
+                reflection_res = res
+
+        # High-precision deterministic fallback (<1ms)
+        if not reflection_res:
+            disabled = []
+            top_strat = max(strat_losses.items(), key=lambda x: len(x[1]))[0] if strat_losses else None
+            if top_strat and len(strat_losses[top_strat]) >= 2:
+                disabled.append(top_strat)
+
+            adj_conviction = 90 if len(losses) >= 3 else 87
+            adj_cooldown = 180.0 if len(losses) >= 3 else 120.0
+            rationale = (
+                f"Cluster analysis identified {top_strat} as primary loss driver ({len(strat_losses.get(top_strat, []))} losses). "
+                f"Temporarily paused strategy and raised conviction gate to {adj_conviction}."
+                if top_strat
+                else "Nominal loss mitigation adjustments applied."
+            )
+            reflection_res = {
+                "adjust_min_conviction": adj_conviction,
+                "adjust_cooldown_seconds": adj_cooldown,
+                "disable_strategies": disabled,
+                "rationale": rationale,
+            }
+
+        # Apply adaptations
+        new_conviction = int(reflection_res.get("adjust_min_conviction", 88))
+        new_cooldown = float(reflection_res.get("adjust_cooldown_seconds", 120.0))
+        new_disabled = list(reflection_res.get("disable_strategies", []))
+        rationale = reflection_res.get("rationale", "")
+
+        self.adaptive_params["min_conviction_score"] = min(95, max(85, new_conviction))
+        self.adaptive_params["cooldown_seconds"] = min(300.0, max(60.0, new_cooldown))
+        self.adaptive_params["disabled_strategies"] = new_disabled
+        self.adaptive_params["last_reflection"] = {
+            "timestamp": now,
+            "iso": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "rationale": rationale,
+            "disabled_strategies": new_disabled,
+            "min_conviction": new_conviction,
+            "cooldown_seconds": new_cooldown,
+        }
+        self.adaptive_params["updated_at"] = now
+        self._save_json(self.adaptive_params_path, self.adaptive_params)
+
+        return self.adaptive_params
+
     def get_adaptive_params(self) -> Dict[str, Any]:
-        """Return current adaptive hyperparameters."""
+        """Return current adaptive hyperparameters (synced with bridge/adaptive_params.json)."""
+        disk_params = self._load_json(self.adaptive_params_path, {})
+        if disk_params and isinstance(disk_params, dict):
+            self.adaptive_params.update(disk_params)
         return dict(self.adaptive_params)
 
 

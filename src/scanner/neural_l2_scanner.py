@@ -30,6 +30,7 @@ if REPO_ROOT not in sys.path:
 from src.scanner.live_ws_feed import live_feed
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.utils.pixel_ai import pixel_ai
+from src.risk.self_improving_engine import self_improving_engine
 
 PROSPECTS_PATH = os.path.join(REPO_ROOT, "bridge", "prospects.json")
 SENTINEL_LOG_PATH = os.path.join(REPO_ROOT, "bridge", "sentinel.log")
@@ -108,61 +109,129 @@ class NeuralL2Scanner:
         prospects = []
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Evaluate candidates with live L2 order book + Onboard AI
+        # Ingest adaptive parameters for mathematical execution brackets
+        adaptive_params = self_improving_engine.get_adaptive_params()
+        tp_rr_ratio = float(adaptive_params.get("tp_rr_ratio", 2.5))
+        disabled_strats = set(adaptive_params.get("disabled_strategies", []))
+
+        # Evaluate candidates with live temporal tape flow, L2 microstructure, and deterministic brackets
         for idx, cand in enumerate(top_candidates[:8]):
             coin = cand["coin"]
             px = cand["price"]
             micro = self.live_feed.get_microstructure(coin) or {}
+            flow = self.live_feed.get_flow_metrics(coin)
+            deriv = self.live_feed.get_derivatives_positioning(coin)
+            macro = self.live_feed.macro_metrics
 
-            obi = micro.get("obi", 0.0)
-            spread_bps = micro.get("spread_bps", 1.5)
-            bid_depth = micro.get("bid_depth_usd", 0.0)
-            ask_depth = micro.get("ask_depth_usd", 0.0)
-            micro_px = micro.get("micro_price", px)
-            funding_apr = cand["funding_apr"]
-            chg_24h = cand["change_24h"]
-            vol_m = cand["vol_24h"] / 1e6
-
+            obi = float(micro.get("obi", 0.0))
+            spread_bps = float(micro.get("spread_bps", 1.5))
+            bid_depth = float(micro.get("bid_depth_usd", 0.0))
+            ask_depth = float(micro.get("ask_depth_usd", 0.0))
+            micro_px = float(micro.get("micro_price", px))
+            funding_apr = float(cand["funding_apr"])
+            chg_24h = float(cand["change_24h"])
+            vol_m = float(cand["vol_24h"]) / 1e6
             max_lev = float(cand.get("max_leverage", 10.0))
 
-            # Query Onboard AI (llama-server) for top priority setups (limit to top 3 to keep scan latency under 15s)
-            neural_setup = None
-            if idx < 3 and self.pixel_ai.is_online():
-                prompt = (
-                    f"Analyze live L2 microstructure for perpetual contract:\n"
-                    f"Coin: {coin}\n"
-                    f"Mark Price: ${px:,.4f} | Micro-Price: ${micro_px:,.4f}\n"
-                    f"Order Book Imbalance (OBI): {obi:+.3f} (Bid Depth: ${bid_depth:,.0f} vs Ask Depth: ${ask_depth:,.0f})\n"
-                    f"Spread: {spread_bps:.1f} bps | Funding APR: {funding_apr:+.1f}%\n"
-                    f"24h Vol: ${vol_m:.1f}M (+{chg_24h:+.1f}%)\n"
-                    f"Output JSON with bias (LONG/SHORT), conviction_score (50-100), target_entry, stop_loss, take_profit, reason."
-                )
-                system_prompt = (
-                    "You are the Pixel 9 on-device neural trading analyst evaluating real-time L2 order book dynamics.\n"
-                    "Respond STRICTLY in valid JSON matching:\n"
-                    '{"bias": "LONG"|"SHORT", "conviction_score": 85, "target_entry": 0.0, "stop_loss": 0.0, "take_profit": 0.0, "reason": "1 concise sentence"}'
-                )
-                neural_setup = self.pixel_ai.query(prompt, system_prompt, max_tokens=140)
+            cvd_5m = float(flow.get("cvd_5m", 0.0))
+            taker_buy_ratio = float(flow.get("taker_buy_ratio_5m", 0.50))
+            trade_velocity = float(flow.get("trade_velocity_tps", 0.0))
+            resilience = flow.get("resilience", "MODERATE")
+            cvd_div = flow.get("divergence", "NONE")
+            oi_regime = deriv.get("oi_regime", "NEUTRAL_CHOP")
+            btc_5m = float(macro.get("btc_ret_5m", 0.0))
 
-            if neural_setup and isinstance(neural_setup, dict) and "bias" in neural_setup:
-                bias = str(neural_setup.get("bias", "LONG")).upper()
-                score = int(neural_setup.get("conviction_score", 85))
-                reason = neural_setup.get("reason", f"L2 OBI {obi:+.2f} with ${vol_m:.1f}M volume")
+            # 1. Deterministic Trap Elimination & Direction Bias
+            # Long candidate criteria:
+            is_long = False
+            is_short = False
 
-                target_entry = float(neural_setup.get("target_entry") or (px * (0.998 if bias == "LONG" else 1.002)))
-                stop_loss = float(neural_setup.get("stop_loss") or (px * (0.990 if bias == "LONG" else 1.010)))
-                take_profit = float(neural_setup.get("take_profit") or (px * (1.025 if bias == "LONG" else 0.975)))
-
-                self.log_sentinel_thought(coin, f"Onboard AI Reasoned: {bias} (Score: {score}) — {reason}")
+            if cvd_div == "BEARISH_ABSORPTION":
+                # Trap: Aggressive market selling into passive bids -> DO NOT LONG!
+                is_short = True
+            elif cvd_div == "BULLISH_ABSORPTION":
+                # Trap: Aggressive market buying into passive asks -> DO NOT SHORT!
+                is_long = True
+            elif funding_apr < -20.0:
+                is_long = True
+            elif funding_apr > 40.0:
+                is_short = True
+            elif obi > 0.12 and cvd_5m >= 0:
+                is_long = True
+            elif obi < -0.12 and cvd_5m <= 0:
+                is_short = True
+            elif taker_buy_ratio >= 0.58:
+                is_long = True
+            elif taker_buy_ratio <= 0.42:
+                is_short = True
             else:
-                # Deterministic High-Precision L2 Quant Rule
-                is_long = (obi > 0.15 and funding_apr < 25.0) or (funding_apr < -20.0)
-                bias = "LONG" if is_long else "SHORT"
-                score = 88 if abs(obi) > 0.25 else 82
-                target_entry = round(px * (0.998 if bias == "LONG" else 1.002), 4)
-                stop_loss = round(px * (0.990 if bias == "LONG" else 1.010), 4)
-                take_profit = round(px * (1.025 if bias == "LONG" else 0.975), 4)
-                reason = f"L2 Order Flow: OBI {obi:+.2f} ({'Bid Heavy' if obi>0 else 'Ask Heavy'}) on ${vol_m:.1f}M vol; Funding APR {funding_apr:+.1f}%."
+                is_long = (obi >= 0)
+
+            # Macro Beta Drag Check:
+            # If BTC is dumping, altcoin Longs have poor expectancy
+            if is_long and btc_5m < -0.8:
+                continue
+
+            # Short squeeze exhaustion check:
+            # If price went up but OI contracted rapidly with negative CVD, avoid chasing long
+            if is_long and oi_regime == "SHORT_SQUEEZE" and cvd_5m < 0:
+                continue
+
+            bias = "LONG" if is_long else "SHORT"
+
+            # 2. Hard Mathematical Conviction Scoring (Deterministic)
+            score = 78
+            # Order book imbalance agrees with bias
+            if (bias == "LONG" and obi > 0.15) or (bias == "SHORT" and obi < -0.15):
+                score += 8
+            # CVD agrees with bias
+            if (bias == "LONG" and cvd_5m > 0) or (bias == "SHORT" and cvd_5m < 0):
+                score += 8
+            # Taker flow intensity
+            if (bias == "LONG" and taker_buy_ratio > 0.60) or (bias == "SHORT" and taker_buy_ratio < 0.40):
+                score += 6
+            # Funding squeeze premium
+            if (bias == "LONG" and funding_apr < -20.0) or (bias == "SHORT" and funding_apr > 40.0):
+                score += 10
+            # Book resilience check
+            if resilience == "FAST":
+                score += 4
+            elif resilience == "SLOW_VOID":
+                score -= 10  # Fake liquidity void penalty
+
+            score = min(96, max(50, score))
+
+            # 3. Strict Fee-Adjusted Mathematical Execution Brackets (Hard Math)
+            target_entry = round(micro_px if micro_px > 0 else px, 4)
+            sl_dist_pct = min(0.025, max(0.008, 0.25 / max_lev))
+            # Enforce minimum 1.8% Take-Profit move covering round-trip fees (0.07%) by 25x
+            tp_dist_pct = max(0.018, round(sl_dist_pct * tp_rr_ratio, 4))
+
+            stop_loss = round(px * (1.0 - sl_dist_pct if bias == "LONG" else 1.0 + sl_dist_pct), 4)
+            take_profit = round(px * (1.0 + tp_dist_pct if bias == "LONG" else 1.0 - tp_dist_pct), 4)
+
+            # Strategy Selection
+            if funding_apr < -20.0:
+                strat = "ShortSqueezeIgnition"
+            elif abs(cvd_5m) > 100_000 and (taker_buy_ratio > 0.60 or taker_buy_ratio < 0.40):
+                strat = "TemporalFlowBreakout"
+            elif abs(obi) > 0.20:
+                strat = "OrderBookImbalance"
+            else:
+                strat = "TrendContinuationSMC"
+
+            # Check if strategy is currently disabled by Post-Mortem engine
+            if strat in disabled_strats:
+                continue
+
+            reason = (
+                f"Tape Flow & L2: OBI {obi:+.2f} | CVD_5M ${cvd_5m:,.0f} | "
+                f"Taker Buy {taker_buy_ratio*100:.0f}% | Resilience: {resilience} | "
+                f"Fund: {funding_apr:+.1f}% APR."
+            )
+
+            dense_vector = self.live_feed.get_compact_feature_vector(coin)
+            self.log_sentinel_thought(coin, f"Prospect Generated: {bias} (Score: {score}) — {reason}")
 
             prospect_entry = {
                 "coin": coin,
@@ -172,12 +241,13 @@ class NeuralL2Scanner:
                 "target_entry": target_entry,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
-                "strategy": "OrderBookImbalance" if abs(obi) > 0.20 else ("ShortSqueezeIgnition" if funding_apr < -20.0 else "TrendContinuationSMC"),
+                "strategy": strat,
                 "reason": reason,
                 "rationale": reason,
                 "funding_apr": round(funding_apr, 2),
                 "obi": obi,
                 "spread_bps": spread_bps,
+                "dense_vector": dense_vector,
                 "updated_at": now_iso,
             }
             prospects.append(prospect_entry)
