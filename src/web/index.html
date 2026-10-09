@@ -367,6 +367,30 @@
           </div>
         </div>
 
+        <!-- Live L2 Order Book Microstructure Strip -->
+        <div id="chart-l2-strip" class="w-full flex flex-wrap items-center justify-between text-[11px] mono bg-slate-950/80 px-2.5 py-1.5 rounded-xl border border-slate-800/60 gap-2">
+          <div class="flex items-center space-x-2">
+            <span class="text-slate-500 font-bold">L2 BOOK:</span>
+            <span id="chart-l2-bid" class="text-emerald-400 font-bold">Bid: --</span>
+            <span class="text-slate-600">/</span>
+            <span id="chart-l2-ask" class="text-rose-400 font-bold">Ask: --</span>
+            <span class="text-slate-600">|</span>
+            <span id="chart-l2-spread" class="text-slate-300">Spread: -- bps</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <span id="chart-l2-micro" class="text-cyan-400 font-bold" title="Fair Value Micro-Price">Micro: --</span>
+            <span class="text-slate-600">|</span>
+            <div class="flex items-center gap-1.5">
+              <span class="text-slate-500">OBI:</span>
+              <span id="chart-l2-obi-val" class="font-bold text-emerald-400">0.00</span>
+              <div class="w-14 h-2 bg-slate-800 rounded-full overflow-hidden flex" title="Order Book Imbalance (Bid vs Ask Depth)">
+                <div id="chart-l2-obi-bar-bid" class="bg-emerald-500 h-full transition-all duration-300" style="width: 50%"></div>
+                <div id="chart-l2-obi-bar-ask" class="bg-rose-500 h-full transition-all duration-300" style="width: 50%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Quick Coin Select Chips (Scrollable) -->
         <div class="flex items-center space-x-1.5 overflow-x-auto touch-scroll py-0.5" id="chart-quick-coins">
           <!-- Dynamically inserted (BTC, ETH, SOL, Squeeze leaders, Position coins) -->
@@ -630,6 +654,8 @@
     let liveSqueezeAlerts = [];
     let liveSectors = {};
     let liveProspects = [];
+    let lastCandle = null;
+    let prevActivePrice = 0;
 
     // --- Web Audio Synthesizer for Touch Audio FX ---
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -874,6 +900,8 @@
           if (vwapSeries) vwapSeries.setData(vwap);
 
           const last = candles[candles.length - 1];
+          lastCandle = last ? { ...last } : null;
+          prevActivePrice = last ? last.close : 0;
           document.getElementById('chart-active-price').textContent = `$${last.close.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
         }
       } catch (e) {
@@ -889,6 +917,11 @@
       document.getElementById('chart-active-symbol').textContent = currentSymbol;
       document.getElementById('modal-coin-name').textContent = currentSymbol;
       document.getElementById('btn-chart-trade-symbol').textContent = currentSymbol;
+      if (wsInstance && wsInstance.readyState === WebSocket.OPEN) {
+        try {
+          wsInstance.send(JSON.stringify({ action: "subscribe", coin: currentSymbol }));
+        } catch (e) {}
+      }
       loadKlines(currentSymbol, currentInterval);
       switchTab('chart');
     }
@@ -1019,6 +1052,75 @@
     // --- Dynamic Rendering of Cockpit Modules ---
     function updateCockpitUI(data) {
       if (!data) return;
+
+      // 0. LIVE STREAMING WEBSOCKET PRICES & REAL-TIME CANDLESTICK TICK
+      const prices = data.prices || {};
+      const livePrice = prices[currentSymbol];
+      if (livePrice && livePrice > 0) {
+        const elPrice = document.getElementById('chart-active-price');
+        if (elPrice) {
+          const formatted = livePrice >= 1000 
+            ? `$${livePrice.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 2})}` 
+            : (livePrice >= 1 ? `$${livePrice.toFixed(3)}` : `$${livePrice.toFixed(5)}`);
+          elPrice.textContent = formatted;
+          if (prevActivePrice > 0) {
+            if (livePrice > prevActivePrice) {
+              elPrice.className = "text-sm sm:text-base font-bold text-emerald-400 mono transition-colors";
+            } else if (livePrice < prevActivePrice) {
+              elPrice.className = "text-sm sm:text-base font-bold text-rose-400 mono transition-colors";
+            }
+          }
+          prevActivePrice = livePrice;
+        }
+
+        // Live Candlestick Real-Time Tick
+        if (candleSeries && lastCandle) {
+          lastCandle.high = Math.max(lastCandle.high, livePrice);
+          lastCandle.low = Math.min(lastCandle.low, livePrice);
+          lastCandle.close = livePrice;
+          try {
+            candleSeries.update(lastCandle);
+          } catch (e) {}
+        }
+      }
+
+      // Live L2 Microstructure Strip
+      const microAll = data.microstructure || {};
+      const micro = microAll[currentSymbol];
+      if (micro) {
+        const elBid = document.getElementById('chart-l2-bid');
+        const elAsk = document.getElementById('chart-l2-ask');
+        const elSpread = document.getElementById('chart-l2-spread');
+        const elMicro = document.getElementById('chart-l2-micro');
+        const elObiVal = document.getElementById('chart-l2-obi-val');
+        const elBarBid = document.getElementById('chart-l2-obi-bar-bid');
+        const elBarAsk = document.getElementById('chart-l2-obi-bar-ask');
+
+        if (elBid && micro.best_bid) elBid.textContent = `Bid: $${micro.best_bid.toLocaleString()}`;
+        if (elAsk && micro.best_ask) elAsk.textContent = `Ask: $${micro.best_ask.toLocaleString()}`;
+        if (elSpread && micro.spread_bps !== undefined) elSpread.textContent = `Spread: ${micro.spread_bps.toFixed(1)} bps`;
+        if (elMicro && micro.micro_price) elMicro.textContent = `Micro: $${micro.micro_price.toLocaleString()}`;
+        if (elObiVal) {
+          const obi = micro.obi || 0.0;
+          elObiVal.textContent = (obi > 0 ? '+' : '') + obi.toFixed(2);
+          elObiVal.className = `font-bold ${obi > 0.15 ? 'text-emerald-400' : (obi < -0.15 ? 'text-rose-400' : 'text-slate-400')}`;
+          const bidPct = Math.min(100, Math.max(0, Math.round(((obi + 1.0) / 2.0) * 100)));
+          const askPct = 100 - bidPct;
+          if (elBarBid) elBarBid.style.width = `${bidPct}%`;
+          if (elBarAsk) elBarAsk.style.width = `${askPct}%`;
+        }
+      }
+
+      // Live Funding Rate Pill for Active Chart Symbol
+      const fundMap = data.funding_rates || {};
+      const fundRate = fundMap[currentSymbol];
+      if (fundRate !== undefined) {
+        const elFund = document.getElementById('chart-funding-pill');
+        if (elFund) {
+          elFund.textContent = `Funding: ${fundRate >= 0 ? '+' : ''}${fundRate.toFixed(1)}% APR`;
+          elFund.className = `px-2 py-0.5 rounded-full border text-[11px] mono font-semibold ${fundRate < -15 ? 'bg-rose-950 border-rose-600 text-rose-300' : (fundRate > 30 ? 'bg-amber-950 border-amber-600 text-amber-300' : 'bg-slate-900 border-slate-700 text-slate-300')}`;
+        }
+      }
 
       // 1. Portfolio Header & Risk Gauges
       const eq = data.equity || 100.0;

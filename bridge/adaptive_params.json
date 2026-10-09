@@ -1,7 +1,7 @@
 {
-  "sl_multiplier": 1.0,
-  "tp_rr_ratio": 2.5,
-  "ratchet_pct": 0.75,
+  "sl_multiplier": 0.9,
+  "tp_rr_ratio": 2.7,
+  "ratchet_pct": 0.6,
   "sector_modifiers": {
     "AI_COMPUTE": 1.15,
     "HIGH_BETA_L1": 1.0,
@@ -9,7 +9,7 @@
     "DEFI": 1.05,
     "MAJORS": 1.1
   },
-  "win_rate_recent": 60.0,
-  "total_trades_analyzed": 5,
-  "updated_at": 1791524965.0131845
+  "win_rate_recent": 71.4,
+  "total_trades_analyzed": 7,
+  "updated_at": 1791525297.0705492
 }

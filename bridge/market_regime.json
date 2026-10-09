@@ -6,53 +6,53 @@
   "squeeze_alerts": [
     {
       "coin": "STRK",
-      "funding_apr": 44.2,
-      "change_24h": 40.29,
-      "vol_24h": 65350896.71,
+      "funding_apr": 40.4,
+      "change_24h": 41.82,
+      "vol_24h": 65411954.49,
       "bias": "SHORT"
     }
   ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": -1.97,
-      "total_volume_usd": 57110442.56,
+      "avg_change_24h": -1.7,
+      "total_volume_usd": 57024062.77,
       "leader_coin": "BOME",
-      "leader_change_24h": 1.93,
+      "leader_change_24h": 2.42,
       "rotation_status": "NEUTRAL"
     },
     "AI_COMPUTE": {
       "active_count": 6,
-      "avg_change_24h": -5.48,
-      "total_volume_usd": 509613797.69,
+      "avg_change_24h": -5.07,
+      "total_volume_usd": 506118151.19,
       "leader_coin": "TAO",
-      "leader_change_24h": -3.07,
+      "leader_change_24h": -2.64,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": -0.83,
-      "total_volume_usd": 489880589.1,
+      "avg_change_24h": -0.66,
+      "total_volume_usd": 488432413.13,
       "leader_coin": "TIA",
-      "leader_change_24h": 8.11,
+      "leader_change_24h": 8.53,
       "rotation_status": "NEUTRAL"
     },
     "DEFI": {
       "active_count": 9,
-      "avg_change_24h": -3.55,
-      "total_volume_usd": 168456720.09,
+      "avg_change_24h": -3.24,
+      "total_volume_usd": 168389026.12,
       "leader_coin": "DYDX",
-      "leader_change_24h": 2.39,
+      "leader_change_24h": 2.45,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -1.81,
-      "total_volume_usd": 5494176776.82,
+      "avg_change_24h": -1.54,
+      "total_volume_usd": 5472052465.43,
       "leader_coin": "BTC",
-      "leader_change_24h": -0.58,
+      "leader_change_24h": -0.35,
       "rotation_status": "NEUTRAL"
     }
   },
-  "timestamp": 1791524976.626887
+  "timestamp": 1791525298.133972
 }

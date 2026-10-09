@@ -1,0 +1,37 @@
+[
+  {
+    "rule_id": "RULE_001",
+    "condition": "Negative funding squeeze (< -20% APR)",
+    "action": "Prioritize long ignition entries with minimum holding duration 120s.",
+    "confidence": 92.0,
+    "weight_modifier": 1.25,
+    "active": true
+  },
+  {
+    "rule_id": "RULE_002",
+    "condition": "High leverage (>= 25x)",
+    "action": "Enforce fast breakeven ratchet at +0.8% price move to secure capital.",
+    "confidence": 95.0,
+    "weight_modifier": 1.0,
+    "active": true
+  },
+  {
+    "rule_id": "RULE_003",
+    "condition": "Consecutive strategy losses >= 2",
+    "action": "Apply 30% margin size reduction until next profitable trade.",
+    "confidence": 88.0,
+    "weight_modifier": 0.7,
+    "active": true
+  },
+  {
+    "rule_id": "RULE_004",
+    "condition": "Recent trades indicate a mix of short squeeze ignition and trend continuation signals, with some stop loss hits.",
+    "action": "Identify trades with a high probability of success and adjust risk management parameters.",
+    "confidence": 80,
+    "weight_modifier": 1.2,
+    "active": true,
+    "_latency_ms": 11623.6,
+    "_provider": "pixel_onboard_llm",
+    "timestamp": "2026-10-09T05:50:02Z"
+  }
+]

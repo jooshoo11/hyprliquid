@@ -48,15 +48,39 @@
     "is_win": true
   },
   {
-    "timestamp": "2026-10-09T05:49:25Z",
-    "coin": "SOL",
-    "side": null,
-    "strategy": "ShortSqueezeIgnition",
-    "leverage": 20.0,
-    "margin": 15.0,
-    "net_pnl": 3.8,
-    "roi_pct": 25.3,
-    "reason": "Take Profit Hit",
+    "timestamp": "2026-10-09T05:49:50Z",
+    "coin": "STRK",
+    "side": "SHORT",
+    "strategy": "HourlyFundingFade",
+    "leverage": 5.0,
+    "margin": 14.97,
+    "net_pnl": 0.06,
+    "roi_pct": 0.73,
+    "reason": "Stop Loss Hit ($0.0688 hit SL stop $0.0688)",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T05:51:33Z",
+    "coin": "VVV",
+    "side": "SHORT",
+    "strategy": "HourlyFundingFade",
+    "leverage": 3.0,
+    "margin": 14.97,
+    "net_pnl": 0.04,
+    "roi_pct": 0.48,
+    "reason": "Capital Rotation: Switched to higher-leverage STRK (5x vs 3x Lev, VVV ROI: +0.7%)",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T05:54:57Z",
+    "coin": "NEAR",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 10.0,
+    "margin": 30.75,
+    "net_pnl": 0.02,
+    "roi_pct": 0.77,
+    "reason": "Capital Rotation: Switched to higher-leverage SOL (20x vs 10x Lev, NEAR ROI: +0.0%)",
     "is_win": true
   }
 ]

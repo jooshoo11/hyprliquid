@@ -435,14 +435,28 @@ def get_live_state() -> Dict[str, Any]:
     notional_exposure = 0.0
     if positions:
         try:
-            meta, asset_ctxs = info_client.get_meta_and_asset_ctxs()
-            universe = meta.get("universe", [])
             px_map = {}
             funding_map = {}
-            for u, ctx in zip(universe, asset_ctxs):
-                u_name = u.get("name")
-                px_map[u_name] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
-                funding_map[u_name] = float(ctx.get("funding", 0.0))
+            try:
+                from src.scanner.live_ws_feed import live_feed
+                px_map = live_feed.get_all_prices()
+            except Exception:
+                pass
+
+            if not px_map:
+                try:
+                    px_map = info_client.get_all_mids() or {}
+                except Exception:
+                    px_map = {}
+
+            if not px_map:
+                try:
+                    meta, asset_ctxs = info_client.get_meta_and_asset_ctxs()
+                    for u, ctx in zip(meta.get("universe", []), asset_ctxs):
+                        px_map[u.get("name")] = float(ctx.get("midPx") or ctx.get("markPx") or ctx.get("oraclePx", 0.0))
+                        funding_map[u.get("name")] = float(ctx.get("funding", 0.0))
+                except Exception:
+                    pass
 
             for idx, p in enumerate(positions):
                 coin = p.get("coin", "").upper()
@@ -590,6 +604,14 @@ def get_live_state() -> Dict[str, Any]:
     account_leverage = round(notional_exposure / live_equity, 2) if live_equity > 0 else 0.0
     free_margin = round(max(0.0, cash_balance - total_margin_used), 2)
 
+    try:
+        from src.scanner.live_ws_feed import live_feed
+        live_prices = live_feed.get_all_prices()
+        live_micro = dict(live_feed.microstructure)
+    except Exception:
+        live_prices = {}
+        live_micro = {}
+
     return {
         "timestamp": time.time(),
         "equity": live_equity,
@@ -606,6 +628,8 @@ def get_live_state() -> Dict[str, Any]:
         "est_funding_carry": round(est_funding_carry, 2),
         "analytics": performance_analytics.get_metrics(),
         "funding_rates": funding_rates,
+        "prices": live_prices,
+        "microstructure": live_micro,
         "positions": positions,
         "prospects": prospects_list,
         "funding_arbitrage": funding_pairs,
@@ -1314,18 +1338,40 @@ async def api_daily_pnl():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    Real-time streaming WebSocket broadcasting live portfolio state and trade metrics every 1 second.
+    Real-time streaming WebSocket broadcasting live portfolio state, streaming prices, and L2 microstructure.
+    Also handles incoming client requests like symbol subscriptions.
     """
     await websocket.accept()
+
+    async def client_listener():
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    payload = json.loads(data)
+                    action = payload.get("action")
+                    if action == "subscribe":
+                        coin = str(payload.get("coin", "")).upper()
+                        if coin:
+                            from src.scanner.live_ws_feed import live_feed
+                            live_feed.subscribe_coin(coin)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    listen_task = asyncio.create_task(client_listener())
     try:
         while True:
             state = await asyncio.to_thread(get_live_state)
             await websocket.send_json(state)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
     except Exception:
         pass
+    finally:
+        listen_task.cancel()
 
 
 @app.get("/", response_class=HTMLResponse)
