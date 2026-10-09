@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Hyperliquid AI Cockpit | Mobile Radar</title>
+
+  <!-- PWA Manifest & App Shell -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <meta name="theme-color" content="#060a12">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="HyprCockpit">
   
   <!-- Tailwind CSS & Lightweight Charts -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -1281,6 +1291,9 @@
         prosCont.innerHTML = prospects.slice(0, 10).map((p, i) => {
           const isBull = p.bias === 'LONG';
           const maxLev = p.max_leverage || 10;
+          const hasObi = p.obi !== undefined && p.obi !== null;
+          const obiColor = p.obi > 0.15 ? 'text-emerald-400' : (p.obi < -0.15 ? 'text-rose-400' : 'text-slate-400');
+          const isNeural = p.strategy === 'OrderBookImbalance' || (p.reason && p.reason.includes('Bid depth')) || p.conviction_score >= 85;
           return `
             <div onclick="selectSymbol('${p.coin}')" class="p-3 bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800/80 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5">
               <div class="flex items-center justify-between">
@@ -1293,10 +1306,22 @@
                   <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
                     ${maxLev}x Max
                   </span>
+                  ${isNeural ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/80 text-purple-300 border border-purple-800/80 mono"><i class="fa-solid fa-microchip mr-0.5"></i>Tensor G4</span>' : ''}
                 </div>
-                <span class="text-xs text-slate-400 mono">${p.change_24h ? (p.change_24h >= 0 ? '+' : '') + p.change_24h.toFixed(1) + '% 24h' : ''}</span>
+                <div class="flex items-center gap-1.5">
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 mono">${p.conviction_score || 85}%</span>
+                  <span class="text-xs text-slate-400 mono">${p.change_24h ? (p.change_24h >= 0 ? '+' : '') + p.change_24h.toFixed(1) + '% 24h' : ''}</span>
+                </div>
               </div>
-              <p class="text-[11px] text-slate-400 leading-snug line-clamp-2">${p.rationale || 'High momentum volume setup detected.'}</p>
+              ${hasObi ? `
+              <div class="flex items-center gap-2 text-[10px] mono text-slate-400 bg-slate-950/60 px-2 py-1 rounded border border-slate-800/50">
+                <span>OBI: <strong class="${obiColor}">${p.obi > 0 ? '+' : ''}${p.obi.toFixed(2)}</strong></span>
+                <span>•</span>
+                <span>Spread: <strong>${p.spread_bps !== undefined ? p.spread_bps.toFixed(1) : 1.0} bps</strong></span>
+                <span>•</span>
+                <span class="text-slate-400 truncate">${p.strategy || 'OrderFlow'}</span>
+              </div>` : ''}
+              <p class="text-[11px] text-slate-300 leading-snug line-clamp-2">${p.reason || p.rationale || 'High momentum volume setup detected.'}</p>
             </div>
           `;
         }).join('');
@@ -1484,6 +1509,9 @@
 
     // Initialize On Load
     window.addEventListener('DOMContentLoaded', () => {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      }
       initChart();
       loadLeverageMap();
       loadKlines(currentSymbol, currentInterval);

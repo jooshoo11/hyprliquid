@@ -200,6 +200,17 @@ class HyperliquidInfoClient:
         meta, _ = self.get_meta_and_asset_ctxs()
         return meta
 
+    def get_all_mids(self) -> Dict[str, float]:
+        """Fetch lightweight mid prices dictionary for all perpetuals (~5KB vs 500KB) to preserve battery & bandwidth."""
+        try:
+            resp = self._session.post(self.api_url, json={"type": "allMids"}, timeout=5)
+            if resp.status_code == 200:
+                raw = resp.json()
+                return {k.upper(): float(v) for k, v in raw.items()}
+        except Exception:
+            pass
+        return {}
+
     def get_meta_and_asset_ctxs(self) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """Fetch universe definitions and real-time asset contexts with a 10-second in-memory cache."""
         import time

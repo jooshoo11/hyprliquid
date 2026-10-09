@@ -142,5 +142,41 @@
     "strategy": "Short Squeeze Ignition",
     "reason": "Capital Rotation: Switched to higher-leverage ETH (25x vs 10x Lev, ADA ROI: +0.0%)",
     "is_rotation": true
+  },
+  {
+    "timestamp": "2026-10-09T05:22:40Z",
+    "coin": "BTC",
+    "side": "SHORT",
+    "size": 0.0159,
+    "entry": 81455.5,
+    "exit": 82426.5,
+    "leverage": 40.0,
+    "margin": 32.45,
+    "notional": 1310.58,
+    "gross_pnl": -15.44,
+    "fees": 0.912,
+    "net_pnl": -16.35,
+    "roi_pct": -47.58,
+    "strategy": "TrendContinuationSMC",
+    "reason": "Stop Loss Hit ($82,426.5000 hit SL stop $81,964.5969)",
+    "is_rotation": false
+  },
+  {
+    "timestamp": "2026-10-09T05:22:40Z",
+    "coin": "ETH",
+    "side": "SHORT",
+    "size": 0.3037,
+    "entry": 2442.05,
+    "exit": 2492.45,
+    "leverage": 25.0,
+    "margin": 29.67,
+    "notional": 756.96,
+    "gross_pnl": -15.31,
+    "fees": 0.5245,
+    "net_pnl": -15.83,
+    "roi_pct": -51.59,
+    "strategy": "TrendContinuationSMC",
+    "reason": "Stop Loss Hit ($2,492.4500 hit SL stop $2,466.4705)",
+    "is_rotation": false
   }
 ]

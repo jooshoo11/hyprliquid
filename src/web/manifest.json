@@ -1,0 +1,25 @@
+{
+  "name": "Hyperliquid AI Cockpit",
+  "short_name": "HyprCockpit",
+  "description": "Autonomous Quantitative Trading Cockpit & Real-Time Risk Sentinel",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060a12",
+  "theme_color": "#060a12",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

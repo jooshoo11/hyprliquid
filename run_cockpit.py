@@ -26,7 +26,11 @@ from rich.panel import Panel
 
 from src.scanner.hl_intelligence import HyperliquidIntelligence
 from src.scanner.sonar_bridge import SonarBridge
+from src.scanner.live_ws_feed import live_feed
+from src.scanner.neural_l2_scanner import neural_scanner
 from src.execution.auto_trader import auto_trader
+from src.utils.pixel_ai import pixel_ai
+from src.risk.self_improving_engine import self_improving_engine
 
 console = Console()
 
@@ -73,12 +77,12 @@ def background_intelligence_loop():
                 with open(regime_file, "w") as f:
                     json.dump(regime_data, f, indent=2)
 
-            # 2. Update Top 10 Ranked Prospects autonomously on startup and every ~3.5 minutes
-            if iteration % 5 == 0:
+            # 2. Only generate heuristic top prospects if prospects file is missing
+            if not prospects_file.exists():
                 top_prospects = hl.generate_top_prospects()
                 if top_prospects:
                     with open(prospects_file, "w") as f:
-                        json.dump({"prospects": top_prospects, "timestamp": time.time()}, f, indent=2)
+                        json.dump({"prospects": top_prospects, "timestamp": time.time(), "engine": "Heuristic_Fallback"}, f, indent=2)
         except Exception:
             pass
 
@@ -91,27 +95,40 @@ def main():
     port = 8000
     host = "0.0.0.0"
     lan_ip = get_local_ip()
+    hw_info = pixel_ai.get_hardware_info()
+    adaptive_info = self_improving_engine.get_adaptive_params()
 
     banner = Panel.fit(
-        f"[bold cyan]HYPERLIQUID AI TRADING COCKPIT (MOBILE DAEMON)[/bold cyan]\n\n"
-        f"• [bold]Local Device URL:[/bold]   [bold underline cyan]http://localhost:{port}[/bold underline cyan]\n"
-        f"• [bold]LAN Network URL:[/bold]    [bold underline green]http://{lan_ip}:{port}[/bold underline green]\n\n"
-        f"• [bold]Surveillance:[/bold]        234+ Hyperliquid Perps + Sector Radar\n"
-        f"• [bold]Short Squeeze Alerts:[/bold] Extreme negative funding (< -15% APR)\n"
-        f"• [bold]Status:[/bold]              Streaming live over WebSocket (/ws)\n"
-        f"[dim]Access the LAN Network URL from any laptop, tablet, or phone on the same Wi-Fi.[/dim]",
-        title="📱 Web Cockpit Online",
-        border_style="green",
+        f"[bold cyan]HYPERLIQUID AI TRADING COCKPIT (PIXEL 9 OPTIMIZED)[/bold cyan]\n\n"
+        f"• [bold]Local Cockpit URL:[/bold]    [bold underline cyan]http://localhost:{port}[/bold underline cyan]\n"
+        f"• [bold]LAN Network URL:[/bold]      [bold underline green]http://{lan_ip}:{port}[/bold underline green]\n\n"
+        f"• [bold]Hardware SoC:[/bold]         Google Tensor G4 (8 Cores: Cortex-X4/A720/A520 + Mali-G715)\n"
+        f"• [bold]On-Device AI:[/bold]         [green]{hw_info['engine_status']}[/green] ({hw_info['token_cost']})\n"
+        f"• [bold]Self-Improving Engine:[/bold] [green]ACTIVE[/green] (Win Rate: {adaptive_info.get('win_rate_recent', 60.0):.1f}%, TP RR: {adaptive_info.get('tp_rr_ratio', 2.5):.1f}x)\n"
+        f"• [bold]Live L2 Streaming:[/bold]   [green]ACTIVE[/green] (WebSocket allMids + L2 Book Depth Walls)\n"
+        f"• [bold]Neural L2 Scanner:[/bold]   [green]ACTIVE[/green] (Tensor G4 Onboard Reasoning + OBI Synthesis)\n"
+        f"• [bold]Auto-Pilot Risk:[/bold]       PortfolioGuard + Dynamic Max Leverage + Ratchet Stops\n"
+        f"[dim]Access from Chrome on this phone or any device on the same Wi-Fi network.[/dim]",
+        title="📱 Pixel 9 Autonomous Trading Node",
+        border_style="cyan",
     )
     console.print(banner)
 
-    # Start background intelligence thread
+    # Start real-time WebSocket L2 streaming feed
+    live_feed.start()
+    console.print("[bold green]⚡ Real-Time WebSocket L2 Streaming Feed Connected (wss://api.hyperliquid.xyz/ws)[/bold green]")
+
+    # Start Onboard Neural L2 Market Scanner (Tensor G4 + Qwen 2.5 1.5B)
+    neural_scanner.start()
+    console.print("[bold green]🧠 Onboard Tensor G4 Neural L2 Scanner Active (Local AI Conviction & OBI Depth)[/bold green]")
+
+    # Start background intelligence thread (macro sector rotation radar)
     t_intel = threading.Thread(target=background_intelligence_loop, daemon=True, name="HLIntelligence")
     t_intel.start()
 
     # Start autonomous auto-trader execution & sentinel watchdog daemon
     auto_trader.start()
-    console.print("[bold green]🤖 Autonomous Auto-Pilot Daemon started (Watchdog 5s | Entry 15s | Max 3 Pos)[/bold green]")
+    console.print("[bold green]🤖 Autonomous Auto-Pilot Engaged (Live WS Mark Prices | Max 3 Pos | Continuous Learning)[/bold green]")
 
     # Run uvicorn server directly
     uvicorn.run(

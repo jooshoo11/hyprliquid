@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2026-10-09T05:22:27Z",
+    "coin": "SOL",
+    "side": null,
+    "strategy": "ShortSqueezeIgnition",
+    "leverage": 20.0,
+    "margin": 15.0,
+    "net_pnl": 3.8,
+    "roi_pct": 25.3,
+    "reason": "Take Profit Hit",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T05:22:40Z",
+    "coin": "BTC",
+    "side": "SHORT",
+    "strategy": "TrendContinuationSMC",
+    "leverage": 40.0,
+    "margin": 32.45,
+    "net_pnl": -16.35,
+    "roi_pct": -47.58,
+    "reason": "Stop Loss Hit ($82,426.5000 hit SL stop $81,964.5969)",
+    "is_win": false
+  },
+  {
+    "timestamp": "2026-10-09T05:22:40Z",
+    "coin": "ETH",
+    "side": "SHORT",
+    "strategy": "TrendContinuationSMC",
+    "leverage": 25.0,
+    "margin": 29.67,
+    "net_pnl": -15.83,
+    "roi_pct": -51.59,
+    "reason": "Stop Loss Hit ($2,492.4500 hit SL stop $2,466.4705)",
+    "is_win": false
+  },
+  {
+    "timestamp": "2026-10-09T05:35:50Z",
+    "coin": "SOL",
+    "side": null,
+    "strategy": "ShortSqueezeIgnition",
+    "leverage": 20.0,
+    "margin": 15.0,
+    "net_pnl": 3.8,
+    "roi_pct": 25.3,
+    "reason": "Take Profit Hit",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T05:49:25Z",
+    "coin": "SOL",
+    "side": null,
+    "strategy": "ShortSqueezeIgnition",
+    "leverage": 20.0,
+    "margin": 15.0,
+    "net_pnl": 3.8,
+    "roi_pct": 25.3,
+    "reason": "Take Profit Hit",
+    "is_win": true
+  }
+]

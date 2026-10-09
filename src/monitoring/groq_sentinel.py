@@ -154,9 +154,18 @@ class GroqRiskSentinel:
             deterministic_targets = [o["coin"] for o in order_summary if o["is_orphan"]]
             deterministic_reason = f"Detected {len(deterministic_targets)} orphaned orders on flat instruments."
 
-        # If Groq is configured, enhance with high-speed LPU reasoning (typed Pydantic model)
+        # Priority 1: Pixel 9 On-Device AI Engine (zero-token, offline local inference)
         decision = None
-        if self.llm_client.is_groq_ready():
+        if hasattr(self.llm_client, "audit_risk_locally"):
+            try:
+                local_decision = self.llm_client.audit_risk_locally(compact_snapshot)
+                if local_decision and isinstance(local_decision, dict) and "action" in local_decision:
+                    decision = local_decision
+            except Exception:
+                decision = None
+
+        # Priority 2: If local not used and Groq is configured, query Groq LPU
+        if not decision and self.llm_client.is_groq_ready():
             prompt = json.dumps(compact_snapshot)
             try:
                 from src.utils.schemas import RiskAuditDecision

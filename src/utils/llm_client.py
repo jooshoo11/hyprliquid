@@ -58,9 +58,12 @@ def clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
+from src.utils.pixel_ai import pixel_ai
+
+
 class UnifiedLLMClient:
     """
-    Unified manager routing between Groq and Google AI Studio based on task requirements.
+    Unified manager routing between Pixel 9 Onboard AI (local zero-token), Groq, and Google AI Studio.
     """
 
     def __init__(
@@ -68,6 +71,7 @@ class UnifiedLLMClient:
         groq_api_key: Optional[str] = None,
         gemini_api_key: Optional[str] = None,
     ):
+        self.pixel_ai = pixel_ai
         self.groq_api_key = groq_api_key if groq_api_key is not None else os.getenv("GROQ_API_KEY")
         self.gemini_api_key = gemini_api_key if gemini_api_key is not None else os.getenv("GEMINI_API_KEY")
 
@@ -97,6 +101,10 @@ class UnifiedLLMClient:
             except Exception as e:
                 print(f"[LLM Client] Google GenAI initialization notice: {e}")
 
+    def is_pixel_ready(self) -> bool:
+        """Pixel 9 onboard engine is always available (local neural or deterministic quant)."""
+        return True
+
     def is_groq_ready(self) -> bool:
         """Check if Groq inference is configured and available."""
         return bool(self.groq_client and self.groq_api_key)
@@ -108,6 +116,12 @@ class UnifiedLLMClient:
     def get_status(self) -> Dict[str, Any]:
         """Return diagnostic status of configured LLM providers."""
         return {
+            "pixel_onboard": {
+                "ready": True,
+                "device": "Google Pixel 9 (Tensor G4)",
+                "token_cost": "$0.00 (Local Offline)",
+                "mode": "ONBOARD_NEURAL_ENGINE" if self.pixel_ai.is_online() else "LOCAL_QUANT_ENGINE",
+            },
             "groq": {
                 "installed": GROQ_AVAILABLE,
                 "configured": bool(self.groq_api_key),
@@ -122,6 +136,10 @@ class UnifiedLLMClient:
                 "search_grounding": True,
             },
         }
+
+    def audit_risk_locally(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Audit risk on Pixel 9 without requiring cloud tokens."""
+        return self.pixel_ai.audit_sentinel_risk(snapshot)
 
     def query_groq_json(
         self,

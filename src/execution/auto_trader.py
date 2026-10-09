@@ -36,6 +36,7 @@ if REPO_ROOT not in sys.path:
 
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.risk.dynamic_allocator import DynamicStrategyAllocator
+from src.risk.self_improving_engine import self_improving_engine
 
 ACTIVE_TRADES_PATH = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
 SESSION_TRADES_PATH = os.path.join(REPO_ROOT, "reports", "session_trades.json")
@@ -78,6 +79,7 @@ class AutoTrader:
     ):
         self.info_client = info_client or HyperliquidInfoClient()
         self.allocator = dynamic_allocator or DynamicStrategyAllocator()
+        self.self_improving_engine = self_improving_engine
         self.lock = threading.RLock()
 
         # Load persisted toggle state if present
@@ -113,8 +115,26 @@ class AutoTrader:
         return self._leverage_map.get(coin, 10.0)
 
     def get_mark_price(self, coin: str) -> float:
-        """Fetch live mark price for a coin with case-insensitive symbol resolution."""
+        """Fetch live mark price for a coin using streaming WebSocket (with fallback)."""
         coin_up = coin.upper()
+        # Fast path 1: Live WebSocket stream (0 network latency, in-memory)
+        try:
+            from src.scanner.live_ws_feed import live_feed
+            ws_px = live_feed.get_price(coin_up)
+            if ws_px > 0:
+                return ws_px
+        except Exception:
+            pass
+
+        # Fast path 2: 5KB allMids dictionary
+        try:
+            mids = self.info_client.get_all_mids()
+            if mids and coin_up in mids:
+                return float(mids[coin_up])
+        except Exception:
+            pass
+
+        # Fallback to metaAndAssetCtxs
         try:
             meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
             for u, ctx in zip(meta.get("universe", []), ctxs):
@@ -157,12 +177,16 @@ class AutoTrader:
 
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
-            active_data = load_json(ACTIVE_TRADES_PATH, {"positions": [], "equity": 100.0})
+            active_data = load_json(ACTIVE_TRADES_PATH, {"positions": [], "equity": 100.0, "cash_balance": 100.0})
             positions = active_data.get("positions", [])
             total_margin = sum(float(p.get("margin", 0.0)) for p in positions)
             total_notional = sum(float(p.get("size", 0.0)) * float(p.get("mark_price", 0.0)) for p in positions)
-            equity = float(active_data.get("equity", 100.0))
+            cash_balance = float(active_data.get("cash_balance", 100.0))
+            unrealized = sum(float(p.get("unrealized_pnl", 0.0)) for p in positions)
+            equity = round(cash_balance + unrealized, 2)
             acct_lev = round(total_notional / equity, 2) if equity > 0 else 0.0
+
+            adaptive = self.self_improving_engine.get_adaptive_params()
 
             return {
                 "enabled": self.enabled,
@@ -172,9 +196,17 @@ class AutoTrader:
                 "base_margin_usd": self.base_margin_usd,
                 "total_margin_used": round(total_margin, 2),
                 "total_notional": round(total_notional, 2),
+                "cash_balance": cash_balance,
+                "equity": equity,
                 "account_leverage": acct_lev,
                 "min_conviction_score": self.min_conviction_score,
                 "leverage_mode": "HYPERLIQUID_COIN_MAX",
+                "adaptive_learning": {
+                    "win_rate_recent": adaptive.get("win_rate_recent", 60.0),
+                    "tp_rr_ratio": adaptive.get("tp_rr_ratio", 2.5),
+                    "sl_multiplier": adaptive.get("sl_multiplier", 1.0),
+                    "ratchet_pct": adaptive.get("ratchet_pct", 0.8),
+                },
                 "last_action": self.last_action,
                 "timestamp": time.time(),
             }
@@ -296,11 +328,14 @@ class AutoTrader:
             if qty <= 0:
                 return None
 
-            # Dynamic Leverage-Aware Bracket Stops:
-            # Risk capped at ~25% of margin, preventing liquidation on high leverage.
-            # 2.5:1 reward-to-risk ratio.
-            sl_dist_pct = min(0.025, max(0.006, 0.25 / active_leverage))
-            tp_dist_pct = round(sl_dist_pct * 2.5, 4)
+            # Adaptive Self-Tuning Bracket Stops:
+            # Dynamically scaled by Pixel 9 on-device learning engine
+            adaptive_params = self.self_improving_engine.get_adaptive_params()
+            sl_multiplier = float(adaptive_params.get("sl_multiplier", 1.0))
+            tp_rr_ratio = float(adaptive_params.get("tp_rr_ratio", 2.5))
+
+            sl_dist_pct = min(0.025, max(0.006, (0.25 / active_leverage) * sl_multiplier))
+            tp_dist_pct = round(sl_dist_pct * tp_rr_ratio, 4)
 
             if side == "LONG":
                 sl = stop_loss if (stop_loss and stop_loss < mark_px) else round(mark_px * (1.0 - sl_dist_pct), 4)
@@ -334,6 +369,13 @@ class AutoTrader:
             active_data["positions"] = positions
             active_data["timestamp"] = now
             save_json_atomic(ACTIVE_TRADES_PATH, active_data)
+
+            # Subscribe to live L2 order book stream for active position
+            try:
+                from src.scanner.live_ws_feed import live_feed
+                live_feed.subscribe_coin(coin)
+            except Exception:
+                pass
 
             self.log_thought(
                 category="[AUTONOMOUS TRADE]",
@@ -371,11 +413,15 @@ class AutoTrader:
             if exit_px is None or exit_px <= 0:
                 exit_px = float(pos_to_close.get("mark_price", pos_to_close.get("entry_price", 0.0)))
                 try:
-                    meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
-                    for u, ctx in zip(meta.get("universe", []), ctxs):
-                        if u.get("name", "").upper() == coin:
-                            exit_px = float(ctx.get("midPx") or ctx.get("oraclePx", exit_px))
-                            break
+                    mids = self.info_client.get_all_mids()
+                    if coin in mids:
+                        exit_px = float(mids[coin])
+                    else:
+                        meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
+                        for u, ctx in zip(meta.get("universe", []), ctxs):
+                            if u.get("name", "").upper() == coin:
+                                exit_px = float(ctx.get("midPx") or ctx.get("oraclePx", exit_px))
+                                break
                 except Exception:
                     pass
 
@@ -428,6 +474,8 @@ class AutoTrader:
 
             # Trigger allocator update immediately so winning strategies get boosted
             self.allocator.evaluate_allocations(trades_list)
+            # Feed closed trade into Self-Improving Engine for parameter auto-tuning & meta-learning
+            self.self_improving_engine.record_closed_trade(closed_record)
 
             status_str = "OPTIMAL" if net_pnl >= 0 else "WARNING"
             col_str = "emerald" if net_pnl >= 0 else "rose"
@@ -447,14 +495,33 @@ class AutoTrader:
         if not positions:
             return
 
+        # Fast path 1: Live WebSocket stream (0 network calls, 0 latency)
+        px_map = {}
         try:
-            meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
-            px_map = {}
-            for u, ctx in zip(meta.get("universe", []), ctxs):
-                px_map[u.get("name", "").upper()] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+            from src.scanner.live_ws_feed import live_feed
+            ws_px = live_feed.get_all_prices()
+            if ws_px:
+                px_map = ws_px
         except Exception:
-            return
+            pass
 
+        # Fast path 2: allMids (~5KB vs 500KB) fallback for battery/bandwidth efficiency
+        if not px_map:
+            try:
+                mids = self.info_client.get_all_mids()
+                if mids:
+                    px_map = mids
+                else:
+                    meta, ctxs = self.info_client.get_meta_and_asset_ctxs()
+                    for u, ctx in zip(meta.get("universe", []), ctxs):
+                        px_map[u.get("name", "").upper()] = float(ctx.get("midPx") or ctx.get("oraclePx", 0.0))
+            except Exception:
+                return
+
+        adaptive_params = self.self_improving_engine.get_adaptive_params()
+        ratchet_threshold = float(adaptive_params.get("ratchet_pct", 0.8))
+
+        positions_updated = False
         for p in list(positions):
             coin = p.get("coin", "").upper()
             mark_px = px_map.get(coin, 0.0)
@@ -471,8 +538,15 @@ class AutoTrader:
             price_pct = ((mark_px - entry_px) / entry_px * 100.0) if side == "LONG" else ((entry_px - mark_px) / entry_px * 100.0)
             margin_roi_pct = price_pct * lev
 
-            # 1. Trailing Breakeven Ratchet: if price moves favorably >= 0.8% (e.g. +16% ROI at 20x)
-            if price_pct >= 0.8 and not self._ratcheted.get(coin):
+            # Update mark-to-market valuations
+            p["mark_price"] = mark_px
+            unrealized = (mark_px - entry_px) * qty * (1.0 if side == "LONG" else -1.0)
+            p["unrealized_pnl"] = round(unrealized, 2)
+            p["roi_pct"] = round(margin_roi_pct, 2)
+            positions_updated = True
+
+            # 1. Trailing Breakeven Ratchet (scaled by self-improving engine)
+            if price_pct >= ratchet_threshold and not self._ratcheted.get(coin):
                 be_sl = round(entry_px * (1.001 if side == "LONG" else 0.999), 4)
                 p["stop_loss"] = be_sl
                 self._ratcheted[coin] = True
@@ -661,24 +735,31 @@ class AutoTrader:
                                         return
 
     def loop(self) -> None:
-        """Main autonomous execution background thread loop."""
+        """Main autonomous execution background thread loop with Pixel 9 battery optimization."""
         self._running = True
         cycle_counter = 0
 
         while self._running:
+            has_positions = False
             try:
-                # Watchdog runs every 5 seconds (fast exit execution)
+                # Watchdog runs every cycle (fast exit execution)
                 self.watchdog_cycle()
 
-                # Entry scanner runs every ~15 seconds (every 3rd cycle)
+                # Check if positions are currently open
+                active_data = load_json(ACTIVE_TRADES_PATH, {"positions": []})
+                has_positions = bool(active_data.get("positions"))
+
+                # Entry scanner runs every ~15-20 seconds
                 if cycle_counter % 3 == 0:
                     self.entry_cycle()
 
-            except Exception as e:
+            except Exception:
                 pass
 
             cycle_counter += 1
-            time.sleep(5)
+            # Pixel 9 Battery Optimization: sleep 10s when idle, 5s when guarding active trades
+            sleep_sec = 5 if has_positions else 10
+            time.sleep(sleep_sec)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

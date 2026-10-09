@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -886,9 +886,15 @@ async def api_klines(coin: str = "BTC", interval: str = "1h", limit: int = 150):
 
 @app.get("/api/l2")
 async def api_l2(coin: str = "BTC"):
-    """Fetch live L2 order book depth for a coin."""
+    """Fetch live L2 order book depth for a coin via persistent WebSocket stream."""
     try:
         coin_clean = coin.upper().split("-")[0].split(".")[0]
+        from src.scanner.live_ws_feed import live_feed
+        live_feed.subscribe_coin(coin_clean)
+        l2_snap = live_feed.get_l2_book(coin_clean)
+        if l2_snap:
+            micro = live_feed.get_microstructure(coin_clean)
+            return {"status": "success", "coin": coin_clean, "book": l2_snap, "microstructure": micro, "source": "WebSocket_L2"}
         return info_client.get_l2_snapshot(coin_clean)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1186,13 +1192,26 @@ async def api_reset_ledger():
 
 @app.post("/api/prospects/scan")
 async def api_trigger_prospect_scan():
-    """Trigger on-demand market scan across 234 Hyperliquid perpetuals."""
+    """Trigger on-demand market scan with Onboard Tensor G4 Neural L2 reasoning."""
+    try:
+        from src.scanner.neural_l2_scanner import neural_scanner
+        prospects = await asyncio.to_thread(neural_scanner.scan_and_reason)
+        if prospects:
+            return {
+                "status": "SUCCESS",
+                "message": f"Pixel 9 Onboard Neural Engine scanned and ranked {len(prospects)} top prospects",
+                "count": len(prospects),
+                "engine": "Pixel9_Neural_L2",
+            }
+    except Exception:
+        pass
+
     try:
         from src.scanner.hl_intelligence import HyperliquidIntelligence
         hl = HyperliquidIntelligence()
         prospects = hl.generate_top_prospects()
         if prospects:
-            save_json_file(PROSPECTS_PATH, {"prospects": prospects, "timestamp": time.time()})
+            save_json_file(PROSPECTS_PATH, {"prospects": prospects, "timestamp": time.time(), "engine": "Heuristic_Fallback"})
             return {"status": "SUCCESS", "message": f"Scanned and ranked {len(prospects)} top prospects", "count": len(prospects)}
     except Exception as e:
         return {"status": "ERROR", "message": str(e)}
@@ -1317,6 +1336,32 @@ async def get_index():
         with open(index_path, "r", encoding="utf-8") as f:
             return f.read()
     return "<h1>Cockpit loading... index.html not found</h1>"
+
+
+@app.get("/manifest.json")
+async def get_manifest():
+    manifest_path = os.path.join(os.path.dirname(__file__), "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="application/manifest+json")
+    return Response(content="{}", media_type="application/json")
+
+
+@app.get("/sw.js")
+async def get_service_worker():
+    sw_path = os.path.join(os.path.dirname(__file__), "sw.js")
+    if os.path.exists(sw_path):
+        with open(sw_path, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="application/javascript")
+    return Response(content="", media_type="application/javascript")
+
+
+@app.get("/icon.png")
+async def get_icon():
+    icon_path = os.path.join(REPO_ROOT, "assets", "hyperliquid.png")
+    if os.path.exists(icon_path):
+        return FileResponse(icon_path, media_type="image/png")
+    return Response(status_code=404)
 
 
 if __name__ == "__main__":
