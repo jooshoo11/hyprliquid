@@ -5,75 +5,68 @@
   "new_listings": [],
   "squeeze_alerts": [
     {
-      "coin": "VVV",
-      "funding_apr": 41.0,
-      "change_24h": -7.33,
-      "vol_24h": 50657536.01,
-      "bias": "SHORT"
-    },
-    {
-      "coin": "NIL",
-      "funding_apr": 67.2,
-      "change_24h": 3.82,
-      "vol_24h": 2569230.1,
+      "coin": "GRIFFAIN",
+      "funding_apr": 56.9,
+      "change_24h": 14.83,
+      "vol_24h": 1967708.34,
       "bias": "SHORT"
     },
     {
       "coin": "XMR",
-      "funding_apr": 74.4,
-      "change_24h": -4.01,
-      "vol_24h": 19700813.52,
+      "funding_apr": 41.4,
+      "change_24h": -4.19,
+      "vol_24h": 19755217.78,
       "bias": "SHORT"
     },
     {
       "coin": "USELESS",
-      "funding_apr": 112.9,
-      "change_24h": -1.49,
-      "vol_24h": 5464015.98,
+      "funding_apr": 45.3,
+      "change_24h": -2.28,
+      "vol_24h": 5537617.66,
       "bias": "SHORT"
     }
   ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": -1.63,
-      "total_volume_usd": 57070510.21,
+      "avg_change_24h": -1.93,
+      "total_volume_usd": 56994890.64,
       "leader_coin": "BOME",
-      "leader_change_24h": 2.13,
+      "leader_change_24h": 1.15,
       "rotation_status": "NEUTRAL"
     },
     "AI_COMPUTE": {
       "active_count": 6,
-      "avg_change_24h": -5.07,
-      "total_volume_usd": 507192937.48,
+      "avg_change_24h": -5.97,
+      "total_volume_usd": 499001386.62,
       "leader_coin": "TAO",
-      "leader_change_24h": -2.67,
+      "leader_change_24h": -3.12,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": -0.46,
-      "total_volume_usd": 488663223.02,
-      "leader_coin": "TIA",
-      "leader_change_24h": 8.31,
+      "avg_change_24h": -0.6,
+      "total_volume_usd": 487526363.39,
+      "leader_coin": "APT",
+      "leader_change_24h": 6.83,
       "rotation_status": "NEUTRAL"
     },
     "DEFI": {
       "active_count": 9,
-      "avg_change_24h": -3.24,
-      "total_volume_usd": 168694023.09,
+      "avg_change_24h": -3.73,
+      "total_volume_usd": 168095125.76,
       "leader_coin": "DYDX",
-      "leader_change_24h": 2.45,
+      "leader_change_24h": 1.78,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -1.46,
-      "total_volume_usd": 5478718572.19,
+      "avg_change_24h": -1.76,
+      "total_volume_usd": 5458000073.37,
       "leader_coin": "BTC",
-      "leader_change_24h": -0.28,
+      "leader_change_24h": -0.55,
       "rotation_status": "NEUTRAL"
     }
   },
-  "timestamp": 1791525662.5539784
+  "timestamp": 1791526030.8106222
 }

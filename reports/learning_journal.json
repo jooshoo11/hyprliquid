@@ -118,5 +118,53 @@
     "roi_pct": 1.24,
     "reason": "Capital Rotation: Reallocated stagnant NEAR (+0.7%) to high-conviction VVV (Score: 95)",
     "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:04:05Z",
+    "coin": "BTC",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 40.0,
+    "margin": 30.75,
+    "net_pnl": -0.19,
+    "roi_pct": 2.18,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.42 with ask depth $3,653,905 exceeding bid depth $1,335,204; cut early to preserve margin.",
+    "is_win": false
+  },
+  {
+    "timestamp": "2026-10-09T06:05:11Z",
+    "coin": "VVV",
+    "side": "SHORT",
+    "strategy": "HourlyFundingFade",
+    "leverage": 3.0,
+    "margin": 38.09,
+    "net_pnl": 0.16,
+    "roi_pct": 0.63,
+    "reason": "Capital Rotation: Switched to higher-leverage XMR (5x vs 3x Lev, VVV ROI: +0.4%)",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:06:09Z",
+    "coin": "BTC",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 40.0,
+    "margin": 30.75,
+    "net_pnl": -0.19,
+    "roi_pct": 2.18,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.93 with ask depth $4,013,469 exceeding bid depth $759,005; cut early to preserve margin.",
+    "is_win": false
+  },
+  {
+    "timestamp": "2026-10-09T06:06:39Z",
+    "coin": "SOL",
+    "side": null,
+    "strategy": "ShortSqueezeIgnition",
+    "leverage": 20.0,
+    "margin": 15.0,
+    "net_pnl": 3.8,
+    "roi_pct": 25.3,
+    "reason": "Take Profit Hit",
+    "is_win": true
   }
 ]

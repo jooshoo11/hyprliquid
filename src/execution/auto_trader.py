@@ -335,8 +335,9 @@ class AutoTrader:
             sl_multiplier = float(adaptive_params.get("sl_multiplier", 1.0))
             tp_rr_ratio = float(adaptive_params.get("tp_rr_ratio", 2.5))
 
-            sl_dist_pct = min(0.025, max(0.006, (0.25 / active_leverage) * sl_multiplier))
-            tp_dist_pct = round(sl_dist_pct * tp_rr_ratio, 4)
+            sl_dist_pct = min(0.025, max(0.008, (0.25 / active_leverage) * sl_multiplier))
+            # Enforce minimum 1.8% Take-Profit price move (covering round-trip fees 25x over)
+            tp_dist_pct = max(0.018, round(sl_dist_pct * tp_rr_ratio, 4))
 
             if side == "LONG":
                 sl = stop_loss if (stop_loss and stop_loss < mark_px) else round(mark_px * (1.0 - sl_dist_pct), 4)
@@ -546,9 +547,11 @@ class AutoTrader:
             p["roi_pct"] = round(margin_roi_pct, 2)
             positions_updated = True
 
-            # 1. Trailing Breakeven Ratchet (scaled by self-improving engine)
-            if price_pct >= ratchet_threshold and not self._ratcheted.get(coin):
-                be_sl = round(entry_px * (1.001 if side == "LONG" else 0.999), 4)
+            # 1. Trailing Breakeven Ratchet (Fee-Protective: +0.25% Net Profit Guard)
+            eff_ratchet_thresh = max(1.0, ratchet_threshold)
+            if price_pct >= eff_ratchet_thresh and not self._ratcheted.get(coin):
+                # Set stop at +0.25% beyond entry, covering 0.07% round-trip fees + 0.18% net profit buffer
+                be_sl = round(entry_px * (1.0025 if side == "LONG" else 0.9975), 4)
                 p["stop_loss"] = be_sl
                 self._ratcheted[coin] = True
                 save_json_atomic(ACTIVE_TRADES_PATH, active_data)
@@ -557,8 +560,22 @@ class AutoTrader:
                     status="OPTIMAL",
                     badge_color="cyan",
                     coin=coin,
-                    msg=f"Ratcheted stop for {coin} ({lev:.0f}x) to Breakeven (${be_sl:,.4f}) to guarantee risk-free profit (+{margin_roi_pct:.1f}% ROI on margin).",
+                    msg=f"Ratcheted stop for {coin} ({lev:.0f}x) to Net Breakeven (${be_sl:,.4f}) to cover fees & guarantee profit (+{margin_roi_pct:.1f}% ROI on margin).",
                 )
+
+            # 1b. Dynamic Runner Trailing Stop: lock in 60% of peak gains on big moves (>= 2.0% price move)
+            if price_pct >= 2.0:
+                trail_sl = round(entry_px * (1.0 + (price_pct * 0.60 / 100.0) if side == "LONG" else 1.0 - (price_pct * 0.60 / 100.0)), 4)
+                if (side == "LONG" and trail_sl > sl) or (side == "SHORT" and (sl <= 0 or trail_sl < sl)):
+                    p["stop_loss"] = trail_sl
+                    save_json_atomic(ACTIVE_TRADES_PATH, active_data)
+                    self.log_thought(
+                        category="[PROFIT TRAILING]",
+                        status="OPTIMAL",
+                        badge_color="emerald",
+                        coin=coin,
+                        msg=f"Trailed profit stop for {coin} to ${trail_sl:,.4f} (+{price_pct * 0.60 * lev:.1f}% locked ROI).",
+                    )
 
             # 2. Take-Profit Check
             if tp > 0:
@@ -663,11 +680,11 @@ class AutoTrader:
             coin = p.get("coin", "").upper()
             entry_t = float(p.get("entry_time", now))
             dur = now - entry_t
-            if dur < 90.0:  # Respect anti-churn minimum hold
+            if dur < 300.0:  # Respect anti-churn: at least 5 minutes hold before considering rotation
                 continue
 
             roi = float(p.get("roi_pct", 0.0))
-            if roi >= 3.0:  # Protect profitable runners
+            if roi >= 0.0:  # Protect ANY position in profit! Never kill green trades for micro pennies.
                 continue
 
             cur_lev = float(p.get("leverage", 10.0))
