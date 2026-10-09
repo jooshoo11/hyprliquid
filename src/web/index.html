@@ -656,6 +656,13 @@
     let liveProspects = [];
     let lastCandle = null;
     let prevActivePrice = 0;
+    let prevPosSig = '';
+    let prevProsSig = '';
+    let prevSqueezeSig = '';
+    let prevSectorSig = '';
+    let prevAllocSig = '';
+    let prevSentSig = '';
+    let prevQuickSig = '';
 
     // --- Web Audio Synthesizer for Touch Audio FX ---
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -1182,11 +1189,13 @@
       document.getElementById('quant-win-rate').textContent = `${winRate.toFixed(1)}%`;
       document.getElementById('quant-pf').textContent = `PF ${pf.toFixed(2)}`;
 
-      // Dynamic Strategy Allocation Multipliers
+      // Dynamic Strategy Allocation Multipliers (Diffed update)
       const allocData = data.strategy_allocations || {};
       const allocs = allocData.allocations || {};
       const allocCont = document.getElementById('strategy-allocation-pills');
-      if (allocCont && Object.keys(allocs).length > 0) {
+      const allocSig = JSON.stringify(allocs);
+      if (allocCont && Object.keys(allocs).length > 0 && allocSig !== prevAllocSig) {
+        prevAllocSig = allocSig;
         allocCont.innerHTML = Object.keys(allocs).map(stratKey => {
           const a = allocs[stratKey];
           const mult = a.multiplier || 1.0;
@@ -1213,58 +1222,62 @@
         }).join('');
       }
 
-      // 2. EXTREME SHORT SQUEEZE RADAR RENDERING
+      // 2. EXTREME SHORT SQUEEZE RADAR RENDERING (Diffed update)
       const regime = data.market_regime || {};
       const squeezeAlerts = regime.squeeze_alerts || [];
       liveSqueezeAlerts = squeezeAlerts;
       document.getElementById('squeeze-badge-count').textContent = squeezeAlerts.length;
 
       const squeezeCont = document.getElementById('squeeze-cards-container');
-      if (squeezeAlerts.length > 0) {
-        squeezeCont.innerHTML = squeezeAlerts.map(sq => {
-          return `
-            <div class="bg-[#0b1120] border-2 border-rose-600/80 rounded-2xl p-4 shadow-xl squeeze-card-glow flex flex-col justify-between gap-3">
-              <div class="flex items-start justify-between">
-                <div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-base font-black text-white mono">${sq.coin}</span>
-                    <span class="px-2 py-0.5 rounded-full bg-rose-600 text-white font-mono text-[10px] font-bold">
-                      ${sq.funding_apr}% APR
-                    </span>
+      const squeezeSig = squeezeAlerts.map(s => `${s.coin}_${s.funding_apr}_${s.change_24h}`).join('|');
+      if (squeezeSig !== prevSqueezeSig) {
+        prevSqueezeSig = squeezeSig;
+        if (squeezeAlerts.length > 0) {
+          squeezeCont.innerHTML = squeezeAlerts.map(sq => {
+            return `
+              <div class="bg-[#0b1120] border-2 border-rose-600/80 rounded-2xl p-4 shadow-xl squeeze-card-glow flex flex-col justify-between gap-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-base font-black text-white mono">${sq.coin}</span>
+                      <span class="px-2 py-0.5 rounded-full bg-rose-600 text-white font-mono text-[10px] font-bold">
+                        ${sq.funding_apr}% APR
+                      </span>
+                    </div>
+                    <span class="text-[11px] text-rose-300 font-semibold block mt-1">Shorts Paying Massive Carry</span>
                   </div>
-                  <span class="text-[11px] text-rose-300 font-semibold block mt-1">Shorts Paying Massive Carry</span>
+                  <div class="text-right">
+                    <span class="text-xs font-bold text-emerald-400 mono">+${sq.change_24h}% 24h</span>
+                    <span class="text-[10px] text-slate-400 block mono">$${(sq.vol_24h / 1000000).toFixed(1)}M Vol</span>
+                  </div>
                 </div>
-                <div class="text-right">
-                  <span class="text-xs font-bold text-emerald-400 mono">+${sq.change_24h}% 24h</span>
-                  <span class="text-[10px] text-slate-400 block mono">$${(sq.vol_24h / 1000000).toFixed(1)}M Vol</span>
+
+                <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800 text-[11px] text-slate-300 leading-snug">
+                  🚨 <strong class="text-rose-400">Squeeze Ignition:</strong> Heavily crowded short positions paying longs over <strong>${Math.abs(sq.funding_apr).toFixed(0)}% annualized</strong>. Upward momentum trigger detected!
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                  <button onclick="selectSymbol('${sq.coin}')" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs">
+                    Inspect Chart
+                  </button>
+                  <button onclick="quickLongSqueeze('${sq.coin}')" class="py-2 rounded-xl bg-gradient-to-r from-rose-600 to-amber-600 text-white font-bold text-xs uppercase shadow-lg shadow-rose-600/30 active:scale-95 transition-all">
+                    🚀 Long Squeeze
+                  </button>
                 </div>
               </div>
-
-              <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-800 text-[11px] text-slate-300 leading-snug">
-                🚨 <strong class="text-rose-400">Squeeze Ignition:</strong> Heavily crowded short positions paying longs over <strong>${Math.abs(sq.funding_apr).toFixed(0)}% annualized</strong>. Upward momentum trigger detected!
-              </div>
-
-              <div class="grid grid-cols-2 gap-2 pt-1">
-                <button onclick="selectSymbol('${sq.coin}')" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs">
-                  Inspect Chart
-                </button>
-                <button onclick="quickLongSqueeze('${sq.coin}')" class="py-2 rounded-xl bg-gradient-to-r from-rose-600 to-amber-600 text-white font-bold text-xs uppercase shadow-lg shadow-rose-600/30 active:scale-95 transition-all">
-                  🚀 Long Squeeze
-                </button>
-              </div>
+            `;
+          }).join('');
+        } else {
+          squeezeCont.innerHTML = `
+            <div class="col-span-full bg-[#0b1120] border border-slate-800 rounded-xl p-6 text-center text-slate-400 text-xs">
+              <i class="fa-solid fa-radar fa-spin text-cyan-400 text-lg mb-2 block"></i>
+              Continuous scanning across 234 Hyperliquid markets. No extreme negative outliers (&lt; -15% APR) at this exact second.
             </div>
           `;
-        }).join('');
-      } else {
-        squeezeCont.innerHTML = `
-          <div class="col-span-full bg-[#0b1120] border border-slate-800 rounded-xl p-6 text-center text-slate-400 text-xs">
-            <i class="fa-solid fa-radar fa-spin text-cyan-400 text-lg mb-2 block"></i>
-            Continuous scanning across 234 Hyperliquid markets. No extreme negative outliers (&lt; -15% APR) at this exact second.
-          </div>
-        `;
+        }
       }
 
-      // 3. SECTOR RADAR RENDERING
+      // 3. SECTOR RADAR RENDERING (Diffed update)
       const sectors = regime.sectors || {};
       liveSectors = sectors;
       const hottest = regime.hottest_sector || 'HIGH_BETA_L1';
@@ -1273,192 +1286,243 @@
 
       const sectorCont = document.getElementById('sector-cards-grid');
       const sectorKeys = Object.keys(sectors);
-      if (sectorKeys.length > 0) {
-        sectorCont.innerHTML = sectorKeys.map(secKey => {
-          const s = sectors[secKey];
-          const isHot = secKey === hottest;
-          const borderClass = isHot ? 'border-amber-500/80 shadow-lg shadow-amber-500/10' : 'border-slate-800';
-          const badgeClass = isHot ? 'bg-amber-950 text-amber-300 border-amber-600' : 'bg-slate-900 text-slate-400 border-slate-700';
+      const sectorSig = sectorKeys.map(k => `${k}_${sectors[k].leader_coin}_${sectors[k].avg_change_24h}_${k===hottest}`).join('|');
+      if (sectorSig !== prevSectorSig) {
+        prevSectorSig = sectorSig;
+        if (sectorKeys.length > 0) {
+          sectorCont.innerHTML = sectorKeys.map(secKey => {
+            const s = sectors[secKey];
+            const isHot = secKey === hottest;
+            const borderClass = isHot ? 'border-amber-500/80 shadow-lg shadow-amber-500/10' : 'border-slate-800';
+            const badgeClass = isHot ? 'bg-amber-950 text-amber-300 border-amber-600' : 'bg-slate-900 text-slate-400 border-slate-700';
 
-          return `
-            <div class="bg-[#0b1120] border ${borderClass} rounded-2xl p-4 flex flex-col justify-between gap-3">
-              <div>
-                <div class="flex items-center justify-between pb-2 border-b border-slate-800/80">
-                  <div class="flex items-center space-x-2">
-                    <span class="font-extrabold text-sm text-white mono">${secKey.replace('_', ' ')}</span>
-                  </div>
-                  <span class="px-2 py-0.5 rounded text-[10px] mono font-bold border ${badgeClass}">
-                    ${isHot ? '🔥 HOTTEST' : s.rotation_status}
-                  </span>
-                </div>
-
-                <div class="grid grid-cols-3 gap-2 text-center mono text-xs mt-3">
-                  <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
-                    <span class="text-[9px] text-slate-500 block uppercase font-bold">24h Avg</span>
-                    <span class="font-bold ${s.avg_change_24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.avg_change_24h >= 0 ? '+' : ''}${s.avg_change_24h}%</span>
-                  </div>
-                  <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
-                    <span class="text-[9px] text-slate-500 block uppercase font-bold">Volume</span>
-                    <span class="font-bold text-slate-200">$${(s.total_volume_usd / 1000000).toFixed(0)}M</span>
-                  </div>
-                  <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
-                    <span class="text-[9px] text-slate-500 block uppercase font-bold">Coins</span>
-                    <span class="font-bold text-cyan-400">${s.active_count}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Sector Leader Tap Chip -->
-              <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800/80 flex items-center justify-between">
+            return `
+              <div class="bg-[#0b1120] border ${borderClass} rounded-2xl p-4 flex flex-col justify-between gap-3">
                 <div>
-                  <span class="text-[9px] text-slate-500 font-bold uppercase block">Sector Leader:</span>
-                  <span class="font-bold text-xs text-white mono hover:text-cyan-400 cursor-pointer" onclick="selectSymbol('${s.leader_coin}')">
-                    ${s.leader_coin} <span class="text-emerald-400 font-normal">+${s.leader_change_24h}%</span>
-                  </span>
+                  <div class="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                    <div class="flex items-center space-x-2">
+                      <span class="font-extrabold text-sm text-white mono">${secKey.replace('_', ' ')}</span>
+                    </div>
+                    <span class="px-2 py-0.5 rounded text-[10px] mono font-bold border ${badgeClass}">
+                      ${isHot ? '🔥 HOTTEST' : s.rotation_status}
+                    </span>
+                  </div>
+
+                  <div class="grid grid-cols-3 gap-2 text-center mono text-xs mt-3">
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
+                      <span class="text-[9px] text-slate-500 block uppercase font-bold">24h Avg</span>
+                      <span class="font-bold ${s.avg_change_24h >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.avg_change_24h >= 0 ? '+' : ''}${s.avg_change_24h}%</span>
+                    </div>
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
+                      <span class="text-[9px] text-slate-500 block uppercase font-bold">Volume</span>
+                      <span class="font-bold text-slate-200">$${(s.total_volume_usd / 1000000).toFixed(0)}M</span>
+                    </div>
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-800/60">
+                      <span class="text-[9px] text-slate-500 block uppercase font-bold">Coins</span>
+                      <span class="font-bold text-cyan-400">${s.active_count}</span>
+                    </div>
+                  </div>
                 </div>
-                <button onclick="selectSymbol('${s.leader_coin}')" class="px-2.5 py-1 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-300 text-xs font-bold active:scale-95 transition-all">
-                  Chart
-                </button>
+
+                <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800/80 flex items-center justify-between">
+                  <div>
+                    <span class="text-[9px] text-slate-500 font-bold uppercase block">Sector Leader:</span>
+                    <span class="font-bold text-xs text-white mono hover:text-cyan-400 cursor-pointer" onclick="selectSymbol('${s.leader_coin}')">
+                      ${s.leader_coin} <span class="text-emerald-400 font-normal">+${s.leader_change_24h}%</span>
+                    </span>
+                  </div>
+                  <button onclick="selectSymbol('${s.leader_coin}')" class="px-2.5 py-1 rounded-lg bg-cyan-950 border border-cyan-800 text-cyan-300 text-xs font-bold active:scale-95 transition-all">
+                    Chart
+                  </button>
+                </div>
               </div>
-            </div>
-          `;
-        }).join('');
+            `;
+          }).join('');
+        }
       }
 
-      // 4. ACTIVE POSITIONS RENDERING (MOBILE TOUCH CARDS)
+      // 4. ACTIVE POSITIONS RENDERING (MOBILE TOUCH CARDS WITH IN-PLACE VALUE UPDATES)
       const posCont = document.getElementById('positions-active-container');
       if (positions.length > 0) {
-        posCont.innerHTML = positions.map(pos => {
+        const currentPosSig = positions.map(p => `${p.coin}_${p.side}_${p.leverage}`).join('|');
+        if (currentPosSig !== prevPosSig) {
+          prevPosSig = currentPosSig;
+          posCont.innerHTML = positions.map(pos => {
+            const coin = pos.coin || 'BTC';
+            const isLong = (pos.side || 'LONG').toUpperCase() === 'LONG';
+            const lev = pos.leverage || 10;
+            return `
+              <div id="pos-card-${coin}" class="bg-[#0b1120] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="text-base font-extrabold text-white mono cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${coin}')">${coin}</span>
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isLong ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
+                        ${pos.side}
+                      </span>
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
+                        ${lev}x LEV
+                      </span>
+                      ${(pos.entry_reason || '').includes('[ROTATION]') ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800 mono"><i class="fa-solid fa-arrows-rotate text-[8px] mr-0.5 text-indigo-400"></i>ROTATED</span>' : ''}
+                      <span class="text-[10px] text-slate-400 mono">${pos.strategy || 'Trend SMC'}</span>
+                    </div>
+                    <div id="pos-prices-${coin}" class="text-xs text-slate-400 mono mt-1">
+                      Entry: $${parseFloat(pos.entry_price || 0).toLocaleString()} | Mark: $${parseFloat(pos.mark_price || pos.entry_price || 0).toLocaleString()}
+                    </div>
+                    <div id="pos-margin-${coin}" class="text-[10px] text-slate-500 mono mt-0.5">
+                      Margin: <strong class="text-slate-300">$${parseFloat(pos.margin || 0).toFixed(2)}</strong> | Notional: <strong class="text-slate-200">$${parseFloat(pos.notional || (pos.size * (pos.mark_price || pos.entry_price)) || 0).toFixed(2)}</strong>
+                    </div>
+                  </div>
+
+                  <div class="text-right">
+                    <span id="pos-pnl-${coin}" class="text-base font-black mono text-emerald-400">+$0.00</span>
+                    <span id="pos-roi-${coin}" class="text-xs font-semibold mono text-emerald-400 block">+0.0% on Margin</span>
+                  </div>
+                </div>
+
+                <div id="pos-ai-wrap-${coin}" class="flex items-center justify-between text-xs bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80 gap-2 ${pos.ai_verdict ? '' : 'hidden'}">
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <span class="text-slate-500 font-bold text-[10px] uppercase">AI Sentry:</span>
+                    <span id="pos-ai-badge-${coin}" class="px-2 py-0.5 rounded text-[10px] font-bold"></span>
+                  </div>
+                  <span id="pos-ai-reason-${coin}" class="text-[10px] text-slate-300 truncate max-w-[220px]"></span>
+                </div>
+
+                <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 gap-2">
+                  <button onclick="selectSymbol('${coin}')" class="flex-1 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-slate-800">
+                    View Chart
+                  </button>
+                  <button onclick="closeTrade('${coin}')" class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-600/30 active:scale-95 transition-all">
+                    Close Position
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+
+        // Smooth in-place value updates (zero element destruction, zero stutter)
+        positions.forEach(pos => {
           const coin = pos.coin || 'BTC';
-          const isLong = (pos.side || 'LONG').toUpperCase() === 'LONG';
           const pnlVal = parseFloat(pos.unrealized_pnl || 0.0);
           const roiVal = parseFloat(pos.roi_pct || 0.0);
           const pCol = pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400';
-          const lev = pos.leverage || 10;
           const posMargin = parseFloat(pos.margin || 0.0);
           const posNotional = parseFloat(pos.notional || (pos.size * (pos.mark_price || pos.entry_price)) || 0.0);
 
-          return `
-            <div class="bg-[#0b1120] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
-              <div class="flex items-start justify-between">
-                <div>
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <span class="text-base font-extrabold text-white mono cursor-pointer hover:text-cyan-400" onclick="selectSymbol('${coin}')">${coin}</span>
-                    <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isLong ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
-                      ${pos.side}
-                    </span>
-                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
-                      ${lev}x LEV
-                    </span>
-                    ${(pos.entry_reason || '').includes('[ROTATION]') ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800 mono"><i class="fa-solid fa-arrows-rotate text-[8px] mr-0.5 text-indigo-400"></i>ROTATED</span>' : ''}
-                    <span class="text-[10px] text-slate-400 mono">${pos.strategy || 'Trend SMC'}</span>
-                  </div>
-                  <div class="text-xs text-slate-400 mono mt-1">
-                    Entry: $${parseFloat(pos.entry_price || 0).toLocaleString()} | Mark: $${parseFloat(pos.mark_price || pos.entry_price || 0).toLocaleString()}
-                  </div>
-                  <div class="text-[10px] text-slate-500 mono mt-0.5">
-                    Margin: <strong class="text-slate-300">$${posMargin.toFixed(2)}</strong> | Notional: <strong class="text-slate-200">$${posNotional.toFixed(2)}</strong>
-                  </div>
-                </div>
-
-                <div class="text-right">
-                  <span class="text-base font-black mono ${pCol}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>
-                  <span class="text-xs font-semibold mono ${pCol} block">${roiVal >= 0 ? '+' : ''}${roiVal.toFixed(1)}% on Margin</span>
-                </div>
-              </div>
-
-              ${pos.ai_verdict ? `
-              <div class="flex items-center justify-between text-xs bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80 gap-2">
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <span class="text-slate-500 font-bold text-[10px] uppercase">AI Sentry:</span>
-                  <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
-                    pos.ai_verdict === 'CONFIRM_HOLD' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' :
-                    (pos.ai_verdict === 'TIGHTEN_STOP' ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'bg-rose-950 text-rose-300 border border-rose-800')
-                  }">
-                    ${pos.ai_verdict === 'CONFIRM_HOLD' ? '🟢 CONFIRM HOLD' : (pos.ai_verdict === 'TIGHTEN_STOP' ? '🛡️ STOP TIGHTENED' : '🔴 REJECT / CUTTING')}
-                  </span>
-                </div>
-                <span class="text-[10px] text-slate-300 truncate max-w-[220px]" title="${pos.ai_reason || ''}">${pos.ai_reason || ''}</span>
-              </div>
-              ` : ''}
-
-              <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 gap-2">
-                <button onclick="selectSymbol('${coin}')" class="flex-1 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-slate-800">
-                  View Chart
-                </button>
-                <button onclick="closeTrade('${coin}')" class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-600/30 active:scale-95 transition-all">
-                  Close Position
-                </button>
-              </div>
+          const elPrices = document.getElementById(`pos-prices-${coin}`);
+          if (elPrices) {
+            elPrices.textContent = `Entry: $${parseFloat(pos.entry_price || 0).toLocaleString()} | Mark: $${parseFloat(pos.mark_price || pos.entry_price || 0).toLocaleString()}`;
+          }
+          const elMargin = document.getElementById(`pos-margin-${coin}`);
+          if (elMargin) {
+            elMargin.innerHTML = `Margin: <strong class="text-slate-300">$${posMargin.toFixed(2)}</strong> | Notional: <strong class="text-slate-200">$${posNotional.toFixed(2)}</strong>`;
+          }
+          const elPnl = document.getElementById(`pos-pnl-${coin}`);
+          if (elPnl) {
+            elPnl.textContent = `${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}`;
+            elPnl.className = `text-base font-black mono ${pCol}`;
+          }
+          const elRoi = document.getElementById(`pos-roi-${coin}`);
+          if (elRoi) {
+            elRoi.textContent = `${roiVal >= 0 ? '+' : ''}${roiVal.toFixed(1)}% on Margin`;
+            elRoi.className = `text-xs font-semibold mono ${pCol} block`;
+          }
+          const elAiWrap = document.getElementById(`pos-ai-wrap-${coin}`);
+          const elAiBadge = document.getElementById(`pos-ai-badge-${coin}`);
+          const elAiReason = document.getElementById(`pos-ai-reason-${coin}`);
+          if (elAiWrap && elAiBadge && elAiReason) {
+            if (pos.ai_verdict) {
+              elAiWrap.classList.remove('hidden');
+              elAiBadge.textContent = pos.ai_verdict === 'CONFIRM_HOLD' ? '🟢 CONFIRM HOLD' : (pos.ai_verdict === 'TIGHTEN_STOP' ? '🛡️ STOP TIGHTENED' : '🔴 REJECT / CUTTING');
+              elAiBadge.className = `px-2 py-0.5 rounded text-[10px] font-bold ${
+                pos.ai_verdict === 'CONFIRM_HOLD' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' :
+                (pos.ai_verdict === 'TIGHTEN_STOP' ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'bg-rose-950 text-rose-300 border border-rose-800')
+              }`;
+              elAiReason.textContent = pos.ai_reason || '';
+              elAiReason.title = pos.ai_reason || '';
+            } else {
+              elAiWrap.classList.add('hidden');
+            }
+          }
+        });
+      } else {
+        if (prevPosSig !== 'EMPTY') {
+          prevPosSig = 'EMPTY';
+          posCont.innerHTML = `
+            <div class="bg-[#0b1120] border border-slate-800 rounded-xl p-8 text-center text-slate-500 text-xs italic">
+              No active positions open. Capital safe in USD cash.
             </div>
           `;
-        }).join('');
-      } else {
-        posCont.innerHTML = `
-          <div class="bg-[#0b1120] border border-slate-800 rounded-xl p-8 text-center text-slate-500 text-xs italic">
-            No active positions open. Capital safe in USD cash.
-          </div>
-        `;
+        }
       }
 
-      // 5. TOP AI PROSPECTS LIST
+      // 5. TOP AI PROSPECTS LIST (Diffed update)
       const prospects = data.prospects || [];
       const prosCont = document.getElementById('prospects-cards-list');
-      if (prosCont && prospects.length > 0) {
-        prosCont.innerHTML = prospects.slice(0, 10).map((p, i) => {
-          const isBull = p.bias === 'LONG';
-          const maxLev = p.max_leverage || 10;
-          const hasObi = p.obi !== undefined && p.obi !== null;
-          const obiColor = p.obi > 0.15 ? 'text-emerald-400' : (p.obi < -0.15 ? 'text-rose-400' : 'text-slate-400');
-          const isNeural = p.strategy === 'OrderBookImbalance' || (p.reason && p.reason.includes('Bid depth')) || p.conviction_score >= 85;
-          return `
-            <div onclick="selectSymbol('${p.coin}')" class="p-3 bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800/80 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-2">
-                  <span class="text-slate-500 text-xs mono font-bold">#${i + 1}</span>
-                  <span class="font-extrabold text-sm text-white mono">${p.coin}</span>
-                  <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isBull ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
-                    ${p.bias}
-                  </span>
-                  <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
-                    ${maxLev}x Max
-                  </span>
-                  ${isNeural ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/80 text-purple-300 border border-purple-800/80 mono"><i class="fa-solid fa-microchip mr-0.5"></i>Tensor G4</span>' : ''}
+      const prosSig = prospects.slice(0, 10).map(p => `${p.coin}_${p.bias}_${p.conviction_score}_${p.obi}`).join('|');
+      if (prosCont && prosSig !== prevProsSig) {
+        prevProsSig = prosSig;
+        if (prospects.length > 0) {
+          prosCont.innerHTML = prospects.slice(0, 10).map((p, i) => {
+            const isBull = p.bias === 'LONG';
+            const maxLev = p.max_leverage || 10;
+            const hasObi = p.obi !== undefined && p.obi !== null;
+            const obiColor = p.obi > 0.15 ? 'text-emerald-400' : (p.obi < -0.15 ? 'text-rose-400' : 'text-slate-400');
+            const isNeural = p.strategy === 'OrderBookImbalance' || (p.reason && p.reason.includes('Bid depth')) || p.conviction_score >= 85;
+            return `
+              <div onclick="selectSymbol('${p.coin}')" class="p-3 bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800/80 rounded-xl cursor-pointer transition-all flex flex-col gap-1.5">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center space-x-2">
+                    <span class="text-slate-500 text-xs mono font-bold">#${i + 1}</span>
+                    <span class="font-extrabold text-sm text-white mono">${p.coin}</span>
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isBull ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
+                      ${p.bias}
+                    </span>
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-950 text-cyan-300 border border-cyan-800 mono">
+                      ${maxLev}x Max
+                    </span>
+                    ${isNeural ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950/80 text-purple-300 border border-purple-800/80 mono"><i class="fa-solid fa-microchip mr-0.5"></i>Tensor G4</span>' : ''}
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 mono">${p.conviction_score || 85}%</span>
+                    <span class="text-xs text-slate-400 mono">${p.change_24h ? (p.change_24h >= 0 ? '+' : '') + p.change_24h.toFixed(1) + '% 24h' : ''}</span>
+                  </div>
                 </div>
-                <div class="flex items-center gap-1.5">
-                  <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 mono">${p.conviction_score || 85}%</span>
-                  <span class="text-xs text-slate-400 mono">${p.change_24h ? (p.change_24h >= 0 ? '+' : '') + p.change_24h.toFixed(1) + '% 24h' : ''}</span>
-                </div>
+                ${hasObi ? `
+                <div class="flex items-center gap-2 text-[10px] mono text-slate-400 bg-slate-950/60 px-2 py-1 rounded border border-slate-800/50">
+                  <span>OBI: <strong class="${obiColor}">${p.obi > 0 ? '+' : ''}${p.obi.toFixed(2)}</strong></span>
+                  <span>•</span>
+                  <span>Spread: <strong>${p.spread_bps !== undefined ? p.spread_bps.toFixed(1) : 1.0} bps</strong></span>
+                  <span>•</span>
+                  <span class="text-slate-400 truncate">${p.strategy || 'OrderFlow'}</span>
+                </div>` : ''}
+                <p class="text-[11px] text-slate-300 leading-snug line-clamp-2">${p.reason || p.rationale || 'High momentum volume setup detected.'}</p>
               </div>
-              ${hasObi ? `
-              <div class="flex items-center gap-2 text-[10px] mono text-slate-400 bg-slate-950/60 px-2 py-1 rounded border border-slate-800/50">
-                <span>OBI: <strong class="${obiColor}">${p.obi > 0 ? '+' : ''}${p.obi.toFixed(2)}</strong></span>
-                <span>•</span>
-                <span>Spread: <strong>${p.spread_bps !== undefined ? p.spread_bps.toFixed(1) : 1.0} bps</strong></span>
-                <span>•</span>
-                <span class="text-slate-400 truncate">${p.strategy || 'OrderFlow'}</span>
-              </div>` : ''}
-              <p class="text-[11px] text-slate-300 leading-snug line-clamp-2">${p.reason || p.rationale || 'High momentum volume setup detected.'}</p>
-            </div>
-          `;
-        }).join('');
+            `;
+          }).join('');
+        }
       }
 
-      // 6. AI SENTINEL THOUGHTS
+      // 6. AI SENTINEL THOUGHTS (Diffed update)
       const thoughts = data.sentinel_thoughts || [];
       const sentCont = document.getElementById('sentinel-stream-container');
-      if (thoughts.length > 0) {
-        sentCont.innerHTML = thoughts.slice(-15).reverse().map(t => {
-          return `
-            <div class="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/70 flex flex-col gap-1">
-              <div class="flex items-center justify-between text-[10px] text-slate-500">
-                <span class="font-bold text-cyan-400">${t.category || '[AUDIT]'}</span>
-                <span>${t.timestamp || ''}</span>
+      const sentSig = thoughts.length > 0 ? `${thoughts.length}_${thoughts[thoughts.length - 1].timestamp}` : '0';
+      if (sentCont && sentSig !== prevSentSig) {
+        prevSentSig = sentSig;
+        if (thoughts.length > 0) {
+          sentCont.innerHTML = thoughts.slice(-15).reverse().map(t => {
+            return `
+              <div class="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/70 flex flex-col gap-1">
+                <div class="flex items-center justify-between text-[10px] text-slate-500">
+                  <span class="font-bold text-cyan-400">${t.category || '[AUDIT]'}</span>
+                  <span>${t.timestamp || ''}</span>
+                </div>
+                <p class="text-slate-300 text-xs leading-snug">${t.thought || t.text || ''}</p>
               </div>
-              <p class="text-slate-300 text-xs leading-snug">${t.thought || t.text || ''}</p>
-            </div>
-          `;
-        }).join('');
+            `;
+          }).join('');
+        }
       }
 
       // Update Chart Quick Coin Pills
@@ -1473,6 +1537,9 @@
       const posCoins = (positions || []).map(p => p.coin).filter(Boolean);
       const sqCoins = (squeezeAlerts || []).map(s => s.coin).filter(Boolean);
       const allUnique = [...new Set([...sqCoins, ...posCoins, ...baseCoins])];
+      const quickSig = `${currentSymbol}_${allUnique.join('|')}`;
+      if (quickSig === prevQuickSig) return;
+      prevQuickSig = quickSig;
 
       container.innerHTML = allUnique.map(coin => {
         const isSel = coin.toUpperCase() === currentSymbol.toUpperCase();
