@@ -5,54 +5,75 @@
   "new_listings": [],
   "squeeze_alerts": [
     {
-      "coin": "STRK",
-      "funding_apr": 40.4,
-      "change_24h": 41.82,
-      "vol_24h": 65411954.49,
+      "coin": "VVV",
+      "funding_apr": 41.0,
+      "change_24h": -7.33,
+      "vol_24h": 50657536.01,
+      "bias": "SHORT"
+    },
+    {
+      "coin": "NIL",
+      "funding_apr": 67.2,
+      "change_24h": 3.82,
+      "vol_24h": 2569230.1,
+      "bias": "SHORT"
+    },
+    {
+      "coin": "XMR",
+      "funding_apr": 74.4,
+      "change_24h": -4.01,
+      "vol_24h": 19700813.52,
+      "bias": "SHORT"
+    },
+    {
+      "coin": "USELESS",
+      "funding_apr": 112.9,
+      "change_24h": -1.49,
+      "vol_24h": 5464015.98,
       "bias": "SHORT"
     }
   ],
   "sectors": {
     "MEMES": {
       "active_count": 12,
-      "avg_change_24h": -1.7,
-      "total_volume_usd": 57024062.77,
+      "avg_change_24h": -1.63,
+      "total_volume_usd": 57070510.21,
       "leader_coin": "BOME",
-      "leader_change_24h": 2.42,
+      "leader_change_24h": 2.13,
       "rotation_status": "NEUTRAL"
     },
     "AI_COMPUTE": {
       "active_count": 6,
       "avg_change_24h": -5.07,
-      "total_volume_usd": 506118151.19,
+      "total_volume_usd": 507192937.48,
       "leader_coin": "TAO",
-      "leader_change_24h": -2.64,
+      "leader_change_24h": -2.67,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "HIGH_BETA_L1": {
       "active_count": 8,
-      "avg_change_24h": -0.66,
-      "total_volume_usd": 488432413.13,
+      "avg_change_24h": -0.46,
+      "total_volume_usd": 488663223.02,
       "leader_coin": "TIA",
-      "leader_change_24h": 8.53,
+      "leader_change_24h": 8.31,
       "rotation_status": "NEUTRAL"
     },
     "DEFI": {
       "active_count": 9,
       "avg_change_24h": -3.24,
-      "total_volume_usd": 168389026.12,
+      "total_volume_usd": 168694023.09,
       "leader_coin": "DYDX",
       "leader_change_24h": 2.45,
       "rotation_status": "COOLING \u2744\ufe0f"
     },
     "MAJORS": {
       "active_count": 2,
-      "avg_change_24h": -1.54,
-      "total_volume_usd": 5472052465.43,
+      "avg_change_24h": -1.46,
+      "total_volume_usd": 5478718572.19,
       "leader_coin": "BTC",
-      "leader_change_24h": -0.35,
+      "leader_change_24h": -0.28,
       "rotation_status": "NEUTRAL"
     }
   },
-  "timestamp": 1791525298.133972
+  "timestamp": 1791525662.5539784
 }

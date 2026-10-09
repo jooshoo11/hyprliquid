@@ -1367,6 +1367,21 @@
                 </div>
               </div>
 
+              ${pos.ai_verdict ? `
+              <div class="flex items-center justify-between text-xs bg-slate-950/80 p-2.5 rounded-xl border border-slate-800/80 gap-2">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="text-slate-500 font-bold text-[10px] uppercase">AI Sentry:</span>
+                  <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
+                    pos.ai_verdict === 'CONFIRM_HOLD' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' :
+                    (pos.ai_verdict === 'TIGHTEN_STOP' ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'bg-rose-950 text-rose-300 border border-rose-800')
+                  }">
+                    ${pos.ai_verdict === 'CONFIRM_HOLD' ? '🟢 CONFIRM HOLD' : (pos.ai_verdict === 'TIGHTEN_STOP' ? '🛡️ STOP TIGHTENED' : '🔴 REJECT / CUTTING')}
+                  </span>
+                </div>
+                <span class="text-[10px] text-slate-300 truncate max-w-[220px]" title="${pos.ai_reason || ''}">${pos.ai_reason || ''}</span>
+              </div>
+              ` : ''}
+
               <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 gap-2">
                 <button onclick="selectSymbol('${coin}')" class="flex-1 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs border border-slate-800">
                   View Chart

@@ -82,5 +82,41 @@
     "roi_pct": 0.77,
     "reason": "Capital Rotation: Switched to higher-leverage SOL (20x vs 10x Lev, NEAR ROI: +0.0%)",
     "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T05:58:42Z",
+    "coin": "STRK",
+    "side": "SHORT",
+    "strategy": "HourlyFundingFade",
+    "leverage": 5.0,
+    "margin": 38.0,
+    "net_pnl": 0.03,
+    "roi_pct": 0.43,
+    "reason": "Stop Loss Hit ($0.0690 hit SL stop $0.0690)",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:00:39Z",
+    "coin": "SOL",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 20.0,
+    "margin": 30.77,
+    "net_pnl": -0.15,
+    "roi_pct": 0.91,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.83 with ask depth $3,694,271 exceeding bid depth $1,791,039; cut early to preserve margin.",
+    "is_win": false
+  },
+  {
+    "timestamp": "2026-10-09T06:00:51Z",
+    "coin": "NEAR",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 10.0,
+    "margin": 38.02,
+    "net_pnl": 0.2,
+    "roi_pct": 1.24,
+    "reason": "Capital Rotation: Reallocated stagnant NEAR (+0.7%) to high-conviction VVV (Score: 95)",
+    "is_win": true
   }
 ]

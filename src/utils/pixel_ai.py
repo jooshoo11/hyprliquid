@@ -204,6 +204,110 @@ class PixelOnboardAI:
             "_latency_ms": round((time.time() - t0) * 1000, 2),
         }
 
+    def audit_position_orderflow(
+        self,
+        position: Dict[str, Any],
+        microstructure: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Actively monitor an open position in real time using Tensor G4 onboard AI + L2 order book metrics.
+        Evaluates whether to CONFIRM_HOLD, REJECT_EXIT (cut early on wall collapse), or TIGHTEN_STOP.
+        """
+        coin = str(position.get("coin", "")).upper()
+        side = str(position.get("side", "LONG")).upper()
+        entry_px = float(position.get("entry_price", 0.0))
+        mark_px = float(position.get("mark_price", entry_px))
+        roi_pct = float(position.get("roi_pct", 0.0))
+        leverage = float(position.get("leverage", 10.0))
+        margin = float(position.get("margin", 10.0))
+        sl = float(position.get("stop_loss", 0.0))
+        tp = float(position.get("take_profit", 0.0))
+
+        micro = microstructure or {}
+        obi = float(micro.get("obi", 0.0))
+        bid_depth = float(micro.get("bid_depth_usd", 0.0))
+        ask_depth = float(micro.get("ask_depth_usd", 0.0))
+        micro_px = float(micro.get("micro_price", mark_px))
+        spread_bps = float(micro.get("spread_bps", 1.0))
+        imbalance_label = micro.get("imbalance_label", "BALANCED")
+
+        # 1. Attempt on-device LLM reasoning first
+        if self.is_online():
+            system_prompt = (
+                "You are the Pixel 9 on-device real-time trade sentry.\n"
+                "You evaluate an open trade to decide if the bot should stay (CONFIRM_HOLD),\n"
+                "cut early due to adverse order flow wall collapse (REJECT_EXIT), or tighten stop (TIGHTEN_STOP).\n"
+                "Respond STRICTLY in valid JSON matching:\n"
+                '{"verdict": "CONFIRM_HOLD"|"REJECT_EXIT"|"TIGHTEN_STOP", "confidence": 85, "reason": "1 concise sentence", "tighten_stop_price": 0.0}'
+            )
+            user_prompt = (
+                f"Open Trade: {side} {coin} ({leverage:.0f}x Lev)\n"
+                f"Entry: ${entry_px:,.4f} | Current Mark: ${mark_px:,.4f} | Margin ROI: {roi_pct:+.2f}%\n"
+                f"L2 Microstructure:\n"
+                f"- Order Book Imbalance (OBI): {obi:+.3f} ({imbalance_label})\n"
+                f"- Bid Depth: ${bid_depth:,.0f} vs Ask Depth: ${ask_depth:,.0f}\n"
+                f"- Micro-Price: ${micro_px:,.4f} | Spread: {spread_bps:.1f} bps\n"
+                f"Should the system CONFIRM_HOLD, REJECT_EXIT, or TIGHTEN_STOP?"
+            )
+            res = self.query(user_prompt, system_prompt, max_tokens=150)
+            if res and isinstance(res, dict) and "verdict" in res:
+                return res
+
+        # 2. Deterministic High-Precision Order Flow Guardian (<1ms fallback)
+        t0 = time.time()
+        if side == "LONG":
+            if (obi < -0.35 and ask_depth > 1.8 * max(1.0, bid_depth)) or (roi_pct < -4.0 and obi < -0.20):
+                return {
+                    "verdict": "REJECT_EXIT",
+                    "confidence": 90,
+                    "reason": f"Adverse ask wall collapse: OBI {obi:+.2f} with ask depth ${ask_depth:,.0f} exceeding bid depth ${bid_depth:,.0f}; cut early to preserve margin.",
+                    "tighten_stop_price": 0.0,
+                    "_provider": "pixel_onboard_quant",
+                }
+            elif roi_pct >= 10.0 and obi < -0.10:
+                tighter = round(mark_px * 0.996, 4)
+                return {
+                    "verdict": "TIGHTEN_STOP",
+                    "confidence": 85,
+                    "reason": f"Locking in gains (+{roi_pct:.1f}% ROI): OBI flipped negative ({obi:+.2f}), ratcheted stop to ${tighter:,.4f}.",
+                    "tighten_stop_price": tighter,
+                    "_provider": "pixel_onboard_quant",
+                }
+            else:
+                return {
+                    "verdict": "CONFIRM_HOLD",
+                    "confidence": 88,
+                    "reason": f"Order flow intact: Bid depth ${bid_depth:,.0f} and OBI {obi:+.2f} support Long continuation ({roi_pct:+.1f}% ROI).",
+                    "tighten_stop_price": 0.0,
+                    "_provider": "pixel_onboard_quant",
+                }
+        else:  # SHORT
+            if (obi > 0.35 and bid_depth > 1.8 * max(1.0, ask_depth)) or (roi_pct < -4.0 and obi > 0.20):
+                return {
+                    "verdict": "REJECT_EXIT",
+                    "confidence": 90,
+                    "reason": f"Adverse bid wall buildup: OBI {obi:+.2f} with bid depth ${bid_depth:,.0f} overwhelming ask depth; cut early to preserve margin.",
+                    "tighten_stop_price": 0.0,
+                    "_provider": "pixel_onboard_quant",
+                }
+            elif roi_pct >= 10.0 and obi > 0.10:
+                tighter = round(mark_px * 1.004, 4)
+                return {
+                    "verdict": "TIGHTEN_STOP",
+                    "confidence": 85,
+                    "reason": f"Locking in gains (+{roi_pct:.1f}% ROI): Upward bid pressure building ({obi:+.2f}), ratcheted stop to ${tighter:,.4f}.",
+                    "tighten_stop_price": tighter,
+                    "_provider": "pixel_onboard_quant",
+                }
+            else:
+                return {
+                    "verdict": "CONFIRM_HOLD",
+                    "confidence": 88,
+                    "reason": f"Order flow intact: Ask pressure and OBI {obi:+.2f} favor continued Short momentum ({roi_pct:+.1f}% ROI).",
+                    "tighten_stop_price": 0.0,
+                    "_provider": "pixel_onboard_quant",
+                }
+
 
 # Global singleton instance
 pixel_ai = PixelOnboardAI()

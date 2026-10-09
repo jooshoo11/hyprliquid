@@ -93,6 +93,7 @@ class AutoTrader:
         self._leverage_map: Dict[str, float] = {}
         self._cooldowns: Dict[str, float] = {}
         self._ratcheted: Dict[str, bool] = {}
+        self._last_ai_audit: Dict[str, float] = {}
         self._thoughts_buffer: List[Dict[str, Any]] = []
         self._last_rotation_time: float = 0.0
         self.min_rotation_interval: float = 180.0  # Min 3 minutes between rotations to prevent fee churn
@@ -570,6 +571,67 @@ class AutoTrader:
                 if (side == "LONG" and mark_px <= sl) or (side == "SHORT" and mark_px >= sl):
                     self.close_trade(coin, exit_px=mark_px, reason=f"Stop Loss Hit (${mark_px:,.4f} hit SL stop ${sl:,.4f})")
                     continue
+
+            # 4. Active AI Trade Guardian (Real-Time Order Flow Confirmation / Early Rejection)
+            now_t = time.time()
+            last_audit_t = self._last_ai_audit.get(coin, 0.0)
+            if (now_t - last_audit_t) >= 15.0:
+                self._last_ai_audit[coin] = now_t
+                try:
+                    from src.scanner.live_ws_feed import live_feed
+                    from src.utils.pixel_ai import pixel_ai
+                    micro = live_feed.get_microstructure(coin)
+                    audit = pixel_ai.audit_position_orderflow(p, micro)
+
+                    verdict = audit.get("verdict", "CONFIRM_HOLD")
+                    reason = audit.get("reason", "Order flow nominal.")
+                    p["ai_verdict"] = verdict
+                    p["ai_reason"] = reason
+                    p["ai_audit_time"] = now_t
+                    positions_updated = True
+
+                    if verdict == "REJECT_EXIT":
+                        dur = now_t - float(p.get("entry_time", now_t))
+                        if dur >= 15.0:  # Minimum 15s hold to prevent noise churn
+                            self.close_trade(coin, exit_px=mark_px, reason=f"AI Sentry Rejection: {reason}")
+                            continue
+
+                    elif verdict == "TIGHTEN_STOP":
+                        tighter_sl = float(audit.get("tighten_stop_price", 0.0))
+                        if tighter_sl > 0:
+                            if side == "LONG" and tighter_sl > sl:
+                                p["stop_loss"] = tighter_sl
+                                self.log_thought(
+                                    category="[AI SENTRY TIGHTEN]",
+                                    status="OPTIMAL",
+                                    badge_color="cyan",
+                                    coin=coin,
+                                    msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
+                                )
+                            elif side == "SHORT" and (sl <= 0 or tighter_sl < sl):
+                                p["stop_loss"] = tighter_sl
+                                self.log_thought(
+                                    category="[AI SENTRY TIGHTEN]",
+                                    status="OPTIMAL",
+                                    badge_color="cyan",
+                                    coin=coin,
+                                    msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
+                                )
+
+                    elif verdict == "CONFIRM_HOLD":
+                        self.log_thought(
+                            category="[AI SENTRY CONFIRMED]",
+                            status="OPTIMAL",
+                            badge_color="emerald",
+                            coin=coin,
+                            msg=f"AI Sentry confirmed HOLD for {coin} ({margin_roi_pct:+.1f}% ROI): {reason}",
+                        )
+
+                except Exception:
+                    pass
+
+        if positions_updated:
+            save_json_atomic(ACTIVE_TRADES_PATH, active_data)
 
     def find_rotation_candidate(
         self,
