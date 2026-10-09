@@ -236,7 +236,9 @@ class PixelOnboardAI:
             system_prompt = (
                 "You are the Pixel 9 on-device real-time trade sentry.\n"
                 "You evaluate an open trade to decide if the bot should stay (CONFIRM_HOLD),\n"
-                "cut early due to adverse order flow wall collapse (REJECT_EXIT), or tighten stop (TIGHTEN_STOP).\n"
+                "cut early due to adverse order flow wall collapse on a LOSING trade (REJECT_EXIT),\n"
+                "or tighten stop to protect a WINNING trade (TIGHTEN_STOP).\n"
+                "CRITICAL: Never trigger REJECT_EXIT on a profitable position (ROI > 0); instead recommend TIGHTEN_STOP or CONFIRM_HOLD.\n"
                 "Respond STRICTLY in valid JSON matching:\n"
                 '{"verdict": "CONFIRM_HOLD"|"REJECT_EXIT"|"TIGHTEN_STOP", "confidence": 85, "reason": "1 concise sentence", "tighten_stop_price": 0.0}'
             )
@@ -251,25 +253,35 @@ class PixelOnboardAI:
             )
             res = self.query(user_prompt, system_prompt, max_tokens=150)
             if res and isinstance(res, dict) and "verdict" in res:
+                v = res.get("verdict")
+                # Safety guard: never panic-exit winning trades
+                if roi_pct >= 0.0 and v == "REJECT_EXIT":
+                    res["verdict"] = "TIGHTEN_STOP"
+                    res["tighten_stop_price"] = round(entry_px * (1.0025 if side == "LONG" else 0.9975), 4)
+                    res["reason"] = f"Securing gains (+{roi_pct:.1f}% ROI): Ask wall detected; tightened stop to breakeven+ instead of exiting."
                 return res
 
         # 2. Deterministic High-Precision Order Flow Guardian (<1ms fallback)
         t0 = time.time()
         if side == "LONG":
-            if (obi < -0.35 and ask_depth > 1.8 * max(1.0, bid_depth)) or (roi_pct < -4.0 and obi < -0.20):
+            # REJECT_EXIT: Only for LOSING positions where order flow wall has broken down
+            if roi_pct < -2.0 and ((obi < -0.30 and ask_depth > 1.5 * max(1.0, bid_depth)) or obi < -0.50):
                 return {
                     "verdict": "REJECT_EXIT",
                     "confidence": 90,
-                    "reason": f"Adverse ask wall collapse: OBI {obi:+.2f} with ask depth ${ask_depth:,.0f} exceeding bid depth ${bid_depth:,.0f}; cut early to preserve margin.",
+                    "reason": f"Adverse ask wall collapse on losing Long ({roi_pct:.1f}% ROI): OBI {obi:+.2f} with ask depth ${ask_depth:,.0f} > bid depth; cut early to preserve margin.",
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }
-            elif roi_pct >= 10.0 and obi < -0.10:
-                tighter = round(mark_px * 0.996, 4)
+            # TIGHTEN_STOP: For PROFITABLE positions where momentum is slowing or resistance wall is forming
+            elif roi_pct >= 2.5 and (obi < -0.15 or ask_depth > 1.5 * max(1.0, bid_depth)):
+                tighter = round(entry_px * 1.0025, 4)
+                if mark_px > entry_px * 1.008:
+                    tighter = round(mark_px * 0.997, 4)
                 return {
                     "verdict": "TIGHTEN_STOP",
                     "confidence": 85,
-                    "reason": f"Locking in gains (+{roi_pct:.1f}% ROI): OBI flipped negative ({obi:+.2f}), ratcheted stop to ${tighter:,.4f}.",
+                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI): Ask wall detected ahead ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} while letting trade run.",
                     "tighten_stop_price": tighter,
                     "_provider": "pixel_onboard_quant",
                 }
@@ -282,20 +294,24 @@ class PixelOnboardAI:
                     "_provider": "pixel_onboard_quant",
                 }
         else:  # SHORT
-            if (obi > 0.35 and bid_depth > 1.8 * max(1.0, ask_depth)) or (roi_pct < -4.0 and obi > 0.20):
+            # REJECT_EXIT: Only for LOSING positions where bid wall has overwhelmed
+            if roi_pct < -2.0 and ((obi > 0.30 and bid_depth > 1.5 * max(1.0, ask_depth)) or obi > 0.50):
                 return {
                     "verdict": "REJECT_EXIT",
                     "confidence": 90,
-                    "reason": f"Adverse bid wall buildup: OBI {obi:+.2f} with bid depth ${bid_depth:,.0f} overwhelming ask depth; cut early to preserve margin.",
+                    "reason": f"Adverse bid wall buildup on losing Short ({roi_pct:.1f}% ROI): OBI {obi:+.2f} with bid depth ${bid_depth:,.0f} > ask depth; cut early to preserve margin.",
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }
-            elif roi_pct >= 10.0 and obi > 0.10:
-                tighter = round(mark_px * 1.004, 4)
+            # TIGHTEN_STOP: For PROFITABLE positions where downward momentum is slowing
+            elif roi_pct >= 2.5 and (obi > 0.15 or bid_depth > 1.5 * max(1.0, ask_depth)):
+                tighter = round(entry_px * 0.9975, 4)
+                if mark_px < entry_px * 0.992:
+                    tighter = round(mark_px * 1.003, 4)
                 return {
                     "verdict": "TIGHTEN_STOP",
                     "confidence": 85,
-                    "reason": f"Locking in gains (+{roi_pct:.1f}% ROI): Upward bid pressure building ({obi:+.2f}), ratcheted stop to ${tighter:,.4f}.",
+                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI): Bid pressure building ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} while letting short carry run.",
                     "tighten_stop_price": tighter,
                     "_provider": "pixel_onboard_quant",
                 }

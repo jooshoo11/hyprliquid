@@ -166,5 +166,53 @@
     "roi_pct": 25.3,
     "reason": "Take Profit Hit",
     "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:08:55Z",
+    "coin": "SOL",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 20.0,
+    "margin": 30.77,
+    "net_pnl": 0.63,
+    "roi_pct": 3.45,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.82 with ask depth $2,877,204 exceeding bid depth $1,253,019; cut early to preserve margin.",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:09:36Z",
+    "coin": "BTC",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 40.0,
+    "margin": 30.75,
+    "net_pnl": 0.21,
+    "roi_pct": 3.49,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -1.00 with ask depth $2,926,957 exceeding bid depth $111,219; cut early to preserve margin.",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:09:48Z",
+    "coin": "SOL",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 20.0,
+    "margin": 30.77,
+    "net_pnl": 0.74,
+    "roi_pct": 3.81,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.77 with ask depth $2,801,738 exceeding bid depth $1,157,793; cut early to preserve margin.",
+    "is_win": true
+  },
+  {
+    "timestamp": "2026-10-09T06:12:33Z",
+    "coin": "SOL",
+    "side": "LONG",
+    "strategy": "OrderBookImbalance",
+    "leverage": 20.0,
+    "margin": 30.77,
+    "net_pnl": 0.63,
+    "roi_pct": 3.45,
+    "reason": "AI Sentry Rejection: Adverse ask wall collapse: OBI -0.61 with ask depth $2,359,219 exceeding bid depth $1,295,605; cut early to preserve margin.",
+    "is_win": true
   }
 ]
