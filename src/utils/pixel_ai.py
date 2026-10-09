@@ -231,6 +231,8 @@ class PixelOnboardAI:
         spread_bps = float(micro.get("spread_bps", 1.0))
         imbalance_label = micro.get("imbalance_label", "BALANCED")
 
+        price_pct = ((mark_px - entry_px) / entry_px * 100.0) if side == "LONG" else ((entry_px - mark_px) / entry_px * 100.0)
+
         # 1. Attempt on-device LLM reasoning first
         if self.is_online():
             system_prompt = (
@@ -238,13 +240,16 @@ class PixelOnboardAI:
                 "You evaluate an open trade to decide if the bot should stay (CONFIRM_HOLD),\n"
                 "cut early due to adverse order flow wall collapse on a LOSING trade (REJECT_EXIT),\n"
                 "or tighten stop to protect a WINNING trade (TIGHTEN_STOP).\n"
-                "CRITICAL: Never trigger REJECT_EXIT on a profitable position (ROI > 0); instead recommend TIGHTEN_STOP or CONFIRM_HOLD.\n"
+                "CRITICAL RULES:\n"
+                "1. For profitable positions (ROI > 0%), NEVER suggest REJECT_EXIT.\n"
+                "2. For fresh trades where price move < +0.60%, ALWAYS CONFIRM_HOLD to give the trade breathing room to run toward Take Profit (+1.8% to +3.5%).\n"
+                "3. Never tighten a stop within 0.8% of the mark price.\n"
                 "Respond STRICTLY in valid JSON matching:\n"
                 '{"verdict": "CONFIRM_HOLD"|"REJECT_EXIT"|"TIGHTEN_STOP", "confidence": 85, "reason": "1 concise sentence", "tighten_stop_price": 0.0}'
             )
             user_prompt = (
                 f"Open Trade: {side} {coin} ({leverage:.0f}x Lev)\n"
-                f"Entry: ${entry_px:,.4f} | Current Mark: ${mark_px:,.4f} | Margin ROI: {roi_pct:+.2f}%\n"
+                f"Entry: ${entry_px:,.4f} | Current Mark: ${mark_px:,.4f} | Price Move: {price_pct:+.2f}% | Margin ROI: {roi_pct:+.2f}%\n"
                 f"L2 Microstructure:\n"
                 f"- Order Book Imbalance (OBI): {obi:+.3f} ({imbalance_label})\n"
                 f"- Bid Depth: ${bid_depth:,.0f} vs Ask Depth: ${ask_depth:,.0f}\n"
@@ -254,18 +259,43 @@ class PixelOnboardAI:
             res = self.query(user_prompt, system_prompt, max_tokens=150)
             if res and isinstance(res, dict) and "verdict" in res:
                 v = res.get("verdict")
-                # Safety guard: never panic-exit winning trades
-                if roi_pct >= 0.0 and v == "REJECT_EXIT":
-                    res["verdict"] = "TIGHTEN_STOP"
-                    res["tighten_stop_price"] = round(entry_px * (1.0025 if side == "LONG" else 0.9975), 4)
-                    res["reason"] = f"Securing gains (+{roi_pct:.1f}% ROI): Ask wall detected; tightened stop to breakeven+ instead of exiting."
+                # Safety guard 1: never panic-exit winning trades
+                if price_pct >= 0.0 and v == "REJECT_EXIT":
+                    v = "TIGHTEN_STOP"
+                    res["verdict"] = v
+
+                # Safety guard 2: early trade breathing room (price_pct < 0.60%)
+                if 0.0 <= price_pct < 0.60 and v == "TIGHTEN_STOP":
+                    res["verdict"] = "CONFIRM_HOLD"
+                    res["tighten_stop_price"] = 0.0
+                    res["reason"] = f"Breathing room active (+{price_pct:.2f}% price / +{roi_pct:.1f}% ROI): Giving trade room to hit Take-Profit (+1.8% to +3.5%)."
+                    return res
+
+                # Safety guard 3: mathematical sound trailing stop calculation
+                if v == "TIGHTEN_STOP":
+                    if side == "LONG":
+                        safe_sl = round(entry_px * 1.0020, 4) if price_pct >= 0.60 else round(mark_px * 0.990, 4)
+                        if price_pct >= 1.20:
+                            safe_sl = max(safe_sl, round(mark_px * 0.992, 4))
+                        # Invariant: Must be strictly below mark_px with at least 0.4% buffer
+                        safe_sl = min(safe_sl, round(mark_px * 0.996, 4))
+                        res["tighten_stop_price"] = safe_sl
+                        res["reason"] = f"Securing gains (+{roi_pct:.1f}% ROI | +{price_pct:.2f}% price): Ratcheted protective stop to ${safe_sl:,.4f} with breathing room."
+                    else:
+                        safe_sl = round(entry_px * 0.9980, 4) if price_pct >= 0.60 else round(mark_px * 1.010, 4)
+                        if price_pct >= 1.20:
+                            safe_sl = min(safe_sl, round(mark_px * 1.008, 4))
+                        # Invariant: Must be strictly above mark_px with at least 0.4% buffer
+                        safe_sl = max(safe_sl, round(mark_px * 1.004, 4))
+                        res["tighten_stop_price"] = safe_sl
+                        res["reason"] = f"Securing gains (+{roi_pct:.1f}% ROI | +{price_pct:.2f}% price): Ratcheted protective stop to ${safe_sl:,.4f} with breathing room."
                 return res
 
         # 2. Deterministic High-Precision Order Flow Guardian (<1ms fallback)
         t0 = time.time()
         if side == "LONG":
             # REJECT_EXIT: Only for LOSING positions where order flow wall has broken down
-            if roi_pct < -2.0 and ((obi < -0.30 and ask_depth > 1.5 * max(1.0, bid_depth)) or obi < -0.50):
+            if roi_pct < -3.0 and ((obi < -0.40 and ask_depth > 1.8 * max(1.0, bid_depth)) or obi < -0.60):
                 return {
                     "verdict": "REJECT_EXIT",
                     "confidence": 90,
@@ -273,15 +303,19 @@ class PixelOnboardAI:
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }
-            # TIGHTEN_STOP: For PROFITABLE positions where momentum is slowing or resistance wall is forming
-            elif roi_pct >= 2.5 and (obi < -0.15 or ask_depth > 1.5 * max(1.0, bid_depth)):
-                tighter = round(entry_px * 1.0025, 4)
-                if mark_px > entry_px * 1.008:
-                    tighter = round(mark_px * 0.997, 4)
+            # TIGHTEN_STOP: Only for well-developed winners (price_pct >= 0.60%) where resistance wall is forming
+            elif price_pct >= 0.60 and (obi < -0.20 or ask_depth > 1.5 * max(1.0, bid_depth)):
+                be_sl = round(entry_px * 1.0020, 4)  # Net breakeven covering fees + locked profit
+                if price_pct >= 1.20:
+                    tighter = max(be_sl, round(mark_px * 0.992, 4))  # 0.8% runner trailing buffer
+                else:
+                    tighter = be_sl
+                # Hard invariant: must remain at least 0.4% below mark_px
+                tighter = min(tighter, round(mark_px * 0.996, 4))
                 return {
                     "verdict": "TIGHTEN_STOP",
                     "confidence": 85,
-                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI): Ask wall detected ahead ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} while letting trade run.",
+                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI | +{price_pct:.2f}% price): Ask resistance detected ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} with breathing room.",
                     "tighten_stop_price": tighter,
                     "_provider": "pixel_onboard_quant",
                 }
@@ -289,13 +323,13 @@ class PixelOnboardAI:
                 return {
                     "verdict": "CONFIRM_HOLD",
                     "confidence": 88,
-                    "reason": f"Order flow intact: Bid depth ${bid_depth:,.0f} and OBI {obi:+.2f} support Long continuation ({roi_pct:+.1f}% ROI).",
+                    "reason": f"Order flow intact: Bid depth ${bid_depth:,.0f} and OBI {obi:+.2f} support Long continuation ({roi_pct:+.1f}% ROI | {price_pct:+.2f}% price).",
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }
         else:  # SHORT
             # REJECT_EXIT: Only for LOSING positions where bid wall has overwhelmed
-            if roi_pct < -2.0 and ((obi > 0.30 and bid_depth > 1.5 * max(1.0, ask_depth)) or obi > 0.50):
+            if roi_pct < -3.0 and ((obi > 0.40 and bid_depth > 1.8 * max(1.0, ask_depth)) or obi > 0.60):
                 return {
                     "verdict": "REJECT_EXIT",
                     "confidence": 90,
@@ -303,15 +337,19 @@ class PixelOnboardAI:
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }
-            # TIGHTEN_STOP: For PROFITABLE positions where downward momentum is slowing
-            elif roi_pct >= 2.5 and (obi > 0.15 or bid_depth > 1.5 * max(1.0, ask_depth)):
-                tighter = round(entry_px * 0.9975, 4)
-                if mark_px < entry_px * 0.992:
-                    tighter = round(mark_px * 1.003, 4)
+            # TIGHTEN_STOP: Only for well-developed winners (price_pct >= 0.60%) where downward momentum slows
+            elif price_pct >= 0.60 and (obi > 0.20 or bid_depth > 1.5 * max(1.0, ask_depth)):
+                be_sl = round(entry_px * 0.9980, 4)  # Net breakeven covering fees
+                if price_pct >= 1.20:
+                    tighter = min(be_sl, round(mark_px * 1.008, 4))  # 0.8% runner trailing buffer
+                else:
+                    tighter = be_sl
+                # Hard invariant: must remain at least 0.4% above mark_px
+                tighter = max(tighter, round(mark_px * 1.004, 4))
                 return {
                     "verdict": "TIGHTEN_STOP",
                     "confidence": 85,
-                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI): Bid pressure building ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} while letting short carry run.",
+                    "reason": f"Securing gains (+{roi_pct:.1f}% ROI | +{price_pct:.2f}% price): Bid support detected ({obi:+.2f}); ratcheted stop to ${tighter:,.4f} with breathing room.",
                     "tighten_stop_price": tighter,
                     "_provider": "pixel_onboard_quant",
                 }
@@ -319,7 +357,7 @@ class PixelOnboardAI:
                 return {
                     "verdict": "CONFIRM_HOLD",
                     "confidence": 88,
-                    "reason": f"Order flow intact: Ask pressure and OBI {obi:+.2f} favor continued Short momentum ({roi_pct:+.1f}% ROI).",
+                    "reason": f"Order flow intact: Ask pressure and OBI {obi:+.2f} favor continued Short momentum ({roi_pct:+.1f}% ROI | {price_pct:+.2f}% price).",
                     "tighten_stop_price": 0.0,
                     "_provider": "pixel_onboard_quant",
                 }

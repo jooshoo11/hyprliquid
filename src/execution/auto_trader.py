@@ -547,26 +547,38 @@ class AutoTrader:
             p["roi_pct"] = round(margin_roi_pct, 2)
             positions_updated = True
 
-            # 1. Trailing Breakeven Ratchet (Fee-Protective: +0.25% Net Profit Guard)
+            # 1. Trailing Breakeven Ratchet (Fee-Protective: +0.20% Net Profit Guard)
             eff_ratchet_thresh = max(1.0, ratchet_threshold)
             if price_pct >= eff_ratchet_thresh and not self._ratcheted.get(coin):
-                # Set stop at +0.25% beyond entry, covering 0.07% round-trip fees + 0.18% net profit buffer
-                be_sl = round(entry_px * (1.0025 if side == "LONG" else 0.9975), 4)
-                p["stop_loss"] = be_sl
-                self._ratcheted[coin] = True
-                save_json_atomic(ACTIVE_TRADES_PATH, active_data)
-                self.log_thought(
-                    category="[RATCHET STOP]",
-                    status="OPTIMAL",
-                    badge_color="cyan",
-                    coin=coin,
-                    msg=f"Ratcheted stop for {coin} ({lev:.0f}x) to Net Breakeven (${be_sl:,.4f}) to cover fees & guarantee profit (+{margin_roi_pct:.1f}% ROI on margin).",
-                )
+                # Set stop at +0.20% beyond entry, covering 0.07% round-trip fees + 0.13% net profit buffer
+                be_sl = round(entry_px * (1.0020 if side == "LONG" else 0.9980), 4)
+                # Enforce invariant: be_sl must be safely below mark_px for Long / above mark_px for Short
+                if (side == "LONG" and be_sl < mark_px * 0.995) or (side == "SHORT" and be_sl > mark_px * 1.005):
+                    p["stop_loss"] = be_sl
+                    self._ratcheted[coin] = True
+                    save_json_atomic(ACTIVE_TRADES_PATH, active_data)
+                    self.log_thought(
+                        category="[RATCHET STOP]",
+                        status="OPTIMAL",
+                        badge_color="cyan",
+                        coin=coin,
+                        msg=f"Ratcheted stop for {coin} ({lev:.0f}x) to Net Breakeven (${be_sl:,.4f}) to cover fees & guarantee profit (+{margin_roi_pct:.1f}% ROI on margin).",
+                    )
 
-            # 1b. Dynamic Runner Trailing Stop: lock in 60% of peak gains on big moves (>= 2.0% price move)
-            if price_pct >= 2.0:
+            # 1b. Dynamic Runner Trailing Stop: lock in 60% of peak gains on big moves (>= 1.5% price move)
+            if price_pct >= 1.5:
                 trail_sl = round(entry_px * (1.0 + (price_pct * 0.60 / 100.0) if side == "LONG" else 1.0 - (price_pct * 0.60 / 100.0)), 4)
-                if (side == "LONG" and trail_sl > sl) or (side == "SHORT" and (sl <= 0 or trail_sl < sl)):
+                if side == "LONG" and trail_sl > sl and trail_sl < mark_px * 0.992:
+                    p["stop_loss"] = trail_sl
+                    save_json_atomic(ACTIVE_TRADES_PATH, active_data)
+                    self.log_thought(
+                        category="[PROFIT TRAILING]",
+                        status="OPTIMAL",
+                        badge_color="emerald",
+                        coin=coin,
+                        msg=f"Trailed profit stop for {coin} to ${trail_sl:,.4f} (+{price_pct * 0.60 * lev:.1f}% locked ROI).",
+                    )
+                elif side == "SHORT" and (sl <= 0 or trail_sl < sl) and trail_sl > mark_px * 1.008:
                     p["stop_loss"] = trail_sl
                     save_json_atomic(ACTIVE_TRADES_PATH, active_data)
                     self.log_thought(
@@ -583,10 +595,12 @@ class AutoTrader:
                     self.close_trade(coin, exit_px=mark_px, reason=f"Take Profit Hit (${mark_px:,.4f} hit TP target ${tp:,.4f})")
                     continue
 
-            # 3. Stop-Loss Check
+            # 3. Stop-Loss / Trailing Profit-Stop Check
             if sl > 0:
                 if (side == "LONG" and mark_px <= sl) or (side == "SHORT" and mark_px >= sl):
-                    self.close_trade(coin, exit_px=mark_px, reason=f"Stop Loss Hit (${mark_px:,.4f} hit SL stop ${sl:,.4f})")
+                    is_profit_sl = (mark_px > entry_px) if side == "LONG" else (mark_px < entry_px)
+                    sl_label = "Trailing Profit Stop" if is_profit_sl else "Stop Loss"
+                    self.close_trade(coin, exit_px=mark_px, reason=f"{sl_label} Hit (${mark_px:,.4f} hit stop ${sl:,.4f})")
                     continue
 
             # 4. Active AI Trade Guardian (Real-Time Order Flow Confirmation / Early Rejection)
@@ -616,24 +630,32 @@ class AutoTrader:
                     elif verdict == "TIGHTEN_STOP":
                         tighter_sl = float(audit.get("tighten_stop_price", 0.0))
                         if tighter_sl > 0:
-                            if side == "LONG" and tighter_sl > sl:
-                                p["stop_loss"] = tighter_sl
-                                self.log_thought(
-                                    category="[AI SENTRY TIGHTEN]",
-                                    status="OPTIMAL",
-                                    badge_color="cyan",
-                                    coin=coin,
-                                    msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
-                                )
-                            elif side == "SHORT" and (sl <= 0 or tighter_sl < sl):
-                                p["stop_loss"] = tighter_sl
-                                self.log_thought(
-                                    category="[AI SENTRY TIGHTEN]",
-                                    status="OPTIMAL",
-                                    badge_color="cyan",
-                                    coin=coin,
-                                    msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
-                                )
+                            if side == "LONG":
+                                # Enforce invariant: tighter_sl must be safely below mark_px
+                                if tighter_sl >= mark_px * 0.996:
+                                    tighter_sl = round(mark_px * 0.992, 4)
+                                if tighter_sl > sl and tighter_sl < mark_px:
+                                    p["stop_loss"] = tighter_sl
+                                    self.log_thought(
+                                        category="[AI SENTRY TIGHTEN]",
+                                        status="OPTIMAL",
+                                        badge_color="cyan",
+                                        coin=coin,
+                                        msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
+                                    )
+                            elif side == "SHORT":
+                                # Enforce invariant: tighter_sl must be safely above mark_px
+                                if tighter_sl <= mark_px * 1.004:
+                                    tighter_sl = round(mark_px * 1.008, 4)
+                                if (sl <= 0 or tighter_sl < sl) and tighter_sl > mark_px:
+                                    p["stop_loss"] = tighter_sl
+                                    self.log_thought(
+                                        category="[AI SENTRY TIGHTEN]",
+                                        status="OPTIMAL",
+                                        badge_color="cyan",
+                                        coin=coin,
+                                        msg=f"AI Sentry tightened stop for {coin} to ${tighter_sl:,.4f}: {reason}",
+                                    )
 
                     elif verdict == "CONFIRM_HOLD":
                         self.log_thought(
