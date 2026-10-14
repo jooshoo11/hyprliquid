@@ -1,0 +1,18 @@
+{
+    "metrics": [
+        {
+            "accuracy": 0.6829268292682927,
+            "precision": 0.5263157894736842,
+            "auc": 0.7301587301587301
+        }
+    ],
+    "top_features": [
+        "rvol",
+        "funding_zscore",
+        "obi",
+        "atr_expansion",
+        "rsi_14",
+        "macd_hist",
+        "adx_14"
+    ]
+}

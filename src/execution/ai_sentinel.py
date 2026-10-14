@@ -34,6 +34,7 @@ from rich.text import Text
 
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.scanner.arbitrage_scanner import ArbitrageScanner
+from src.scanner.analytics_pipeline import AnalyticsPipeline
 
 console = Console()
 
@@ -52,6 +53,7 @@ class AISentinel:
         self.prospect_interval = prospect_interval
         self.info_client = HyperliquidInfoClient()
         self.arbitrage_scanner = ArbitrageScanner(info_client=self.info_client)
+        self.analytics_pipeline = AnalyticsPipeline(dashboard_port=8001, auto_start=True)
 
         self.active_trades_path = os.path.join(REPO_ROOT, "bridge", "active_trades.json")
         self.ai_commands_path = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
@@ -66,6 +68,8 @@ class AISentinel:
         """Graceful shutdown handler."""
         console.print("\n[bold yellow]🛑 AI Sentinel shutting down cleanly...[/bold yellow]")
         self._running = False
+        if hasattr(self, "analytics_pipeline") and self.analytics_pipeline:
+            self.analytics_pipeline.stop()
 
     def scan_top_prospects(self) -> Dict[str, Any]:
         """
@@ -284,6 +288,15 @@ class AISentinel:
                     console.print(f"  [bold red]🚨 EMERGENCY TRIGGER: {coin} - {toxic_reason}[/bold red]")
                     emergency_commands.append({"action": "CLOSE_POSITION", "coin": coin, "reason": toxic_reason})
                     continue
+
+                # Toxic Condition 4: Real-Time Dashboard Microstructure Risk Audit
+                if hasattr(self, "analytics_pipeline") and self.analytics_pipeline:
+                    micro_audit = self.analytics_pipeline.audit_position_risk(coin, side, pnl_pct)
+                    if micro_audit.is_toxic:
+                        toxic_reason = f"Dashboard Microstructure Toxic Risk: {'; '.join(micro_audit.toxic_reasons)}"
+                        console.print(f"  [bold red]🚨 EMERGENCY TRIGGER: {coin} - {toxic_reason}[/bold red]")
+                        emergency_commands.append({"action": "CLOSE_POSITION", "coin": coin, "reason": toxic_reason})
+                        continue
 
             # If any emergency command generated, write to bridge/ai_commands.json
             if emergency_commands:

@@ -20,13 +20,13 @@ if [ -n "$SENTINEL_PIDS" ]; then
 fi
 
 # Stop Main Engine
-ENGINE_PIDS=$(pgrep -f "run.py.*--port.*8000" || true)
+ENGINE_PIDS=$(pgrep -f "run\.py" || true)
 if [ -n "$ENGINE_PIDS" ]; then
     echo "Stopping Trading Engine (PID: $ENGINE_PIDS)..."
     kill -TERM $ENGINE_PIDS 2>/dev/null || true
     sleep 1
     # Force kill if still hanging
-    REMAINING=$(pgrep -f "run.py.*--port.*8000" || true)
+    REMAINING=$(pgrep -f "run\.py" || true)
     if [ -n "$REMAINING" ]; then
         kill -9 $REMAINING 2>/dev/null || true
     fi

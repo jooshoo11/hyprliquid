@@ -13,7 +13,7 @@ import threading
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +95,21 @@ class PortfolioGuard:
         self.current_regime: Optional[str] = None
         self.regime_tweaks: List[str] = []
 
-    def set_market_regime(self, regime: str, tweaks: Optional[List[str]] = None) -> None:
-        """Update active macro market regime and dynamic strategy adaptations."""
+    def set_market_regime(self, regime: str, tweaks: Optional[List[str]] = None, breadth_pct: Optional[float] = None) -> None:
+        """Update active macro market regime, dynamic strategy adaptations, and auto-lift probations on regime shifts."""
         with self._lock:
+            prev_regime = self.current_regime
             self.current_regime = str(regime).strip()
             self.regime_tweaks = list(tweaks or [])
+
+            # Dynamic probation lift hook: if regime shifted or breadth crosses back above 45%, release strategy probations
+            if (prev_regime and prev_regime != self.current_regime) or (breadth_pct is not None and breadth_pct >= 45.0):
+                if self.strategy_lockouts:
+                    self.strategy_lockouts.clear()
+                    # Re-normalize allocation caps
+                    for strat in list(self.strategy_allocation_caps.keys()):
+                        self.strategy_sizing_multipliers[strat] = 1.0
+                        self.strategy_allocation_caps[strat] = self.baseline_strategy_equity_pct
 
     def update_equity(self, equity: float) -> None:
         """Update portfolio equity and evaluate rolling 4-hour drawdown circuit breaker."""
@@ -149,11 +159,12 @@ class PortfolioGuard:
             return self.baseline_strategy_equity_pct
 
     def set_strategy_allocation_cap(self, strategy_name: str, cap: float) -> None:
-        """Dynamically set the margin allocation cap multiplier (e.g. 1.5 = 150% margin) for a strategy."""
+        """Dynamically set the margin allocation cap (e.g. 0.40 = 40% margin, or 2.5x multiplier) for a strategy."""
         with self._lock:
-            self.strategy_allocation_caps[strategy_name] = float(cap)
+            val = float(cap)
+            self.strategy_allocation_caps[strategy_name] = val
             base_name = strategy_name.split("-")[0]
-            self.strategy_allocation_caps[base_name] = float(cap)
+            self.strategy_allocation_caps[base_name] = val
 
     def set_strategy_max_positions(self, strategy_name: str, max_pos: int) -> None:
         """Dynamically set the maximum concurrent open positions allowed for a strategy."""
@@ -180,6 +191,8 @@ class PortfolioGuard:
         """
         strat_trades: Dict[str, List[Dict[str, Any]]] = {}
         for t in closed_trades:
+            if "Dashboard Microstructure Toxic Risk" in t.get("reason", ""):
+                continue
             strat = t.get("strategy") or "default"
             strat_trades.setdefault(strat, []).append(t)
             base_strat = strat.split("-")[0]
@@ -222,19 +235,20 @@ class PortfolioGuard:
                         break
 
                 now_ts = time.time()
-                # Strategy Circuit Breaker: 3 consecutive losses OR win rate < 35% over at least 5 trades
+                # Strategy Probation: 3 consecutive losses OR win rate < 35% over at least 5 trades
+                # Never brick strategies or lock out valid trades; apply temporary probation sizing multiplier (0.4x)
                 if consecutive_losses >= 3 or (len(eval_trades) >= 5 and win_rate < 0.35 and total_net_pnl < 0):
-                    self.strategy_lockouts[strat] = now_ts + 3600.0
+                    self.strategy_lockouts[strat] = now_ts + 1800.0
                     base_strat = strat.split("-")[0]
-                    self.strategy_lockouts[base_strat] = now_ts + 3600.0
+                    self.strategy_lockouts[base_strat] = now_ts + 1800.0
 
                 lockout_until = max(self.strategy_lockouts.get(strat, 0.0), self.strategy_lockouts.get(strat.split("-")[0], 0.0))
-                is_locked = (now_ts < lockout_until)
-                lock_rem = max(0, int((lockout_until - now_ts) / 60)) if is_locked else 0
+                is_probation = (now_ts < lockout_until)
+                probation_rem = max(0, int((lockout_until - now_ts) / 60)) if is_probation else 0
 
-                if is_locked:
+                if is_probation:
                     multiplier = 0.4
-                    tier = f"CIRCUIT BREAKER 🛑 ({lock_rem}m lockout)"
+                    tier = f"PROBATION ⚠️ (0.4x, {probation_rem}m)"
                 elif win_rate >= 0.60 and total_net_pnl > 0:
                     multiplier = 1.6 if win_rate >= 0.75 else 1.4
                     tier = "HOT 🔥" if win_rate >= 0.75 else "WARM ⚡"
@@ -261,18 +275,11 @@ class PortfolioGuard:
                     "profit_factor": profit_factor,
                     "rolling_net_pnl": round(total_net_pnl, 2),
                     "consecutive_losses": consecutive_losses,
-                    "is_locked": is_locked,
-                    "lockout_remaining_minutes": lock_rem,
+                    "is_locked": is_probation,
+                    "lockout_remaining_minutes": probation_rem,
                 }
 
             return dict(self.strategy_allocation_caps)
-
-    def set_strategy_allocation_cap(self, strategy_name: str, cap: float) -> None:
-        """Explicitly set margin allocation cap for a strategy."""
-        with self._lock:
-            base_strat = strategy_name.split("-")[0]
-            self.strategy_allocation_caps[strategy_name] = float(cap)
-            self.strategy_allocation_caps[base_strat] = float(cap)
 
 
     def is_strategy_locked(self, strategy_name: str) -> bool:
@@ -294,14 +301,13 @@ class PortfolioGuard:
             self.strategy_lockouts[base_strat] = until
 
     def get_strategy_sizing_multiplier(self, strategy_name: str) -> float:
-        """Get current dynamic risk sizing multiplier for order sizing (never throttled below 1.0x)."""
+        """Get current dynamic risk sizing multiplier for order sizing (scaled to 0.4x during probation)."""
         with self._lock:
             val = self.strategy_sizing_multipliers.get(strategy_name)
             if val is None:
                 base_name = strategy_name.split("-")[0]
                 val = self.strategy_sizing_multipliers.get(base_name, 1.0)
-            # Never throttle below 1.0x - do not shrink positions 60% smaller!
-            return max(1.0, float(val))
+            return max(0.40, float(val))
 
     def get_strategy_performance_status(self) -> Dict[str, Dict[str, Any]]:
         """Get live performance metrics, tiers, and multipliers across all strategies."""
@@ -311,6 +317,7 @@ class PortfolioGuard:
     def sync_open_positions(self, open_positions: List[Any]) -> None:
         """Synchronize internal strategy open positions tracker AND ground-truth allocated margin."""
         with self._lock:
+            self._pending_approvals = 0
             self.strategy_open_positions.clear()
             self.strategy_allocated_margin.clear()
             self.active_instrument_directions.clear()
@@ -417,15 +424,14 @@ class PortfolioGuard:
                 rem_sec = int(cooldown_until - now_sec)
                 return False, f"Anti-churn cooldown active for {coin} ({rem_sec}s remaining)."
 
-            # Strategy Circuit Breaker Lockout Check
+            # Strategy Probation Status Check (never brick valid trades or hard-lockout)
             base_strat = strategy_name.split("-")[0]
             lockout_until = max(
                 self.strategy_lockouts.get(strategy_name, 0.0),
                 self.strategy_lockouts.get(base_strat, 0.0),
             )
-            if now_sec < lockout_until:
-                rem_mins = max(1, int((lockout_until - now_sec) / 60))
-                return False, f"Strategy Circuit Breaker: Strategy '{base_strat}' locked out ({rem_mins}m remaining) due to consecutive loss streak or low win rate."
+            is_in_probation = (now_sec < lockout_until)
+            # Strategy probation scales sizing down via dynamic multipliers, but NEVER blocks trades.
 
             prospect_bias = self.prospect_biases.get(coin)
             if prospect_bias:
@@ -457,7 +463,7 @@ class PortfolioGuard:
 
             # Per-strategy max open positions check (prevents scalper from monopolizing portfolio)
             base_strat = strategy_name.split("-")[0]
-            max_strat_pos = self.strategy_max_positions.get(base_strat, self.strategy_max_positions.get(strategy_name, 2))
+            max_strat_pos = self.strategy_max_positions.get(base_strat, self.strategy_max_positions.get(strategy_name, self.max_total_open_positions))
             strat_pending = sum(1 for e in self.pending_orders.values() if e.strategy_id.split("-")[0] == base_strat)
             current_strat_pos = len(self.strategy_open_positions.get(base_strat, set())) + strat_pending
             if current_strat_pos >= max_strat_pos:
@@ -480,13 +486,7 @@ class PortfolioGuard:
                     return False, f"Order notional (${proposed_notional_usd:,.2f}) exceeds max single position cap {pct_lbl} (${max_single_notional:,.2f})."
 
             cap = self.get_strategy_allocation_cap(strategy_name)
-            if cap <= 1.0:
-                max_allowed_margin = self.current_equity * cap * eff_lev
-            else:
-                # When cap is expressed as position multiplier (e.g. 2.5x positions), scale by trade slot size at max leverage
-                slot_lev = eff_lev if leverage is not None else min(float(max_lev), 15.0)
-                slot_notional = (self.current_equity / float(max(1, self.max_total_open_positions))) * slot_lev
-                max_allowed_margin = cap * slot_notional
+            max_allowed_margin = self.current_equity * cap * eff_lev
 
             current_strategy_margin = self.strategy_allocated_margin.get(strategy_name, self.strategy_allocated_margin.get(base_strat, 0.0))
             if (current_strategy_margin + proposed_notional_usd) > (max_allowed_margin * 1.05):
@@ -498,7 +498,7 @@ class PortfolioGuard:
                     return False, "SILENT_BLOCK"
                 self._log_cooldown[key] = now
                 
-                pct_str = f"{int(cap * 100)}%" if cap <= 1.0 else f"{cap:.1f}x"
+                pct_str = f"{int(round(cap * 100))}%" if cap <= 1.0 else f"{cap:.1f}x"
                 return False, (
                     f"Strategy '{strategy_name}' exceeds {pct_str} allocation limit "
                     f"(${current_strategy_margin + proposed_notional_usd:,.2f} > ${max_allowed_margin:,.2f})."
@@ -537,6 +537,7 @@ class PortfolioGuard:
             instr_str = str(order.instrument_id)
             order_id_str = str(order.client_order_id)
 
+            from src.utils.instruments import get_coin_max_leverage
             self.strategy_allocated_margin[strategy_name] = (
                 self.strategy_allocated_margin.get(strategy_name, 0.0) + notional_usd
             )
@@ -578,7 +579,7 @@ class PortfolioGuard:
             if str(entry.instrument_id) != instr_str
         }
 
-        # Set 3-minute anti-churn cooldown on the closed coin
+        # Set anti-churn cooldown on the closed coin
         coin = instr_str.split("-")[0].split(".")[0].upper()
         self.cooldown_tracker[coin] = time.time() + self.reentry_cooldown_seconds
 

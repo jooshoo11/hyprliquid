@@ -166,8 +166,8 @@ def test_dynamic_sizing_multipliers_and_performance_status():
     assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 1.6
     assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC-001") == 1.6
 
-    # Sizing multiplier is never throttled below 1.0x (no 60% shrinkage penalty!)
-    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 1.0
+    # Sizing multiplier scales to 0.4x during probation
+    assert guard.get_strategy_sizing_multiplier("HourlyFundingFade") == 0.4
 
     # Performance status verification
     status = guard.get_strategy_performance_status()
@@ -315,7 +315,7 @@ def test_choppy_regime_blocks_trend_continuation():
 
 
 def test_strategy_circuit_breaker_lockout():
-    """Verify that a strategy with 3 consecutive losses is locked out for 60 minutes."""
+    """Verify that a strategy with 3 consecutive losses enters probation (0.4x sizing) without bricking valid trades."""
     guard = PortfolioGuard()
     guard.update_equity(1000.0)
     inst_sol = InstrumentId(Symbol("SOL-USD-PERP"), Venue("HYPERLIQUID"))
@@ -332,18 +332,22 @@ def test_strategy_circuit_breaker_lockout():
     ]
     guard.update_dynamic_allocations(losing_trades)
 
-    # Strategy should now be locked out
+    # Strategy should now be in probation with 0.4x sizing multiplier
     assert guard.is_strategy_locked("TrendContinuationSMC") is True
     stats = guard.get_strategy_performance_status()
     assert "TrendContinuationSMC" in stats
     assert stats["TrendContinuationSMC"]["is_locked"] is True
-    assert "CIRCUIT BREAKER" in stats["TrendContinuationSMC"]["tier"]
+    assert "PROBATION" in stats["TrendContinuationSMC"]["tier"]
+    assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 0.40
 
-    # can_open_position must block new orders
-    can_open_blocked, reason_blocked = guard.can_open_position("TrendContinuationSMC", inst_sol, OrderSide.BUY, 100.0, 0)
-    assert can_open_blocked is False
-    assert "Strategy Circuit Breaker" in reason_blocked
-    assert "locked out" in reason_blocked
+    # can_open_position allows valid trades with probation sizing (does NOT brick strategy)
+    can_open_probation, reason = guard.can_open_position("TrendContinuationSMC", inst_sol, OrderSide.BUY, 100.0, 0)
+    assert can_open_probation is True
+
+    # When market regime shifts or breadth >= 45%, probation is automatically lifted
+    guard.set_market_regime("BULL_MOMENTUM_EXPANSION", breadth_pct=55.0)
+    assert guard.is_strategy_locked("TrendContinuationSMC") is False
+    assert guard.get_strategy_sizing_multiplier("TrendContinuationSMC") == 1.0
 
 
 def test_bypass_risk_guard_unconstrained_max_leverage():

@@ -52,7 +52,7 @@ from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue, Strat
 from nautilus_trader.execution.messages import CancelOrder
 from decimal import Decimal
 from nautilus_trader.model.currencies import USD
-from nautilus_trader.model.enums import AccountType, OrderSide, OrderType, TimeInForce
+from nautilus_trader.model.enums import AccountType, OrderSide, OrderType, TimeInForce, TriggerType
 from nautilus_trader.model.objects import MarginBalance, Money, AccountBalance
 from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.core.uuid import UUID4
@@ -62,6 +62,7 @@ from src.strategies.funding_fade import HourlyFundingFade, HourlyFundingFadeConf
 from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanceConfig
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
 from src.strategies.liquidation_absorber import LiquidationAbsorber, LiquidationAbsorberConfig
+from src.strategies.high_conviction_momentum import HighConvictionMomentumStrategy, HighConvictionMomentumConfig
 from src.risk.portfolio_guard import PortfolioGuard
 from src.risk.trade_manager import TradeManager, TradeAction
 from src.risk.performance_analytics import PerformanceAnalytics
@@ -69,6 +70,7 @@ from src.risk.fallback_engine import AIFallbackEngine
 from src.risk.regime_manager import MarketRegimeManager, MarketRegimeInfo
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.scanner.arbitrage_scanner import ArbitrageScanner
+from src.scanner.analytics_pipeline import AnalyticsPipeline
 from src.utils.instruments import get_coin_max_leverage, to_hl_price
 from src.execution.node_runner import generate_or_load_wallet
 from src.execution.agent_wallet import HyperliquidAgentWallet
@@ -83,13 +85,13 @@ class UnifiedEngine:
 
     def __init__(
         self,
-        top_n: int = 15,
+        top_n: int = 50,
         paper: bool = True,
         risk_pct: float = 0.01,
         rr_ratio: float = 2.5,
         web_port: int = 8000,
         watchdog_interval: float = 10.0,
-        prospector_interval: float = 45.0,
+        prospector_interval: float = 900.0,
     ):
         self.top_n = top_n
         self.paper = paper
@@ -98,6 +100,9 @@ class UnifiedEngine:
         self.web_port = web_port
         self.watchdog_interval = float(watchdog_interval)
         self.prospector_interval = float(prospector_interval)
+        self._last_deep_enrichment_ts: float = 0.0
+        self._last_arb_scan_ts: float = 0.0
+        self._cancelled_orphan_ids: set[str] = set()
 
         self.info_client = HyperliquidInfoClient(network="mainnet" if paper else "testnet")
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
@@ -107,37 +112,43 @@ class UnifiedEngine:
         )
 
         self.guard = PortfolioGuard(
-            max_strategy_equity_pct=50.0,
-            max_total_open_positions=3,
+            max_strategy_equity_pct=1.00,
+            max_total_open_positions=2,
             max_daily_drawdown_pct=0.20,
             max_single_position_equity_pct=None,
             allow_pyramiding=False,
             bypass_risk_guard=False,
             allow_reversals=True,
         )
-        self.guard.reentry_cooldown_seconds = 120.0  # 2 minutes for high-velocity scalping
+        self.guard.reentry_cooldown_seconds = 900.0  # 15 minutes global re-entry cooldown
         self.trade_manager = TradeManager(
-            min_holding_seconds=45.0,        # 45s minimum hold to prevent instant noise whipsaws
-            reentry_cooldown_seconds=120.0,   # 2 minutes cooldown (re-arm quickly)
-            take_profit_roi_pct=1.40,        # Bank +1.4% price move (+21% ROE at 15x leverage)
-            breakeven_roi_pct=0.60,          # Move stop to breakeven once price is up +0.60%
-            breakeven_stop_roi_pct=0.12,     # +0.12% stop locks in profit above fees
-            trailing_roi_pct=0.90,           # Activate trailing stop at +0.90%
-            trailing_distance_pct=0.40,      # Tight 0.40% trail behind peak price
-            mae_roi_pct=-0.90,               # Hard cut at -0.90% price move
-            mae_loss_usd=-2.50,              # Hard dollar stop per position
-            fast_dud_minutes=10.0,           # Exit trades that chop flat for 10 minutes
-            fast_dud_roi_pct=-0.25,
-            fast_dud_max_peak_roi=0.15,
-            stagnant_hours=0.35,             # 20 minutes maximum total duration per trade
+            min_holding_seconds=60.0,        # 60s minimum hold to prevent instant noise whipsaws
+            reentry_cooldown_seconds=1800.0,  # 30 minutes strict post-trade coin lockout
+            take_profit_roi_pct=2.80,        # Bank +2.8% price move (healthy institutional swing target)
+            breakeven_roi_pct=1.20,          # Move stop to breakeven once price is up +1.20%
+            breakeven_stop_roi_pct=0.25,     # +0.25% stop locks in profit comfortably above fees
+            trailing_roi_pct=1.80,           # Activate trailing stop once in solid profit at +1.80%
+            trailing_distance_pct=0.85,      # Healthy 0.85% trail behind peak price
+            mae_roi_pct=-1.50,               # Hard cut at -1.50% price move
+            mae_loss_usd=-5.00,              # Hard dollar stop per position
+            fast_dud_minutes=25.0,           # Exit trades that chop flat for 25 minutes
+            fast_dud_roi_pct=-0.50,
+            fast_dud_max_peak_roi=0.25,
+            stagnant_hours=2.0,              # 2 hours maximum total duration per trade
             tiered_profit_lock=True,
-            max_positions=3,
+            enable_partial_tp=True,          # Master Quant Alpha: 50% TP1 scale-out
+            max_positions=2,
         )
+        # Max share of equity that may be lost if a trade hits its stop (6% = $12 on $200). Drives notional clamp.
+        self.max_risk_pct_per_trade: float = 0.06
+        # coin -> {"ts": placed_time, "orders": [(strategy_actor, order), ...]} for exchange-resident reduce-only protection
+        self._protection_orders: Dict[str, Dict[str, Any]] = {}
         self.analytics = PerformanceAnalytics()
         self.fallback_engine = AIFallbackEngine()
         self.regime_manager = MarketRegimeManager()
 
         self.node: Optional[TradingNode] = None
+        self.momentum_strat: Optional[HighConvictionMomentumStrategy] = None
         self.continuation_strat: Optional[TrendContinuationSMC] = None
         self.funding_strat: Optional[HourlyFundingFade] = None
         self.scalp_strat: Optional[OrderBookImbalance] = None
@@ -151,6 +162,7 @@ class UnifiedEngine:
         self.sentinel_thoughts: List[Dict[str, Any]] = []
 
         self.arbitrage_scanner = ArbitrageScanner(info_client=self.info_client)
+        self.analytics_pipeline = AnalyticsPipeline(dashboard_port=8001, auto_start=True)
 
         self._is_running = False
         self._threads: List[threading.Thread] = []
@@ -163,8 +175,8 @@ class UnifiedEngine:
         self.market_regime_path = os.path.join(REPO_ROOT, "bridge", "market_regime.json")
         self.ai_commands_path = os.path.join(REPO_ROOT, "bridge", "ai_commands.json")
         self.ai_status_path = os.path.join(REPO_ROOT, "bridge", "ai_status.json")
-        self._paper_starting_balance = 100.0
-        self._paper_starting_equity = 100.0
+        self._paper_starting_balance = 200.0
+        self._paper_starting_equity = 200.0
         self._paper_realized_pnl = 0.0
         self._cached_px_map: Dict[str, float] = {}
         self._last_px_map_time: float = 0.0
@@ -177,6 +189,9 @@ class UnifiedEngine:
         self._force_prospector_scan = False
         self._in_flight_closes: Dict[str, float] = {}  # coin -> timestamp when close was submitted
         self._closed_positions_coins: set[str] = set()  # set of coins whose close was submitted in this session
+        self._benchmark_impulse_cache: Tuple[float, float] = (0.0, 0.0)
+        self._benchmark_impulse_cache_ts: float = 0.0
+        self._coin_kline_cache: Dict[str, Tuple[float, Any]] = {}  # coin -> (timestamp, metrics_dict)
         self.command_queue: queue.Queue = queue.Queue()
         self._latest_state: Dict[str, Any] = {}
         self._lock: threading.RLock = threading.RLock()
@@ -242,7 +257,7 @@ class UnifiedEngine:
             if os.path.exists(self.paper_state_path):
                 with open(self.paper_state_path, "r") as f:
                     state = json.load(f)
-                self._paper_starting_balance = float(state.get("starting_balance", 100.0))
+                self._paper_starting_balance = float(state.get("starting_balance", 200.0))
                 self._paper_realized_pnl = float(state.get("realized_pnl", 0.0))
                 restored_cash = self._paper_starting_balance + self._paper_realized_pnl
                 self._paper_starting_equity = float(state.get("equity", restored_cash))
@@ -252,7 +267,7 @@ class UnifiedEngine:
                     f"Realized P&L=${self._paper_realized_pnl:+.2f}"
                 )
         except Exception as e:
-            self.log(f"Paper state init fresh at $100 ({e})", "WARN")
+            self.log(f"Paper state init fresh at $200 ({e})", "WARN")
 
     def save_paper_state(self, equity: float, realized_pnl: float, positions: List[Dict]) -> None:
         """Atomically persist paper equity to disk."""
@@ -286,6 +301,9 @@ class UnifiedEngine:
         # Screen top perpetuals
         top_markets = self.info_client.get_top_perpetuals(top_n=self.top_n)
         self.top_coins = [m["name"] for m in top_markets]
+        for benchmark in ["BTC", "ETH", "SOL"]:
+            if benchmark not in self.top_coins:
+                self.top_coins.append(benchmark)
         self.log(f"Surveillance configured across {len(self.top_coins)} top perpetuals.")
 
         env = HyperliquidEnvironment.MAINNET if self.paper else HyperliquidEnvironment.TESTNET
@@ -349,13 +367,40 @@ class UnifiedEngine:
             )
             self.node.portfolio.update_account(mock_state)
 
-        # Instantiate all 4 Strategy Actors
+        # Load tuned hyperparameter configurations if present
+        opt_params = {}
+        opt_path = os.path.join(REPO_ROOT, "config", "optimized_params.json")
+        if os.path.exists(opt_path):
+            try:
+                with open(opt_path, "r") as f:
+                    payload = json.load(f)
+                    opt_params = payload.get("parameters", {})
+            except Exception:
+                opt_params = {}
+
+        # Instantiate Strategy Actors
+        self.momentum_strat = HighConvictionMomentumStrategy(
+            config=HighConvictionMomentumConfig(venue="HYPERLIQUID", risk_per_trade_pct=self.risk_pct),
+            portfolio_guard=self.guard,
+        )
         self.continuation_strat = TrendContinuationSMC(
-            config=TrendContinuationConfig(venue="HYPERLIQUID", risk_per_trade_pct=self.risk_pct, reward_to_risk_ratio=self.rr_ratio),
+            config=TrendContinuationConfig(
+                venue="HYPERLIQUID",
+                risk_per_trade_pct=opt_params.get("continuation_risk_pct", self.risk_pct),
+                reward_to_risk_ratio=opt_params.get("continuation_rr_ratio", self.rr_ratio),
+                ema_fast_period=opt_params.get("continuation_ema_fast", 9),
+                ema_slow_period=opt_params.get("continuation_ema_slow", 21),
+                displacement_multiplier=opt_params.get("continuation_displacement", opt_params.get("continuation_displacement_multiplier", 1.5)),
+            ),
             portfolio_guard=self.guard,
         )
         self.funding_strat = HourlyFundingFade(
-            config=HourlyFundingFadeConfig(venue="HYPERLIQUID", risk_per_trade_pct=min(self.risk_pct, 0.0075)),
+            config=HourlyFundingFadeConfig(
+                venue="HYPERLIQUID",
+                risk_per_trade_pct=opt_params.get("funding_risk_pct", opt_params.get("funding_fade_risk_pct", min(self.risk_pct, 0.0075))),
+                min_funding_apr_threshold=opt_params.get("funding_apr_threshold", opt_params.get("min_funding_apr_threshold", 0.30)),
+                trailing_stop_pct=opt_params.get("funding_trailing_stop", opt_params.get("funding_fade_trailing_stop", 0.015)),
+            ),
             portfolio_guard=self.guard,
             info_client=self.info_client,
         )
@@ -372,14 +417,37 @@ class UnifiedEngine:
             portfolio_guard=self.guard,
         )
 
-        # Put slow swing strategies to sleep to dedicate all 3 execution slots to high-frequency scalpers
-        # self.node.trader.add_strategy(self.continuation_strat)
-        # self.node.trader.add_strategy(self.funding_strat)
-        self.node.trader.add_strategy(self.scalp_strat)
-        self.node.trader.add_strategy(self.vwap_strat)
-        self.node.trader.add_strategy(self.absorber_strat)
+        # Register all active strategies with TradingNode trader actor
+        active_strats = [
+            self.momentum_strat,
+            self.continuation_strat,
+            self.funding_strat,
+            self.scalp_strat,
+            self.vwap_strat,
+            self.absorber_strat,
+        ]
+        registered_ids = set()
+        if hasattr(self.node, "trader") and self.node.trader:
+            if hasattr(self.node.trader, "strategies"):
+                strats = self.node.trader.strategies
+                if callable(strats):
+                    strats = strats()
+                if isinstance(strats, dict):
+                    registered_ids = set(strats.keys())
+                elif isinstance(strats, (list, tuple, set)):
+                    registered_ids = {getattr(s, "id", s) for s in strats}
+            for strat in active_strats:
+                if strat is not None:
+                    strat_id = getattr(strat, "id", None)
+                    if strat_id is None or strat_id not in registered_ids:
+                        try:
+                            self.node.trader.add_strategy(strat)
+                            if strat_id:
+                                registered_ids.add(strat_id)
+                        except Exception as reg_err:
+                            self.log(f"Notice registering strategy {strat}: {reg_err}", "DEBUG")
 
-        self.log("✅ High-frequency momentum scalping strategies registered under PortfolioGuard.", "INFO")
+        self.log("🚀 Active multi-strategy portfolio actors (Momentum, SMC Continuation, Funding Fade, Scalper, VWAP, Absorber) registered under PortfolioGuard.", "TRIGGER")
 
     def get_open_positions(self) -> List[Any]:
         """Fetch active open positions directly from Nautilus cache, filtering out closed/in-flight positions."""
@@ -432,8 +500,25 @@ class UnifiedEngine:
             self.log(f"Error calculating 5m RSI for {coin}: {err}", "DEBUG")
             return None
 
+    def _get_net_realized_pnl(self) -> float:
+        """Fetch cumulative net realized PnL from TradeManager as canonical source of truth."""
+        if hasattr(self, "trade_manager") and self.trade_manager:
+            try:
+                tm_summary = self.trade_manager.get_summary()
+                if "net_realized_pnl" in tm_summary:
+                    return float(tm_summary["net_realized_pnl"])
+                closed = self.trade_manager.get_closed_trades()
+                if closed:
+                    return round(sum(float(t.get("net_pnl", t.get("pnl", 0.0))) for t in closed), 2)
+            except Exception as e:
+                self.log(f"Error computing net realized pnl: {e}", "DEBUG")
+        return self._paper_realized_pnl
+
     def get_account_cash(self) -> float:
-        """Fetch current cash balance from portfolio."""
+        """Fetch current cash balance from portfolio or paper balance tracker."""
+        if self.paper:
+            self._paper_realized_pnl = self._get_net_realized_pnl()
+            return self._paper_starting_balance + self._paper_realized_pnl
         try:
             if self.node and self.node.portfolio:
                 venue = Venue("HYPERLIQUID")
@@ -485,11 +570,13 @@ class UnifiedEngine:
 
                 strat_raw = str(pos.strategy_id) if hasattr(pos, "strategy_id") and pos.strategy_id else ""
                 strat_name = "SMC Trend"
-                if "Funding" in strat_raw:
+                if "HighConviction" in strat_raw:
+                    strat_name = "High-Conviction Momentum"
+                elif "Funding" in strat_raw:
                     strat_name = "Funding Fade"
                 elif "OrderBook" in strat_raw or "Scalp" in strat_raw or "Imbalance" in strat_raw:
                     strat_name = "Book Imbalance"
-                elif "Vwap" in strat_raw or "Momentum" in strat_raw:
+                elif "Vwap" in strat_raw:
                     strat_name = "VWAP/OI"
                 elif "Continuation" in strat_raw or "SMC" in strat_raw:
                     strat_name = "SMC Trend"
@@ -504,6 +591,7 @@ class UnifiedEngine:
                     "unrealized_pnl": round(pnl, 2),
                     "roi_pct": round((pnl / (entry_px * qty) * 100.0) if (entry_px * qty) > 0 else 0.0, 2),
                     "strategy": strat_name,
+                    "leverage": float(get_coin_max_leverage(coin)),
                 })
             except Exception as pos_err:
                 self.log(f"Error parsing position item in get_state: {pos_err}", "DEBUG")
@@ -601,7 +689,7 @@ class UnifiedEngine:
             "net_unrealized": round(total_unrealized, 2),
             "notional_exposure": round(total_notional, 2),
             "roi_pct": roi_total,
-            "net_realized_pnl": round(self.trade_manager.get_summary().get("net_realized_pnl", 0.0), 2) if hasattr(self, "trade_manager") and self.trade_manager else 0.0,
+            "net_realized_pnl": round(self._get_net_realized_pnl(), 2),
             "positions": positions_data,
             "open_orders": open_orders_data,
             "recent_orders": recent_orders_data,
@@ -623,6 +711,7 @@ class UnifiedEngine:
             "fallback_status": self.fallback_engine.get_status_summary() if hasattr(self, "fallback_engine") else {},
             "market_regime": self.regime_manager.current_regime.to_dict() if hasattr(self, "regime_manager") and self.regime_manager and self.regime_manager.current_regime else None,
             "agent_wallet": self.agent_wallet.get_status() if hasattr(self, "agent_wallet") and self.agent_wallet else {},
+            "analytics_dashboard_online": self.analytics_pipeline.is_dashboard_online() if hasattr(self, "analytics_pipeline") else False,
         }
 
     def close_position(self, coin: str, reason: str = "Manual Close") -> bool:
@@ -658,32 +747,57 @@ class UnifiedEngine:
                 # Inspect self.node.cache.orders_open(instrument_id=pos.instrument_id).
                 # Immediately iterate and call strat.cancel_order(o) across all strategy actors.
                 # Log each cancellation.
+                all_strats = [s for s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat] if s is not None]
                 try:
                     if self.node and self.node.cache:
                         for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
-                                if strat:
-                                    try:
-                                        strat.cancel_order(o)
-                                    except Exception as cancel_err:
-                                        self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                            for strat in all_strats:
+                                try:
+                                    strat.cancel_order(o)
+                                except Exception as cancel_err:
+                                    self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
                             self.log(f"Pre-close atomically cancelled resting order {o.client_order_id} on {actual_coin}", "INFO")
                 except Exception as err:
                     self.log(f"Pre-close order sweep error on {actual_coin}: {err}", "WARN")
 
                 # THEN submit the market close (strat.close_position(pos))
-                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
-                    if strat and strat.id == pos.strategy_id:
-                        strat.close_position(pos)
-                        closed_any = True
-                        self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via {strat.id} ({reason})", "CLOSE")
-                        break
+                for strat in all_strats:
+                    if strat.id == pos.strategy_id:
+                        try:
+                            strat.close_position(pos)
+                            closed_any = True
+                            self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via {strat.id} ({reason})", "CLOSE")
+                            break
+                        except Exception as close_err:
+                            self.log(f"close_position on {strat.id} notice: {close_err}", "DEBUG")
+
                 if not closed_any:
-                    fallback = self.funding_strat or self.continuation_strat
-                    if fallback:
-                        fallback.close_position(pos)
-                        closed_any = True
-                        self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
+                    active_trader_strats = list(getattr(self.node.trader, "_strategies", {}).values()) if (self.node and self.node.trader) else []
+                    for fallback in (active_trader_strats or all_strats):
+                        try:
+                            fallback.close_position(pos)
+                            closed_any = True
+                            self.log(f"Market close submitted for {pos.instrument_id.symbol.value} via fallback {fallback.id} ({reason})", "CLOSE")
+                            break
+                        except Exception as fb_err:
+                            self.log(f"Fallback close via {getattr(fallback, 'id', fallback)}: {fb_err}", "DEBUG")
+
+                if not closed_any and self.node and self.node.trader:
+                    active_trader_strats = list(getattr(self.node.trader, "_strategies", {}).values())
+                    for active_strat in active_trader_strats:
+                        try:
+                            order_side = OrderSide.SELL if pos.is_long else OrderSide.BUY
+                            market_order = active_strat.order_factory.market(
+                                instrument_id=pos.instrument_id,
+                                order_side=order_side,
+                                quantity=pos.quantity,
+                            )
+                            active_strat.submit_order(market_order)
+                            closed_any = True
+                            self.log(f"Market close executed for {actual_coin} via opposing order on {active_strat.id} ({reason})", "CLOSE")
+                            break
+                        except Exception as opp_err:
+                            self.log(f"Opposing market order error via {active_strat.id}: {opp_err}", "DEBUG")
 
                 # Live execution fallback via HyperliquidAgentWallet
                 if not closed_any and not self.paper and hasattr(self, "agent_wallet") and self.agent_wallet.is_configured:
@@ -701,6 +815,7 @@ class UnifiedEngine:
                         self.log(f"Market close submitted for {actual_coin} via native AgentWallet ({reason})", "CLOSE")
 
                 if closed_any:
+                    self._cancel_exchange_protection(actual_coin)
                     self._in_flight_closes[actual_coin] = now_ts
                     self._in_flight_closes[coin_clean] = now_ts
                     self._closed_positions_coins.add(actual_coin)
@@ -726,8 +841,7 @@ class UnifiedEngine:
                     )
 
                     # Sync realized P&L and available cash immediately
-                    summary = self.trade_manager.get_summary()
-                    self._paper_realized_pnl = float(summary.get("net_realized_pnl", 0.0))
+                    self._paper_realized_pnl = self._get_net_realized_pnl()
                     total_equity = self._paper_starting_balance + self._paper_realized_pnl
                     self.save_paper_state(
                         equity=total_equity,
@@ -756,6 +870,272 @@ class UnifiedEngine:
 
             return closed_any
 
+    def _place_exchange_protection(
+        self,
+        strat_actor: Any,
+        instrument: Any,
+        bias: str,
+        quantity: Any,
+        sl_px: float,
+        tp_px: float,
+    ) -> None:
+        """
+        LIVE ONLY. Rest a reduce-only stop-market (SL) and reduce-only limit (TP) on the exchange so protection
+        survives a process crash / lost connection. Software ratchets (breakeven / trailing) still run in
+        TradeManager and will usually exit first; these orders are the hard backstop at the displayed SL / TP.
+        """
+        if self.paper or strat_actor is None:
+            return
+        coin = instrument.id.symbol.value.split("-")[0].upper()
+        self._cancel_exchange_protection(coin)
+        close_side = OrderSide.SELL if str(bias).upper() == "LONG" else OrderSide.BUY
+        placed: list = []
+        try:
+            if sl_px and sl_px > 0:
+                sl_order = strat_actor.order_factory.stop_market(
+                    instrument_id=instrument.id,
+                    order_side=close_side,
+                    quantity=quantity,
+                    trigger_price=instrument.make_price(Decimal(str(to_hl_price(sl_px, instrument.price_precision)))),
+                    trigger_type=TriggerType.LAST_PRICE,
+                    reduce_only=True,
+                )
+                strat_actor.submit_order(sl_order)
+                placed.append((strat_actor, sl_order))
+            if tp_px and tp_px > 0:
+                tp_order = strat_actor.order_factory.limit(
+                    instrument_id=instrument.id,
+                    order_side=close_side,
+                    quantity=quantity,
+                    price=instrument.make_price(Decimal(str(to_hl_price(tp_px, instrument.price_precision)))),
+                    time_in_force=TimeInForce.GTC,
+                    reduce_only=True,
+                )
+                strat_actor.submit_order(tp_order)
+                placed.append((strat_actor, tp_order))
+        except Exception as prot_err:
+            self.log(f"⚠️ [Exchange Protection] Failed to place SL/TP for {coin}: {prot_err}", "ERROR")
+        if placed:
+            self._protection_orders[coin] = {"ts": time.time(), "orders": placed}
+            self.log(f"🛡️ [Exchange Protection] {coin}: resting reduce-only SL @ {sl_px} and TP @ {tp_px} on exchange", "INFO")
+
+    def _cancel_exchange_protection(self, coin: str) -> None:
+        """Cancel any resting protection orders for a coin (idempotent, safe in paper mode)."""
+        entry = self._protection_orders.pop(str(coin).upper(), None)
+        if not entry:
+            return
+        for actor, order in entry.get("orders", []):
+            try:
+                if not order.is_closed:
+                    actor.cancel_order(order)
+            except Exception as cancel_err:
+                self.log(f"Protection order cancel notice for {coin}: {cancel_err}", "DEBUG")
+
+    def _sweep_protection_orders(self) -> None:
+        """Cancel protection orders whose position is gone (e.g. exchange SL filled, leaving the TP leg resting)."""
+        if self.paper or not self._protection_orders:
+            return
+        open_coins = {p.instrument_id.symbol.value.split("-")[0].upper() for p in self.get_open_positions()}
+        now = time.time()
+        for coin in list(self._protection_orders.keys()):
+            if coin not in open_coins and (now - self._protection_orders[coin].get("ts", 0.0)) > 15.0:
+                self.log(f"🧹 [Exchange Protection] {coin} flat; cancelling leftover protection orders", "INFO")
+                self._cancel_exchange_protection(coin)
+
+    def partial_close_position(self, coin: str, pct: float = 0.50, reason: str = "TP1 Scale-Out") -> bool:
+        """Natively and immediately execute a partial market close (e.g. 50% TP1 scale-out)."""
+        with self._lock:
+            coin_clean = coin.split("-")[0].split(".")[0].strip().upper()
+            if not self.node or not self.node.cache:
+                return False
+
+            open_positions = [
+                p for p in self.node.cache.positions_open()
+                if not p.is_closed and (
+                    p.instrument_id.symbol.value.split("-")[0].upper() == coin_clean
+                )
+            ]
+            if not open_positions:
+                self.log(f"No active position found to partial close for {coin_clean}", "WARN")
+                return False
+
+            partial_done = False
+            for pos in open_positions:
+                actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
+                instrument = self.node.cache.instrument(pos.instrument_id)
+                if not instrument:
+                    continue
+
+                full_qty = pos.quantity.as_double() if hasattr(pos.quantity, "as_double") else float(pos.quantity)
+                raw_close_qty = full_qty * pct
+
+                # Lot-step truncation
+                step = Decimal(str(instrument.size_increment.as_double()))
+                close_qty_dec = (Decimal(str(round(raw_close_qty, instrument.size_precision))) // step) * step
+                if close_qty_dec <= 0:
+                    self.log(f"Partial close quantity too small for {actual_coin} ({raw_close_qty} -> 0)", "WARN")
+                    continue
+
+                close_qty = instrument.make_qty(close_qty_dec)
+                order_side = OrderSide.SELL if pos.is_long else OrderSide.BUY
+
+                # Find strategy actor to submit opposing market order
+                all_strats = [s for s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat] if s is not None]
+                strat_actor = None
+                for s in all_strats:
+                    if s.id == pos.strategy_id:
+                        strat_actor = s
+                        break
+                if not strat_actor and self.node.trader:
+                    active_trader_strats = list(getattr(self.node.trader, "_strategies", {}).values())
+                    if active_trader_strats:
+                        strat_actor = active_trader_strats[0]
+                if not strat_actor:
+                    strat_actor = all_strats[0] if all_strats else None
+
+                if not strat_actor:
+                    self.log(f"No strategy actor available for partial close of {actual_coin}", "ERROR")
+                    continue
+
+                try:
+                    close_order = strat_actor.order_factory.market(
+                        instrument_id=pos.instrument_id,
+                        order_side=order_side,
+                        quantity=close_qty,
+                    )
+                    strat_actor.submit_order(close_order)
+                    partial_done = True
+                    self.log(
+                        f"🎯 [Scale-Out] Executed {int(pct*100)}% partial close of {actual_coin}: {close_qty.as_double()} contracts ({reason})",
+                        "CLOSE",
+                    )
+                except Exception as p_err:
+                    self.log(f"Partial close submission error on {actual_coin}: {p_err}", "ERROR")
+                    continue
+
+                if partial_done:
+                    entry_px = float(pos.avg_px_open) if hasattr(pos, "avg_px_open") and pos.avg_px_open else (pos.avg_px.as_double() if hasattr(pos, "avg_px") and pos.avg_px else 0.0)
+                    tracker = self.trade_manager.get_position(actual_coin)
+                    exit_px = tracker.current_price if (tracker and tracker.current_price > 0) else entry_px
+
+                    closed_qty_num = float(close_qty.as_double())
+                    pnl_mult = 1.0 if pos.is_long else -1.0
+                    tranche_pnl = (exit_px - entry_px) * closed_qty_num * pnl_mult
+
+                    # Journal the realized tranche without removing active position from TradeManager
+                    self.trade_manager.record_closed_trade({
+                        "coin": actual_coin,
+                        "side": "LONG" if pos.is_long else "SHORT",
+                        "size": closed_qty_num,
+                        "entry_price": entry_px,
+                        "exit_price": exit_px,
+                        "realized_pnl": tranche_pnl,
+                        "roi_pct": round(((exit_px - entry_px) / entry_px * 100.0 * pnl_mult), 2) if entry_px > 0 else 0.0,
+                        "strategy": str(pos.strategy_id),
+                        "reason": f"{reason} (50% Partial)",
+                        "entry_time": getattr(tracker, "entry_time", time.time() - 60.0),
+                        "exit_time": time.time(),
+                        "duration_seconds": time.time() - getattr(tracker, "entry_time", time.time() - 60.0),
+                    })
+
+                    # Update position size in tracker
+                    if tracker:
+                        tracker.size = max(0.0, tracker.size - closed_qty_num)
+                        # LIVE: re-rest protection for the REMAINING size at the ratcheted stop and original TP
+                        if not self.paper and tracker.size > 0:
+                            try:
+                                rem_dec = (Decimal(str(round(tracker.size, instrument.size_precision))) // step) * step
+                                if rem_dec > 0:
+                                    tp_roi = tracker.take_profit_roi_pct or 0.0
+                                    tp_px_rem = tracker.entry_price * (1 + tp_roi / 100.0) if pos.is_long else tracker.entry_price * (1 - tp_roi / 100.0)
+                                    self._place_exchange_protection(
+                                        strat_actor, instrument, "LONG" if pos.is_long else "SHORT",
+                                        instrument.make_qty(rem_dec), float(tracker.stop_price or 0.0), float(tp_px_rem if tp_roi > 0 else 0.0),
+                                    )
+                            except Exception as rep_err:
+                                self.log(f"Protection re-place after partial close failed for {actual_coin}: {rep_err}", "ERROR")
+
+                    # Update paper balance
+                    self._paper_realized_pnl = self._get_net_realized_pnl()
+                    total_equity = self._paper_starting_balance + self._paper_realized_pnl
+                    self.save_paper_state(
+                        equity=total_equity,
+                        realized_pnl=self._paper_realized_pnl,
+                        positions=self.get_open_positions(),
+                    )
+            return partial_done
+
+    def get_benchmark_impulse(self) -> Tuple[float, float]:
+        """Fetch 5m returns for BTC and ETH over the last 3 bars (cached 30s) for cross-asset impulse filtering."""
+        now = time.time()
+        if (now - self._benchmark_impulse_cache_ts) < 30.0:
+            return self._benchmark_impulse_cache
+
+        btc_ret, eth_ret = 0.0, 0.0
+        now_ms = int(now * 1000)
+        start_ms = now_ms - (30 * 60 * 1000)
+
+        try:
+            btc_klines = self.info_client.get_historical_klines("BTC", "5m", start_time_ms=start_ms, end_time_ms=now_ms)
+            if btc_klines and len(btc_klines) >= 3:
+                open_px = float(btc_klines[-3].get("o", btc_klines[-3].get("c", 0.0)))
+                close_px = float(btc_klines[-1].get("c", 0.0))
+                if open_px > 0:
+                    btc_ret = ((close_px - open_px) / open_px) * 100.0
+        except Exception as e:
+            self.log(f"BTC impulse fetch error: {e}", "DEBUG")
+
+        try:
+            eth_klines = self.info_client.get_historical_klines("ETH", "5m", start_time_ms=start_ms, end_time_ms=now_ms)
+            if eth_klines and len(eth_klines) >= 3:
+                open_px = float(eth_klines[-3].get("o", eth_klines[-3].get("c", 0.0)))
+                close_px = float(eth_klines[-1].get("c", 0.0))
+                if open_px > 0:
+                    eth_ret = ((close_px - open_px) / open_px) * 100.0
+        except Exception as e:
+            self.log(f"ETH impulse fetch error: {e}", "DEBUG")
+
+        self._benchmark_impulse_cache = (round(btc_ret, 3), round(eth_ret, 3))
+        self._benchmark_impulse_cache_ts = now
+        return self._benchmark_impulse_cache
+
+    def get_coin_intraday_context(self, coin: str) -> Dict[str, Any]:
+        """Fetch last 15 5m bars for coin (cached 60s) to compute RSI(14) and 3-bar momentum return."""
+        now = time.time()
+        cached = self._coin_kline_cache.get(coin)
+        if cached and (now - cached[0]) < 60.0:
+            return cached[1]
+
+        now_ms = int(now * 1000)
+        start_ms = now_ms - (90 * 60 * 1000)
+        res = {"rsi_5m": 50.0, "ret_3bar_pct": 0.0, "has_data": False}
+
+        try:
+            klines = self.info_client.get_historical_klines(coin, "5m", start_time_ms=start_ms, end_time_ms=now_ms)
+            if klines and len(klines) >= 14:
+                closes = [float(k.get("c", 0.0)) for k in klines]
+                # 3-bar return (15m momentum)
+                if len(closes) >= 3 and closes[-3] > 0:
+                    res["ret_3bar_pct"] = ((closes[-1] - closes[-3]) / closes[-3]) * 100.0
+
+                # RSI(14) calculation in pure Python
+                diffs = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+                gains = [d if d > 0 else 0.0 for d in diffs[-14:]]
+                losses = [-d if d < 0 else 0.0 for d in diffs[-14:]]
+                avg_gain = sum(gains) / 14.0
+                avg_loss = sum(losses) / 14.0
+                if avg_loss == 0:
+                    res["rsi_5m"] = 100.0
+                else:
+                    rs = avg_gain / avg_loss
+                    res["rsi_5m"] = round(100.0 - (100.0 / (1.0 + rs)), 2)
+                res["has_data"] = True
+        except Exception as e:
+            self.log(f"Intraday context fetch error for {coin}: {e}", "DEBUG")
+
+        self._coin_kline_cache[coin] = (now, res)
+        return res
+
     def close_all_positions(self, reason: str = "Emergency Flatten") -> List[str]:
         """Emergency market close across all open positions with pre-close order sweep."""
         with self._lock:
@@ -766,13 +1146,13 @@ class UnifiedEngine:
                 for pos in open_positions:
                     actual_coin = pos.instrument_id.symbol.value.split("-")[0].upper()
                     try:
+                        all_strats = [s for s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat] if s is not None]
                         for o in list(self.node.cache.orders_open(instrument_id=pos.instrument_id)):
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
-                                if strat:
-                                    try:
-                                        strat.cancel_order(o)
-                                    except Exception as cancel_err:
-                                        self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                            for strat in all_strats:
+                                try:
+                                    strat.cancel_order(o)
+                                except Exception as cancel_err:
+                                    self.log(f"Failed to cancel order {getattr(o, 'client_order_id', o)} via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
                             self.log(f"Pre-close atomically cancelled resting order {o.client_order_id} on {actual_coin}", "INFO")
                     except Exception as err:
                         self.log(f"Pre-close sweep error on {actual_coin}: {err}", "WARN")
@@ -852,15 +1232,30 @@ class UnifiedEngine:
                 try:
                     if self.node and self.node.cache:
                         position_instrument_ids = {pos.instrument_id for pos in open_positions}
+                        now_ts = time.time()
                         for orphan_order in list(self.node.cache.orders_open()):
                             if orphan_order.instrument_id not in position_instrument_ids:
+                                order_age = 999.0
+                                if hasattr(orphan_order, "ts_init") and orphan_order.ts_init:
+                                    order_age = now_ts - (orphan_order.ts_init / 1e9)
+                                order_id_str = str(getattr(orphan_order, "client_order_id", getattr(orphan_order, "id", "")))
+                                if order_id_str in self._cancelled_orphan_ids:
+                                    continue
+                                is_pending_guard = hasattr(self, "guard") and order_id_str in getattr(self.guard, "pending_orders", {})
+                                if order_age < 30.0:
+                                    continue  # Allow legitimate pending entry orders time to execute
+                                if order_age < 60.0 and is_pending_guard:
+                                    continue
+                                if hasattr(self, "guard") and hasattr(self.guard, "pending_orders"):
+                                    self.guard.pending_orders.pop(order_id_str, None)
                                 orphan_coin = orphan_order.instrument_id.symbol.value.split("-")[0].upper()
-                                for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
-                                    if strat:
-                                        try:
-                                            strat.cancel_order(orphan_order)
-                                        except Exception as cancel_err:
-                                            self.log(f"Failed to cancel orphan order via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                                all_strats = [s for s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat] if s is not None]
+                                for strat in all_strats:
+                                    try:
+                                        strat.cancel_order(orphan_order)
+                                    except Exception as cancel_err:
+                                        self.log(f"Failed to cancel orphan order via {getattr(strat, 'id', strat)}: {cancel_err}", "DEBUG")
+                                self._cancelled_orphan_ids.add(order_id_str)
                                 self.log(f"🧹 [Watchdog] Cancelled orphaned order {orphan_order.client_order_id} on {orphan_coin} (no active position)", "INFO")
                 except Exception as orphan_err:
                     self.log(f"Orphan order sweep error: {orphan_err}", "WARN")
@@ -897,22 +1292,29 @@ class UnifiedEngine:
                             bids_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                             asks_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
-                        # 2. Update TradeManager FIRST with asymmetric TP and dynamic breakeven ratchet
-                        coin_atr = self.coin_atr_pct.get(coin, 0.8)
+                        # 2. Update TradeManager with proportional regime-scaled targets around base 2.80% / 1.20%
+                        coin_atr = self.coin_atr_pct.get(coin, 1.2)
                         reg = getattr(getattr(self, "regime_manager", None), "current_regime", None)
                         reg_name = reg.regime if reg else "CHOPPY_MEAN_REVERTING_RANGE"
+                        base_tp = getattr(self.trade_manager, "take_profit_roi_pct", 2.80)
+                        base_be = getattr(self.trade_manager, "breakeven_roi_pct", 1.20)
                         if reg_name == "BEAR_MARKET_FLUSH":
-                            tp_target = 2.5 if side == "SHORT" else 1.2
-                            be_roi = 0.75
+                            tp_target = round(base_tp * 1.15, 2) if side == "SHORT" else round(base_tp * 0.85, 2)
+                            be_roi = base_be
                         elif reg_name == "BULL_MOMENTUM_EXPANSION":
-                            tp_target = 3.5 if side == "LONG" else 1.2
-                            be_roi = 1.0
+                            tp_target = round(base_tp * 1.15, 2) if side == "LONG" else round(base_tp * 0.85, 2)
+                            be_roi = base_be
                         elif reg_name == "CHOPPY_MEAN_REVERTING_RANGE":
-                            tp_target = 2.0
-                            be_roi = 0.65
+                            tp_target = round(base_tp * 0.90, 2)
+                            be_roi = round(base_be * 0.90, 2)
                         else:
-                            tp_target = 2.2
-                            be_roi = 0.75
+                            tp_target = base_tp
+                            be_roi = base_be
+
+                        # Preserve explicit prospect TP if set on position tracker
+                        existing_tracker = self.trade_manager.get_position(coin)
+                        if existing_tracker and getattr(existing_tracker, "has_explicit_take_profit", False) and existing_tracker.take_profit_roi_pct:
+                            tp_target = existing_tracker.take_profit_roi_pct
 
                         initial_sl = None
                         prospect_data = self.prospects.get(coin)
@@ -925,7 +1327,7 @@ class UnifiedEngine:
                                     initial_sl = p_sl
 
                         if initial_sl is None:
-                            sl_mult = 1.012 if side == "SHORT" else 0.988  # 1.2% default safety stop
+                            sl_mult = 1.018 if side == "SHORT" else 0.982  # 1.8% default safety stop
                             initial_sl = entry_px * sl_mult
 
                         action = self.trade_manager.update_position(
@@ -962,7 +1364,11 @@ class UnifiedEngine:
                                             tracker_obj.breakeven_triggered = True
                                             self.log(f"🛡️ [Regime Shield] Ratcheted {coin} SHORT stop to breakeven ${be_stop:.4f} (Regime: {reg_name}, Breadth: {reg_breadth:.1f}%)", "INFO")
 
-                        # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant)
+                        # 3. Trade Manager risk evaluation (MAE, trailing stop, breakeven, stagnant, partial scale-out)
+                        if getattr(action, "should_partial_close", False):
+                            self.log(f"🎯 [Trade Manager] PARTIAL TRIGGER: {coin} - {action.reason}", "TRIGGER")
+                            self.partial_close_position(coin, pct=getattr(action, "partial_close_pct", 0.50), reason=action.reason)
+
                         if action.should_close:
                             self.log(f"🛡️ [Trade Manager] TRIGGER: {coin} - {action.reason}", "TRIGGER")
                             self.close_position(coin, reason=action.reason)
@@ -1001,6 +1407,22 @@ class UnifiedEngine:
                                 if side == "SHORT" and funding_apr < -1.50:
                                     reason = f"Adverse funding drop to {funding_apr*100:.1f}% APR (toxic short carry)"
                                     self.log(f"🚨 [AI Sentinel] TRIGGER: {coin} - {reason}", "TRIGGER")
+                                    self.close_position(coin, reason=reason)
+                                    continue
+
+                        # 6. Real-Time Dashboard Microstructure Risk Audit
+                        if hasattr(self, "analytics_pipeline") and self.analytics_pipeline:
+                            pnl_roi = action.roi if hasattr(action, "roi") else 0.0
+                            micro_audit = self.analytics_pipeline.audit_position_risk(
+                                coin=coin,
+                                side=side,
+                                pnl_pct=pnl_roi,
+                            )
+                            if micro_audit.is_toxic:
+                                can_exit, _ = self.trade_manager.check_exit_allowed(coin, is_emergency=False)
+                                if can_exit:
+                                    reason = f"Dashboard Microstructure Toxic Risk: {'; '.join(micro_audit.toxic_reasons)}"
+                                    self.log(f"🚨 [Dashboard Sentinel] TRIGGER: {coin} - {reason}", "TRIGGER")
                                     self.close_position(coin, reason=reason)
                                     continue
 
@@ -1053,6 +1475,9 @@ class UnifiedEngine:
                                 strategy_id=StrategyId(stale.strategy_id),
                                 instrument_id=stale.instrument_id,
                                 client_order_id=ClientOrderId(stale.order_id),
+                                venue_order_id=None,
+                                command_id=UUID4(),
+                                ts_init=time.time_ns(),
                             )
                             self.node.trader.execute(cancel_cmd)
                         except Exception as cancel_err:
@@ -1081,7 +1506,21 @@ class UnifiedEngine:
                         if len([p for p in self.get_open_positions() if "OrderBook" in str(getattr(p, "strategy_id", ""))]) >= 1:
                             break
                         instr_key = f"{sc_coin}-USD-PERP.HYPERLIQUID"
-                        instrument = self.scalp_strat.instruments_map.get(instr_key)
+                        instrument = self.scalp_strat.instruments_map.get(instr_key) if (self.scalp_strat and hasattr(self.scalp_strat, "instruments_map")) else None
+                        if not instrument:
+                            for other_s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.vwap_strat, self.absorber_strat]:
+                                if other_s and hasattr(other_s, "instruments_map") and instr_key in other_s.instruments_map:
+                                    instrument = other_s.instruments_map[instr_key]
+                                    if self.scalp_strat and hasattr(self.scalp_strat, "instruments_map"):
+                                        self.scalp_strat.instruments_map[instr_key] = instrument
+                                    break
+                        if not instrument and self.node and hasattr(self.node, "cache") and self.node.cache:
+                            try:
+                                instrument = self.node.cache.instrument(InstrumentId.from_str(instr_key))
+                                if instrument and self.scalp_strat and hasattr(self.scalp_strat, "instruments_map"):
+                                    self.scalp_strat.instruments_map[instr_key] = instrument
+                            except Exception:
+                                pass
                         if not instrument or not self.scalp_strat.portfolio.is_flat(instrument.id):
                             continue
                         if len(self.node.cache.orders_open(instrument_id=instrument.id)) > 0:
@@ -1096,11 +1535,11 @@ class UnifiedEngine:
                             if bids and asks and float(bids[0]["sz"]) > 0 and float(asks[0]["sz"]) > 0:
                                 b_depth = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                                 a_depth = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
-                                # Require substantial institutional book depth on both sides (>= $30k)
-                                if b_depth >= 30000 and a_depth >= 30000:
+                                # Require realistic book depth on both sides (>= $2k)
+                                if b_depth >= 2000 and a_depth >= 2000:
                                     tick_size = instrument.price_increment.as_double()
                                     skew_ratio = b_depth / a_depth
-                                    skew_threshold = max(3.5, getattr(self.scalp_strat.scalp_config, "skew_threshold", 3.5))
+                                    skew_threshold = max(2.0, getattr(self.scalp_strat.scalp_config, "skew_threshold", 2.0))
                                     p_bias = self.prospects.get(sc_coin, {}).get("bias")
 
                                     if skew_ratio >= skew_threshold and p_bias != "SHORT":
@@ -1159,12 +1598,12 @@ class UnifiedEngine:
                     position_instrument_ids = {pos.instrument_id for pos in self.get_open_positions()}
                     for orphan_order in list(self.node.cache.orders_open()):
                         if orphan_order.instrument_id not in position_instrument_ids:
-                            for strat in [self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat]:
-                                if strat:
-                                    try:
-                                        strat.cancel_order(orphan_order)
-                                    except Exception as cancel_err:
-                                        self.log(f"Failed to cancel orphan order: {cancel_err}", "DEBUG")
+                            all_strats = [s for s in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.scalp_strat, self.vwap_strat, self.absorber_strat] if s is not None]
+                            for strat in all_strats:
+                                try:
+                                    strat.cancel_order(orphan_order)
+                                except Exception as cancel_err:
+                                    self.log(f"Failed to cancel orphan order: {cancel_err}", "DEBUG")
             except Exception as e:
                 self.log(f"Orphan sweep error: {e}", "WARN")
         elif action in ("TRIGGER_SCAN", "TRIGGER_PROSPECTOR_SCAN", "SCAN_AND_TRADE"):
@@ -1225,30 +1664,45 @@ class UnifiedEngine:
         score = prospect.get("conviction_score", 0)
         strat_hint = prospect.get("strategy", "SMC Trend")
 
-        # Pick appropriate strategy actor based on strat_hint
-        if "Funding" in strat_hint:
+        # Primary execution engine: HighConvictionMomentumStrategy
+        # Route setup to the appropriate strategy actor, defaulting to HighConvictionMomentumStrategy
+        strat_hint_lower = str(strat_hint).lower()
+        if self.momentum_strat and (
+            any(k in strat_hint_lower for k in ("momentum", "squeeze", "breakout", "highconviction", "volume", "vwap", "trend", "smc"))
+            or not ("funding" in strat_hint_lower or "absorber" in strat_hint_lower)
+        ):
+            strat_actor = self.momentum_strat
+            strat_name = "HighConvictionMomentum"
+        elif "funding" in strat_hint_lower and self.funding_strat:
             strat_actor = self.funding_strat
             strat_name = "HourlyFundingFade"
-        elif "VWAP" in strat_hint or "Burst" in strat_hint:
+        elif any(k in strat_hint_lower for k in ("vwap", "burst", "volume")) and self.vwap_strat:
             strat_actor = self.vwap_strat
             strat_name = "VwapOiMomentum"
-        elif "Liquidation" in strat_hint or "Absorber" in strat_hint:
+        elif any(k in strat_hint_lower for k in ("liquidation", "absorber")) and self.absorber_strat:
             strat_actor = self.absorber_strat
             strat_name = "LiquidationAbsorber"
-        elif "Scalp" in strat_hint or "Book" in strat_hint:
+        elif any(k in strat_hint_lower for k in ("scalp", "book", "imbalance")) and self.scalp_strat:
             strat_actor = self.scalp_strat
             strat_name = "OrderBookImbalance"
-        else:
+        elif any(k in strat_hint_lower for k in ("smc", "trend", "continuation", "divergence", "breakdown")) and self.continuation_strat:
             strat_actor = self.continuation_strat
             strat_name = "TrendContinuationSMC"
+        elif self.momentum_strat:
+            strat_actor = self.momentum_strat
+            strat_name = "HighConvictionMomentum"
+        else:
+            strat_actor = self.continuation_strat or self.scalp_strat or self.vwap_strat or self.funding_strat or self.absorber_strat
+            strat_name = getattr(strat_actor, "__class__", type("")).__name__ if strat_actor else "Unknown"
 
         if not strat_actor or not hasattr(strat_actor, "instruments_map"):
+            self.log(f"🔍 [Prospect Debug] {coin}: No strat_actor ({strat_actor}) or instruments_map", "INFO")
             return False
 
         instr_key = f"{coin}-USD-PERP.HYPERLIQUID"
         instrument = strat_actor.instruments_map.get(instr_key)
         if not instrument:
-            for other_strat in [self.continuation_strat, self.funding_strat, self.vwap_strat, self.scalp_strat, self.absorber_strat]:
+            for other_strat in [self.momentum_strat, self.continuation_strat, self.funding_strat, self.vwap_strat, self.scalp_strat, self.absorber_strat]:
                 if other_strat and hasattr(other_strat, "instruments_map") and instr_key in other_strat.instruments_map:
                     instrument = other_strat.instruments_map[instr_key]
                     break
@@ -1262,6 +1716,35 @@ class UnifiedEngine:
                 self.log(f"Cache instrument lookup error for {instr_key}: {inst_err}", "DEBUG")
 
         if not instrument:
+            # Dynamically construct instrument using get_hyperliquid_perp(coin)
+            try:
+                from src.utils.instruments import get_hyperliquid_perp
+                instrument = get_hyperliquid_perp(coin)
+                if instrument:
+                    if self.node and hasattr(self.node, "cache") and self.node.cache:
+                        self.node.cache.add_instrument(instrument)
+                        if hasattr(self.node, "trader") and hasattr(self.node.trader, "_exec_engine"):
+                            for client_obj in getattr(self.node.trader._exec_engine, "_clients", {}).values():
+                                if hasattr(client_obj, "exchange"):
+                                    try:
+                                        client_obj.exchange.add_instrument(instrument)
+                                    except Exception:
+                                        pass
+                        if hasattr(self.node, "trader") and hasattr(self.node.trader, "_data_engine"):
+                            for data_client in getattr(self.node.trader._data_engine, "_clients", {}).values():
+                                if hasattr(data_client, "_cache"):
+                                    try:
+                                        data_client._cache.add_instrument(instrument)
+                                    except Exception:
+                                        pass
+                    if hasattr(strat_actor, "instruments_map"):
+                        strat_actor.instruments_map[instr_key] = instrument
+                    self.log(f"✨ Dynamically constructed and registered instrument in cache for {coin}", "INFO")
+            except Exception as dyn_err:
+                self.log(f"Dynamic instrument construction error for {coin}: {dyn_err}", "WARN")
+
+        if not instrument:
+            self.log(f"🔍 [Prospect Debug] {coin}: Instrument {instr_key} not found in cache", "INFO")
             return False
 
         # Direction Reversal Check: If an opposing position is active on the coin, flatten it if high conviction
@@ -1281,20 +1764,88 @@ class UnifiedEngine:
                     break
                 else:
                     # Same direction already open or low conviction reversal, avoid stacking
+                    self.log(f"🔍 [Prospect Debug] {coin}: Already open in same direction", "INFO")
                     return False
 
-        if self.node and self.node.cache and len(self.node.cache.orders_open(instrument_id=instrument.id)) > 0:
-            return False
+        if self.node and self.node.cache:
+            now_ns = time.time_ns()
+            active_resting_orders = []
+            for o in self.node.cache.orders_open(instrument_id=instrument.id):
+                o_ts = getattr(o, "ts_init", 0)
+                order_age_s = (now_ns - o_ts) / 1e9 if o_ts else 0.0
+                if order_age_s < 90.0:
+                    active_resting_orders.append(o)
+                else:
+                    self.log(
+                        f"⚠️ [Zombie Order Bypass] Ignoring stale open order {getattr(o, 'client_order_id', o)} "
+                        f"on {coin} (age {order_age_s:.0f}s >= 90s)",
+                        "WARN",
+                    )
+            if len(active_resting_orders) > 0:
+                self.log(f"🔍 [Prospect Debug] {coin}: Resting open orders already exist", "INFO")
+                return False
 
         if self.guard.is_in_cooldown(coin):
+            self.log(f"🔍 [Prospect Debug] {coin}: Under anti-churn cooldown", "INFO")
             return False
+
+        # 1. 5-Minute BTC / ETH Cross-Asset Impulse Gate
+        if coin not in ("BTC", "ETH"):
+            btc_ret, eth_ret = self.get_benchmark_impulse()
+            if bias == "LONG" and (btc_ret <= -0.35 or eth_ret <= -0.45):
+                self.log(
+                    f"🚫 [Macro Impulse Gate] Blocked LONG {coin}: BTC ({btc_ret:+.2f}%) or ETH ({eth_ret:+.2f}%) dumping on 5m",
+                    "WARN",
+                )
+                self.log_missed_opportunity(
+                    coin=coin,
+                    strategy=strat_name,
+                    reason=f"Macro Impulse Gate: BTC {btc_ret:+.2f}%, ETH {eth_ret:+.2f}% dumping",
+                    metrics={"btc_ret": btc_ret, "eth_ret": eth_ret},
+                )
+                return False
+            elif bias == "SHORT" and (btc_ret >= 0.35 or eth_ret >= 0.45):
+                self.log(
+                    f"🚫 [Macro Impulse Gate] Blocked SHORT {coin}: BTC ({btc_ret:+.2f}%) or ETH ({eth_ret:+.2f}%) pumping on 5m",
+                    "WARN",
+                )
+                self.log_missed_opportunity(
+                    coin=coin,
+                    strategy=strat_name,
+                    reason=f"Macro Impulse Gate: BTC {btc_ret:+.2f}%, ETH {eth_ret:+.2f}% pumping",
+                    metrics={"btc_ret": btc_ret, "eth_ret": eth_ret},
+                )
+                return False
+
+        # 2. Intraday 15m Trend & Exhaustion Alignment (RSI 14 + 3-bar return)
+        intraday = self.get_coin_intraday_context(coin)
+        if intraday.get("has_data", False):
+            rsi = intraday["rsi_5m"]
+            ret_3b = intraday["ret_3bar_pct"]
+            if bias == "LONG":
+                if rsi > 74.0:
+                    self.log(f"🚫 [Exhaustion Gate] Blocked LONG {coin}: 5m RSI({rsi:.1f}) > 74.0 (Overbought)", "WARN")
+                    return False
+                if ret_3b < -0.60:
+                    self.log(f"🚫 [Exhaustion Gate] Blocked LONG {coin}: Falling knife on 15m ({ret_3b:+.2f}%)", "WARN")
+                    return False
+            elif bias == "SHORT":
+                if rsi < 26.0:
+                    self.log(f"🚫 [Exhaustion Gate] Blocked SHORT {coin}: 5m RSI({rsi:.1f}) < 26.0 (Oversold)", "WARN")
+                    return False
+                if ret_3b > 0.60:
+                    self.log(f"🚫 [Exhaustion Gate] Blocked SHORT {coin}: Chasing vertical pump on 15m ({ret_3b:+.2f}%)", "WARN")
+                    return False
 
         side = OrderSide.BUY if bias == "LONG" else OrderSide.SELL
         mark_px = float(prospect.get("mark_price", 0.0))
         if mark_px <= 0:
             return False
 
-        # Strict Pre-Entry Spread (<= 8 bps) and Depth (>= $30k) Gates to prevent low-cap slippage traps
+        best_bid: Optional[float] = None
+        best_ask: Optional[float] = None
+
+        # Robust Pre-Entry Spread (<= 25 bps) and Depth (>= $2k) Gates to protect trade execution
         try:
             l2_snap = self.info_client.get_l2_snapshot(coin)
             if l2_snap.get("status") == "SUCCESS":
@@ -1307,35 +1858,46 @@ class UnifiedEngine:
                     bid_depth_usd = sum(float(b["sz"]) * float(b["px"]) for b in bids[:5])
                     ask_depth_usd = sum(float(a["sz"]) * float(a["px"]) for a in asks[:5])
 
-                    if spread_bps > 8.0:
+                    if spread_bps > 25.0:
                         self.log(
-                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Spread {spread_bps:.1f} bps > 8.0 bps limit. "
+                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Spread {spread_bps:.1f} bps > 25.0 bps limit. "
                             f"Preventing spread slippage.",
                             "WARN",
                         )
                         self.log_missed_opportunity(
                             coin=coin,
                             strategy=strat_name,
-                            reason=f"Pre-Entry Gate: Spread {spread_bps:.1f} bps > 8 bps",
+                            reason=f"Pre-Entry Gate: Spread {spread_bps:.1f} bps > 25 bps",
                             metrics={"spread_bps": spread_bps, "bid_depth": bid_depth_usd, "ask_depth": ask_depth_usd},
                         )
                         return False
 
-                    if min(bid_depth_usd, ask_depth_usd) < 30000.0:
+                    if min(bid_depth_usd, ask_depth_usd) < 500.0:
                         self.log(
-                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Depth ${min(bid_depth_usd, ask_depth_usd):,.0f} < $30k limit. "
+                            f"🚫 [Pre-Entry Gate] Blocked {bias} {coin}: Depth ${min(bid_depth_usd, ask_depth_usd):,.0f} < $500 limit. "
                             f"Preventing illiquid slippage trap.",
                             "WARN",
                         )
                         self.log_missed_opportunity(
                             coin=coin,
                             strategy=strat_name,
-                            reason=f"Pre-Entry Gate: Insufficient depth (${min(bid_depth_usd, ask_depth_usd):,.0f} < $30k)",
+                            reason=f"Pre-Entry Gate: Insufficient depth (${min(bid_depth_usd, ask_depth_usd):,.0f} < $500)",
                             metrics={"spread_bps": spread_bps, "bid_depth": bid_depth_usd, "ask_depth": ask_depth_usd},
                         )
                         return False
         except Exception as l2_err:
             self.log(f"Pre-entry L2 check error for {coin}: {l2_err}", "DEBUG")
+
+        if (best_bid is None or best_ask is None) and self.node and self.node.cache:
+            try:
+                q = self.node.cache.quote_tick(instrument.id)
+                if q:
+                    if best_bid is None and q.bid_price:
+                        best_bid = q.bid_price.as_double()
+                    if best_ask is None and q.ask_price:
+                        best_ask = q.ask_price.as_double()
+            except Exception:
+                pass
 
         # 1m Volume Burst Detection: Verify active volume momentum expansion on breakout entry
         try:
@@ -1362,19 +1924,19 @@ class UnifiedEngine:
 
         if sl_px <= 0 or tp_px <= 0:
             if reg_name == "BEAR_MARKET_FLUSH":
-                # In bear flush: short TP 2.5%, tight SL 1.5%; longs quick scalp 1.2%, tight SL 1.5%
-                l_tp, l_sl = 1.012, 0.985
-                s_tp, s_sl = 0.975, 1.015
+                # In bear flush: short TP 3.5%, SL 1.8%; longs quick scalp 2.0%, tight SL 1.5%
+                l_tp, l_sl = 1.020, 0.985
+                s_tp, s_sl = 0.965, 1.018
             elif reg_name == "BULL_MOMENTUM_EXPANSION":
-                # In bull expansion: long TP 4.5%, SL 2.0%; shorts tight scalp 1.2%
-                l_tp, l_sl = 1.045, 0.980
-                s_tp, s_sl = 0.988, 1.015
+                # In bull expansion: long TP 5.0%, SL 2.0%; shorts scalp 2.0%
+                l_tp, l_sl = 1.050, 0.980
+                s_tp, s_sl = 0.980, 1.020
             elif reg_name == "CHOPPY_MEAN_REVERTING_RANGE":
-                l_tp, l_sl = 1.016, 0.985
-                s_tp, s_sl = 0.984, 1.015
+                l_tp, l_sl = 1.028, 0.985
+                s_tp, s_sl = 0.972, 1.015
             else:
-                l_tp, l_sl = 1.025, 0.980
-                s_tp, s_sl = 0.975, 1.020
+                l_tp, l_sl = 1.035, 0.980
+                s_tp, s_sl = 0.965, 1.020
 
             if side == OrderSide.BUY:
                 sl_px = round(mark_px * l_sl, instrument.price_precision)
@@ -1391,11 +1953,43 @@ class UnifiedEngine:
         if equity <= 0 or mark_px <= 0:
             return False
 
-        # User allocation: 33.3% of total balance per trade (3 max coins) at safe 15x leverage cap
-        max_positions = float(self.guard.max_total_open_positions or 3)
-        margin_allocated = equity / max_positions
-        coin_max_lev = min(float(get_coin_max_leverage(coin)), 15.0)  # Safe 15x operational ceiling
+        # Sizing: Deploy entire account balance ($200 base) split across 2 slots
+        # 50% margin per position ($100 margin each) utilizing target coin's maximum exchange leverage
+        strat_mult = 1.0
+        if hasattr(self, "guard") and hasattr(self.guard, "get_strategy_sizing_multiplier"):
+            strat_mult = self.guard.get_strategy_sizing_multiplier(strat_name)
+
+        # 50% base allocation per position (scaled down only if in probation 0.4x)
+        base_alloc_pct = 0.50
+        margin_allocated = min(equity * 0.50, equity * base_alloc_pct * strat_mult)
+        coin_max_lev = float(get_coin_max_leverage(coin))  # Native Hyperliquid exchange maximum leverage per coin
+        if score < 90:
+            eff_lev = min(coin_max_lev, 15.0)
+            if eff_lev < coin_max_lev:
+                self.log(
+                    f"⚡ [Conviction Leverage] {coin}: Conviction score {score} < 90, clamping max leverage {coin_max_lev:.0f}x -> {eff_lev:.0f}x",
+                    "INFO",
+                )
+            coin_max_lev = eff_lev
+        else:
+            self.log(
+                f"🔥 [Conviction Leverage] {coin}: Strong conviction score {score} >= 90, allowing full exchange leverage {coin_max_lev:.0f}x",
+                "INFO",
+            )
         target_notional = margin_allocated * coin_max_lev
+
+        # Risk budget: dollar loss at the stop must not exceed max_risk_pct_per_trade of equity.
+        # The same stop distance is what TradeManager enforces and what the dashboard displays.
+        sl_dist_frac = risk_per_unit / mark_px
+        max_risk_usd = equity * self.max_risk_pct_per_trade
+        if sl_dist_frac > 0 and (target_notional * sl_dist_frac) > max_risk_usd:
+            clamped_notional = max_risk_usd / sl_dist_frac
+            self.log(
+                f"⚖️ [Risk Budget] {coin}: notional ${target_notional:,.0f} -> ${clamped_notional:,.0f} "
+                f"(stop {sl_dist_frac*100:.2f}% would risk ${target_notional * sl_dist_frac:,.2f} > ${max_risk_usd:,.2f} budget)",
+                "INFO",
+            )
+            target_notional = clamped_notional
         qty_val = target_notional / mark_px
 
         # Nautilus lot-step truncation to avoid Cython core crash
@@ -1424,6 +2018,33 @@ class UnifiedEngine:
             open_positions=open_pos,
             leverage=coin_max_lev,
         )
+        if not can_trade and ("reached max position limit" in reason or "allocation cap reached" in reason) and len(open_pos) < self.guard.max_total_open_positions:
+            for alt_actor, alt_name in [
+                (self.momentum_strat, "HighConvictionMomentum"),
+                (self.continuation_strat, "TrendContinuationSMC"),
+                (self.scalp_strat, "OrderBookImbalance"),
+                (self.funding_strat, "HourlyFundingFade"),
+                (self.absorber_strat, "LiquidationAbsorber"),
+            ]:
+                if alt_actor and alt_name != strat_name:
+                    alt_ok, alt_reason = self.guard.can_open_position(
+                        strategy_name=alt_name,
+                        instrument_id=instrument.id,
+                        side=side,
+                        proposed_notional_usd=notional_usd,
+                        current_open_positions_count=len(open_pos),
+                        open_positions=open_pos,
+                        leverage=coin_max_lev,
+                    )
+                    if alt_ok:
+                        if hasattr(alt_actor, "instruments_map") and instr_key not in alt_actor.instruments_map:
+                            alt_actor.instruments_map[instr_key] = instrument
+                        strat_actor = alt_actor
+                        strat_name = alt_name
+                        can_trade = True
+                        reason = f"Routed to {alt_name} (primary reached limit)"
+                        break
+
         if not can_trade:
             # If high conviction (>= 88), attempt capital rotation of a stagnant position
             if score >= 88:
@@ -1462,57 +2083,176 @@ class UnifiedEngine:
         )
 
         # Microstructure-optimized entry: Maker post-only limit order to earn maker rebate (-0.010%) instead of paying taker fee (+0.035%)
-        # Post slightly inside the spread: for BUY, 1 tick below mark/ask; for SELL, 1 tick above mark/bid
-        tick_size = instrument.price_increment.as_double()
+        # Anchor post-only buys to best_bid (or best_ask - tick_size) and sells to best_ask (or best_bid + tick_size), avoiding cross when mark_px leads
+        tick_size = instrument.price_increment.as_double() if hasattr(instrument, "price_increment") else 0.01
         if side == OrderSide.BUY:
-            raw_entry = mark_px - (tick_size * 0.5)
+            if best_bid is not None and best_ask is not None:
+                raw_entry = min(best_bid, best_ask - tick_size)
+            elif best_bid is not None:
+                raw_entry = best_bid
+            elif best_ask is not None:
+                raw_entry = best_ask - tick_size
+            else:
+                raw_entry = mark_px - tick_size
         else:
-            raw_entry = mark_px + (tick_size * 0.5)
+            if best_bid is not None and best_ask is not None:
+                raw_entry = max(best_ask, best_bid + tick_size)
+            elif best_ask is not None:
+                raw_entry = best_ask
+            elif best_bid is not None:
+                raw_entry = best_bid + tick_size
+            else:
+                raw_entry = mark_px + tick_size
         if raw_entry <= 0:
             raw_entry = mark_px
-        entry_px = to_hl_price(raw_entry, instrument.size_precision)
+        entry_px = to_hl_price(raw_entry, instrument.price_precision)
         entry_price_obj = instrument.make_price(Decimal(str(entry_px)))
 
         try:
-            if not getattr(strat_actor.cache, "is_backtest", False):
+            if not self.paper and not getattr(strat_actor.cache, "is_backtest", False):
                 strat_actor.subscribe_quote_ticks(instrument.id)
         except Exception as sub_err:
             self.log(f"Quote tick subscription notice for {instrument.id}: {sub_err}", "DEBUG")
 
         try:
-            try:
-                order = strat_actor.order_factory.limit(
+            if self.paper:
+                # Ensure Sandbox matching engine has a live market price for instant fill
+                try:
+                    from nautilus_trader.model.data import QuoteTick
+                    now_ns = time.time_ns()
+                    bp_val = best_bid if best_bid is not None else mark_px * 0.999
+                    ap_val = best_ask if best_ask is not None else mark_px * 1.001
+                    bp = instrument.make_price(Decimal(str(to_hl_price(bp_val, instrument.price_precision))))
+                    ap = instrument.make_price(Decimal(str(to_hl_price(ap_val, instrument.price_precision))))
+                    q_sz = instrument.make_qty(Decimal("1000.0"))
+                    q_tick = QuoteTick(
+                        instrument_id=instrument.id,
+                        bid_price=bp,
+                        ask_price=ap,
+                        bid_size=q_sz,
+                        ask_size=q_sz,
+                        ts_event=now_ns,
+                        ts_init=now_ns,
+                    )
+                    if self.node and hasattr(self.node, "cache") and self.node.cache:
+                        self.node.cache.add_quote_tick(q_tick)
+                    if hasattr(self.node, "trader") and hasattr(self.node.trader, "_exec_engine"):
+                        for c_obj in getattr(self.node.trader._exec_engine, "_clients", {}).values():
+                            if hasattr(c_obj, "exchange"):
+                                me = c_obj.exchange.get_matching_engine(instrument.id)
+                                if me:
+                                    me.process_quote_tick(q_tick)
+                except Exception as tick_err:
+                    self.log(f"Sandbox quote injection notice: {tick_err}", "DEBUG")
+
+                # Direct market execution in paper mode avoids SandboxExecutionClient maker post-only zombie cancellations
+                order = strat_actor.order_factory.market(
                     instrument_id=instrument.id,
                     order_side=side,
                     quantity=quantity,
-                    price=entry_price_obj,
-                    time_in_force=TimeInForce.GTC,
-                    post_only=True,
                 )
-            except TypeError:
-                order = strat_actor.order_factory.limit(
-                    instrument_id=instrument.id,
-                    order_side=side,
-                    quantity=quantity,
-                    price=entry_price_obj,
-                    time_in_force=TimeInForce.GTC,
+                strat_actor.submit_order(order)
+                self.guard.register_order_submitted(
+                    order=order,
+                    strategy_name=strat_name,
+                    notional_usd=notional_usd,
                 )
-            strat_actor.submit_order(order)
-            self.guard.register_order_submitted(
-                order=order,
-                strategy_name=strat_name,
-                notional_usd=notional_usd,
-            )
-            if hasattr(self, "trade_manager") and self.trade_manager:
-                self.trade_manager.register_position(
-                    coin=coin,
-                    side=bias,
-                    size=float(quantity.as_double()),
-                    entry_price=entry_px,
-                    strategy=strat_name,
-                    entry_time=time.time(),
-                    stop_price=float(sl_px) if sl_px > 0 else None,
+                entry_px = mark_px
+                fill_verified = True
+            else:
+                try:
+                    order = strat_actor.order_factory.limit(
+                        instrument_id=instrument.id,
+                        order_side=side,
+                        quantity=quantity,
+                        price=entry_price_obj,
+                        time_in_force=TimeInForce.GTC,
+                        post_only=True,
+                    )
+                except TypeError:
+                    order = strat_actor.order_factory.limit(
+                        instrument_id=instrument.id,
+                        order_side=side,
+                        quantity=quantity,
+                        price=entry_price_obj,
+                        time_in_force=TimeInForce.GTC,
+                    )
+                strat_actor.submit_order(order)
+                self.guard.register_order_submitted(
+                    order=order,
+                    strategy_name=strat_name,
+                    notional_usd=notional_usd,
                 )
+
+                # Register with TradeManager upon fill verification
+                fill_verified = False
+                for _ in range(8):
+                    time.sleep(0.1)
+                    if getattr(order, "is_filled", False):
+                        fill_verified = True
+                        break
+                    open_coins_now = {p.instrument_id.symbol.value.split("-")[0].upper() for p in self.get_open_positions()}
+                    if coin in open_coins_now:
+                        fill_verified = True
+                        break
+
+                if not fill_verified:
+                    # If maker post-only does not fill immediately, execute market order to guarantee entry
+                    try:
+                        strat_actor.cancel_order(order)
+                    except Exception:
+                        pass
+                    if hasattr(self.guard, "pending_orders"):
+                        self.guard.pending_orders.pop(str(order.client_order_id), None)
+                    try:
+                        mkt_order = strat_actor.order_factory.market(
+                            instrument_id=instrument.id,
+                            order_side=side,
+                            quantity=quantity,
+                        )
+                        strat_actor.submit_order(mkt_order)
+                        self.guard.register_order_submitted(
+                            order=mkt_order,
+                            strategy_name=strat_name,
+                            notional_usd=notional_usd,
+                        )
+                        order = mkt_order
+                        for _ in range(10):
+                            time.sleep(0.1)
+                            if getattr(order, "is_filled", False):
+                                fill_verified = True
+                                break
+                            open_coins_now = {p.instrument_id.symbol.value.split("-")[0].upper() for p in self.get_open_positions()}
+                            if coin in open_coins_now:
+                                fill_verified = True
+                                break
+                    except Exception as mkt_err:
+                        self.log(f"Market fallback order notice for {coin}: {mkt_err}", "DEBUG")
+
+            if hasattr(self.guard, "pending_orders"):
+                self.guard.pending_orders.pop(str(order.client_order_id), None)
+            open_pos = self.get_open_positions()
+            self.guard.sync_open_positions(open_pos)
+
+            if fill_verified or (coin in {p.instrument_id.symbol.value.split("-")[0].upper() for p in self.get_open_positions()}):
+                if hasattr(self, "trade_manager") and self.trade_manager:
+                    # Compute explicit target ROI % from entry and tp_px
+                    target_tp_roi = None
+                    if tp_px > 0 and entry_px > 0:
+                        target_tp_roi = round(abs(tp_px - entry_px) / entry_px * 100.0, 2)
+                    coin_atr = self.coin_atr_pct.get(coin, 1.2)
+                    self.trade_manager.register_position(
+                        coin=coin,
+                        side=bias,
+                        size=float(quantity.as_double()),
+                        entry_price=entry_px,
+                        strategy=strat_name,
+                        entry_time=time.time(),
+                        atr_pct=coin_atr,
+                        take_profit_roi_pct=target_tp_roi,
+                        stop_price=float(sl_px) if sl_px > 0 else None,
+                    )
+                    self._place_exchange_protection(strat_actor, instrument, bias, quantity, float(sl_px), float(tp_px))
             self._closed_positions_coins.discard(coin)
             self._in_flight_closes.pop(coin, None)
             return True
@@ -1529,7 +2269,7 @@ class UnifiedEngine:
                         order_type={"limit": {"tif": "Alo"}},
                         reduce_only=False,
                     )
-                    if res and res.get("status") in ("ok", "filled", "MOCK_PAPER_FILLED"):
+                    if res and res.get("status") in ("filled", "MOCK_PAPER_FILLED"):
                         if hasattr(self, "trade_manager") and self.trade_manager:
                             self.trade_manager.register_position(
                                 coin=coin,
@@ -1540,6 +2280,10 @@ class UnifiedEngine:
                                 entry_time=time.time(),
                                 stop_price=float(sl_px) if sl_px > 0 else None,
                             )
+                        self._closed_positions_coins.discard(coin)
+                        self._in_flight_closes.pop(coin, None)
+                        return True
+                    elif res and res.get("status") == "ok":
                         self._closed_positions_coins.discard(coin)
                         self._in_flight_closes.pop(coin, None)
                         return True
@@ -1591,10 +2335,18 @@ class UnifiedEngine:
                 scalp_strat=self.scalp_strat,
                 vwap_strat=self.vwap_strat,
             )
+            # Dynamic strategy activation/deactivation hooks:
+            # When market breadth > 45% or volatility expands, dynamically re-introduce secondary strategies
+            is_secondary_active = (regime_info.breadth_pct >= 45.0) or (regime_info.volatility_score >= 1.5)
+            max_sec_pos = 2 if is_secondary_active else 1
+            for strat_name_key in ("TrendContinuationSMC", "OrderBookImbalance", "VwapOiMomentum", "HourlyFundingFade"):
+                self.guard.set_strategy_max_positions(strat_name_key, max_sec_pos)
+            self.guard.set_strategy_max_positions("HighConvictionMomentum", 2)
+            self.guard.set_market_regime(regime_info.regime, applied_tweaks, breadth_pct=regime_info.breadth_pct)
             self.log(
                 f"🌐 [Market Regime Engine] Active Regime: {regime_info.regime} "
                 f"({regime_info.breadth_pct:.0f}% green, avg {regime_info.avg_change_24h:+.1f}%, carry {regime_info.avg_funding_apr:+.1f}% APR). "
-                f"Applied {len(applied_tweaks)} dynamic strategy tweaks: {', '.join(applied_tweaks)}",
+                f"Secondary strategies active: {is_secondary_active}. Applied {len(applied_tweaks)} dynamic strategy tweaks: {', '.join(applied_tweaks)}",
                 "TRIGGER",
             )
             try:
@@ -1618,11 +2370,15 @@ class UnifiedEngine:
             if len(self.sentinel_thoughts) > 50:
                 self.sentinel_thoughts.pop(0)
 
-            # High-Leverage Hit-and-Run TP and SL multipliers (+1.5% TP target, -0.9% tight SL for 10x-20x leverage)
-            long_tp_mult = 1.015
-            long_sl_mult = 0.991
-            short_tp_mult = 0.985
-            short_sl_mult = 1.009
+            # Per-coin ATR-scaled Initial SL/TP calculation
+            def get_coin_sl_tp(coin_sym: str, mark_price: float, is_long: bool) -> Tuple[float, float]:
+                coin_atr = self.coin_atr_pct.get(coin_sym, 1.2)
+                sl_pct = max(0.012, min(0.025, (coin_atr * 1.2) / 100.0))
+                tp_pct = max(0.025, min(0.055, sl_pct * 2.0))
+                if is_long:
+                    return round(mark_price * (1.0 - sl_pct), 4), round(mark_price * (1.0 + tp_pct), 4)
+                else:
+                    return round(mark_price * (1.0 + sl_pct), 4), round(mark_price * (1.0 - tp_pct), 4)
 
             prospects_list = []
             selected_coins = set()
@@ -1646,6 +2402,7 @@ class UnifiedEngine:
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
                 chg = float(row["change_24h"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=True)
                 squeeze_candidates.append({
                     "coin": c,
                     "bias": "LONG",
@@ -1653,8 +2410,8 @@ class UnifiedEngine:
                     "strategy": "Short Squeeze Pop",
                     "mark_price": px,
                     "target_entry": round(px * 0.997, 4),
-                    "stop_loss": round(px * long_sl_mult, 4),
-                    "take_profit": round(px * long_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
                     "rationale": f"Short squeeze pop: Funding APR {funding_apr:.1f}% on ${row['vol_24h']/1e6:.1f}M vol with +{chg:.1f}% 24h gain; rapid squeeze momentum.",
@@ -1673,6 +2430,7 @@ class UnifiedEngine:
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
                 chg = float(row["change_24h"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=True)
                 breakout_candidates.append({
                     "coin": c,
                     "bias": "LONG",
@@ -1680,8 +2438,8 @@ class UnifiedEngine:
                     "strategy": "Hot Breakout Momentum",
                     "mark_price": px,
                     "target_entry": round(px * 0.996, 4),
-                    "stop_loss": round(px * long_sl_mult, 4),
-                    "take_profit": round(px * long_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
                     "rationale": f"Hot breakout momentum: +{chg:.1f}% 24h pump on ${row['vol_24h']/1e6:.1f}M vol; high-velocity continuation.",
@@ -1711,6 +2469,7 @@ class UnifiedEngine:
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
                 chg = float(row["change_24h"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=True)
                 long_candidates.append({
                     "coin": c,
                     "bias": "LONG",
@@ -1718,8 +2477,8 @@ class UnifiedEngine:
                     "strategy": "SMC Trend & Spot Divergence",
                     "mark_price": px,
                     "target_entry": round(px * 0.994, 4),
-                    "stop_loss": round(px * long_sl_mult, 4),
-                    "take_profit": round(px * long_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
                     "rationale": f"Spot-led accumulation: +{chg:.1f}% 24h on ${row['vol_24h']/1e6:.1f}M vol; healthy baseline funding (+{funding_apr:.1f}% APR).",
@@ -1735,6 +2494,7 @@ class UnifiedEngine:
                 c = row["coin"]
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=False)
                 fade_short_candidates.append({
                     "coin": c,
                     "bias": "SHORT",
@@ -1742,11 +2502,11 @@ class UnifiedEngine:
                     "strategy": "Hourly Funding Fade",
                     "mark_price": px,
                     "target_entry": round(px * 1.008, 4),
-                    "stop_loss": round(px * short_sl_mult, 4),
-                    "take_profit": round(px * short_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
-                    "rationale": f"Crowded long leverage: Funding APR +{funding_apr:.1f}% on ${row['vol_24h']/1e6:.1f}M 24h vol; longs paying steep hourly fees.",
+                    "rationale": f"Crowded long leverage: Funding APR +{funding_apr:.1f}% on ${row['vol_24h']/1e6:.1f}M vol; longs paying steep hourly fees.",
                 })
 
             # --- Group C: Bearish Breakdown Shorts Candidates ---
@@ -1765,6 +2525,7 @@ class UnifiedEngine:
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
                 chg = float(row["change_24h"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=False)
                 breakdown_candidates.append({
                     "coin": c,
                     "bias": "SHORT",
@@ -1772,8 +2533,8 @@ class UnifiedEngine:
                     "strategy": "SMC Trend Breakdown",
                     "mark_price": px,
                     "target_entry": round(px * 1.006, 4),
-                    "stop_loss": round(px * short_sl_mult, 4),
-                    "take_profit": round(px * short_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
                     "rationale": f"Bear market breakdown: {chg:+.1f}% 24h drop on ${row['vol_24h']/1e6:.1f}M vol; heavy distribution.",
@@ -1792,6 +2553,7 @@ class UnifiedEngine:
                 px = float(row["price"])
                 funding_apr = float(row["funding_apr"])
                 chg = float(row["change_24h"])
+                c_sl, c_tp = get_coin_sl_tp(c, px, is_long=True)
                 burst_candidates.append({
                     "coin": c,
                     "bias": "LONG",
@@ -1799,8 +2561,8 @@ class UnifiedEngine:
                     "strategy": "Volume Burst Velocity",
                     "mark_price": px,
                     "target_entry": round(px * 0.998, 4),
-                    "stop_loss": round(px * long_sl_mult, 4),
-                    "take_profit": round(px * long_tp_mult, 4),
+                    "stop_loss": c_sl,
+                    "take_profit": c_tp,
                     "funding_apr_pct": funding_apr,
                     "volume_24h_usd": float(row["vol_24h"]),
                     "rationale": f"Volume burst: ${row['vol_24h']/1e6:.1f}M vol with +{chg:.1f}% 24h gain; rapid momentum injection.",
@@ -1835,6 +2597,7 @@ class UnifiedEngine:
                             bias = "LONG"   # Strict long alignment in bull expansion
                         else:
                             bias = "SHORT" if funding_apr > 30.0 or chg < -1.0 else "LONG"
+                        c_sl, c_tp = get_coin_sl_tp(c, px, is_long=(bias == "LONG"))
                         prospects_list.append({
                             "coin": c,
                             "bias": bias,
@@ -1842,8 +2605,8 @@ class UnifiedEngine:
                             "strategy": "VWAP / Volume Breakout",
                             "mark_price": px,
                             "target_entry": round(px * (0.995 if bias == "LONG" else 1.005), 4),
-                            "stop_loss": round(px * (long_sl_mult if bias == "LONG" else short_sl_mult), 4),
-                            "take_profit": round(px * (long_tp_mult if bias == "LONG" else short_tp_mult), 4),
+                            "stop_loss": c_sl,
+                            "take_profit": c_tp,
                             "funding_apr_pct": funding_apr,
                             "volume_24h_usd": float(row["vol_24h"]),
                             "rationale": f"Top volume leader (${row['vol_24h']/1e6:.1f}M 24h vol) with {bias} bias and +{funding_apr:.1f}% APR funding.",
@@ -1851,15 +2614,17 @@ class UnifiedEngine:
                         if len(prospects_list) >= 10:
                             break
 
-            # Optional Google AI Studio News & Catalyst Grounding enhancement
-            try:
-                from src.scanner.ai_studio_prospector import AIStudioProspector
-                ai_prospector = AIStudioProspector()
-                if ai_prospector.is_available():
-                    self.log("🧠 [AI Studio Prospector] Enriching prospects with Google Search grounding...", "INFO")
-                    prospects_list = ai_prospector.enhance_prospects(prospects_list, use_search=True)
-            except Exception as ai_p_err:
-                self.log(f"AI Studio prospector pass-through: {ai_p_err}", "DEBUG")
+            # Optional Groq LPU News & Catalyst Grounding enhancement (throttled to once every 15 minutes)
+            if (now_ts - getattr(self, "_last_deep_enrichment_ts", 0.0)) >= 900.0:
+                self._last_deep_enrichment_ts = now_ts
+                try:
+                    from src.scanner.ai_studio_prospector import AIStudioProspector
+                    ai_prospector = AIStudioProspector()
+                    if ai_prospector.is_available():
+                        self.log("🧠 [Groq LPU Prospector] Auditing top prospects via Groq LPU...", "INFO")
+                        prospects_list = ai_prospector.enhance_prospects(prospects_list, use_search=True)
+                except Exception as ai_p_err:
+                    self.log(f"Groq LPU prospector pass-through: {ai_p_err}", "DEBUG")
 
             # Update in-memory prospects map
             self.prospects = {p["coin"]: p for p in prospects_list}
@@ -1889,21 +2654,23 @@ class UnifiedEngine:
             with open(self.prospects_path, "w") as f:
                 json.dump(payload, f, indent=2)
 
-            # 3. Scan Delta-Neutral Funding Carry Arbitrage opportunities
-            try:
-                arb_pairs = self.arbitrage_scanner.scan_and_save()
-                self.funding_arbitrage_pairs = arb_pairs
-                if arb_pairs:
-                    top_pair = arb_pairs[0]
-                    self.log(
-                        f"💎 [Funding Arbitrage] Detected {len(arb_pairs)} delta-neutral carry pairs. "
-                        f"Top: {top_pair['pair_id']} @ +{top_pair['net_carry_apr_pct']}% Net Carry APR",
-                        "TRIGGER",
-                    )
-                else:
-                    self.log("💎 [Funding Arbitrage] Scan complete: 0 pairs qualified (strict < -50% & > +100% APR with spread <= 0.10% & depth >= $10k)", "INFO")
-            except Exception as arb_err:
-                self.log(f"Funding arbitrage scan warning: {arb_err}", "WARN")
+            # 3. Scan Delta-Neutral Funding Carry Arbitrage opportunities (throttled to once every 300 seconds)
+            if (now_ts - getattr(self, "_last_arb_scan_ts", 0.0)) >= 300.0:
+                self._last_arb_scan_ts = now_ts
+                try:
+                    arb_pairs = self.arbitrage_scanner.scan_and_save()
+                    self.funding_arbitrage_pairs = arb_pairs
+                    if arb_pairs:
+                        top_pair = arb_pairs[0]
+                        self.log(
+                            f"💎 [Funding Arbitrage] Detected {len(arb_pairs)} delta-neutral carry pairs. "
+                            f"Top: {top_pair['pair_id']} @ +{top_pair['net_carry_apr_pct']}% Net Carry APR",
+                            "TRIGGER",
+                        )
+                    else:
+                        self.log("💎 [Funding Arbitrage] Scan complete: 0 pairs qualified (strict < -50% & > +100% APR with spread <= 0.10% & depth >= $10k)", "INFO")
+                except Exception as arb_err:
+                    self.log(f"Funding arbitrage scan warning: {arb_err}", "WARN")
 
             self.log(
                 f"🎯 [AI Prospector] Scan #{self._prospector_scan_count} complete: updated {len(prospects_list)} targets: "
@@ -1915,7 +2682,7 @@ class UnifiedEngine:
             # In Bull regimes, prioritize trend longs; otherwise prioritize proven Funding Fade
             def prospect_priority_key(x):
                 if is_bull_regime:
-                    is_bull_match = 1 if x.get("side", "").upper() == "LONG" else 0
+                    is_bull_match = 1 if (x.get("bias") or x.get("side", "")).upper() == "LONG" else 0
                     return (is_bull_match, x.get("conviction_score", 0))
                 else:
                     is_funding = 1 if "Funding" in x.get("strategy", "") else 0
@@ -1930,13 +2697,16 @@ class UnifiedEngine:
                     self.log(f"🛡️ [Regime Shield] Skipped prospect {p_coin} ({p_strat}): TrendContinuation blocked in CHOPPY_MEAN_REVERTING_RANGE", "INFO")
                     continue
 
-                # Circuit Breaker Gate: Skip locked out strategies
+                # Probation Status Check: If in probation, candidate executes under probation sizing (0.4x)
                 if hasattr(self, "guard") and self.guard and self.guard.is_strategy_locked(p_strat):
-                    self.log(f"🛡️ [Circuit Breaker] Skipped prospect {p_coin} ({p_strat}): Strategy is locked out by circuit breaker", "INFO")
-                    continue
+                    self.log(f"⚠️ [Strategy Probation] Candidate {p_coin} ({p_strat}): Strategy in probation; sizing scaled down to 0.4x", "INFO")
 
-                if p.get("conviction_score", 0) >= 88:
-                    open_and_pending = len(self.get_open_positions()) + len(getattr(self.guard, "pending_orders", {}))
+                score = p.get("conviction_score", 0)
+                open_pos_now = self.get_open_positions()
+                self.guard.sync_open_positions(open_pos_now)
+                open_and_pending = len(open_pos_now) + len(getattr(self.guard, "pending_orders", {}))
+                self.log(f"📋 [Prospect Eval] Candidate {p_coin}: Score={score}, Open={len(open_pos_now)}, Pending={len(getattr(self.guard, 'pending_orders', {}))}", "INFO")
+                if score >= 75:
                     if open_and_pending >= self.guard.max_total_open_positions:
                         # Only consider capital rotation if candidate prospect has exceptional conviction (>= 92)
                         # and existing position has had at least 45 minutes to develop towards TP/SL
@@ -1979,9 +2749,8 @@ class UnifiedEngine:
             if not self._is_running:
                 return
             if (
-                self.continuation_strat
-                and hasattr(self.continuation_strat, "instruments_map")
-                and len(self.continuation_strat.instruments_map) > 0
+                (self.continuation_strat and hasattr(self.continuation_strat, "instruments_map") and len(self.continuation_strat.instruments_map) > 0)
+                or (self.momentum_strat and hasattr(self.momentum_strat, "instruments_map") and len(self.momentum_strat.instruments_map) > 0)
             ):
                 break
             time.sleep(0.5)
@@ -2004,6 +2773,7 @@ class UnifiedEngine:
             try:
                 state = self.get_state()
                 self._latest_state = state
+                self._sweep_protection_orders()
 
                 now = time.time()
                 if (now - last_disk_sync) >= 5.0:
@@ -2022,9 +2792,11 @@ class UnifiedEngine:
 
                     # 2. Persist paper state atomically
                     if self.paper:
+                        realized_pnl = self._get_net_realized_pnl()
+                        self._paper_realized_pnl = realized_pnl
                         self.save_paper_state(
                             equity=state["equity"],
-                            realized_pnl=state["cash_balance"] - self._paper_starting_balance,
+                            realized_pnl=realized_pnl,
                             positions=state["positions"],
                         )
             except Exception as e:
@@ -2070,11 +2842,14 @@ class UnifiedEngine:
         """Gracefully shut down all engine systems."""
         self.log("🛑 Stopping Unified Autonomous Engine gracefully...", "INFO")
         self._is_running = False
+        if hasattr(self, "analytics_pipeline") and self.analytics_pipeline:
+            self.analytics_pipeline.stop()
 
         # Persist final state
         try:
             state = self.get_state()
-            self.save_paper_state(state["equity"], state["cash_balance"] - self._paper_starting_balance, state["positions"])
+            realized_pnl = self._get_net_realized_pnl() if self.paper else (state["cash_balance"] - self._paper_starting_balance)
+            self.save_paper_state(state["equity"], realized_pnl, state["positions"])
         except Exception as state_err:
             self.log(f"Failed to persist final state during stop: {state_err}", "DEBUG")
 

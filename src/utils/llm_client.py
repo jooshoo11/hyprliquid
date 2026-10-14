@@ -39,14 +39,10 @@ except ImportError:
     instructor = None
     INSTRUCTOR_AVAILABLE = False
 
-try:
-    from google import genai
-    from google.genai import types
-    GENAI_AVAILABLE = True
-except ImportError:
-    genai = None
-    types = None
-    GENAI_AVAILABLE = False
+# Google GenAI imports removed in favor of direct Groq LPU routing
+genai = None
+types = None
+GENAI_AVAILABLE = False
 
 
 def clean_json_text(text: str) -> str:
@@ -69,7 +65,8 @@ class UnifiedLLMClient:
         gemini_api_key: Optional[str] = None,
     ):
         self.groq_api_key = groq_api_key if groq_api_key is not None else os.getenv("GROQ_API_KEY")
-        self.gemini_api_key = gemini_api_key if gemini_api_key is not None else os.getenv("GEMINI_API_KEY")
+        self.gemini_api_key = None
+        self._gemini_cooldown_until: float = 0.0
 
         # Initialize Groq client if key is present
         self.groq_client = None
@@ -89,21 +86,18 @@ class UnifiedLLMClient:
         else:
             self.instructor_groq = None
 
-        # Initialize Google GenAI client if key is present
+        # Google GenAI client disabled in pure Groq stack
         self.genai_client = None
-        if GENAI_AVAILABLE and self.gemini_api_key:
-            try:
-                self.genai_client = genai.Client(api_key=self.gemini_api_key)
-            except Exception as e:
-                print(f"[LLM Client] Google GenAI initialization notice: {e}")
 
     def is_groq_ready(self) -> bool:
         """Check if Groq inference is configured and available."""
         return bool(self.groq_client and self.groq_api_key)
 
     def is_gemini_ready(self) -> bool:
-        """Check if Google AI Studio inference is configured and available."""
-        return bool(self.genai_client and self.gemini_api_key)
+        """Check if LLM inference is configured and available (routed to Groq)."""
+        if getattr(self, "genai_client", None) is not None:
+            return True
+        return self.is_groq_ready()
 
     def get_status(self) -> Dict[str, Any]:
         """Return diagnostic status of configured LLM providers."""
@@ -112,14 +106,14 @@ class UnifiedLLMClient:
                 "installed": GROQ_AVAILABLE,
                 "configured": bool(self.groq_api_key),
                 "ready": self.is_groq_ready(),
-                "default_model": "openai/gpt-oss-20b",
+                "default_model": "llama-3.3-70b-versatile",
             },
             "gemini": {
-                "installed": GENAI_AVAILABLE,
-                "configured": bool(self.gemini_api_key),
+                "installed": True,
+                "configured": bool(self.groq_api_key or self.genai_client is not None),
                 "ready": self.is_gemini_ready(),
-                "default_model": "gemini-3.5-flash-lite",
-                "search_grounding": True,
+                "default_model": "llama-3.3-70b-versatile",
+                "search_grounding": False,
             },
         }
 
@@ -127,18 +121,20 @@ class UnifiedLLMClient:
         self,
         prompt: str,
         system_prompt: str,
-        model: str = "openai/gpt-oss-20b",
+        model: str = "llama-3.3-70b-versatile",
         temperature: float = 0.1,
-        max_tokens: int = 300,
+        max_tokens: int = 500,
         retries: int = 3,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Any]:
         """
         Fast structured JSON query via Groq LPU (<100ms response latency).
         """
         if not self.is_groq_ready():
             return None
 
-        models_to_try = [model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b"]
+        if model and model not in models_to_try:
+            models_to_try.insert(0, model)
 
         for active_model in models_to_try:
             for attempt in range(retries):
@@ -213,66 +209,28 @@ class UnifiedLLMClient:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        model: str = "gemini-3.5-flash-lite",
+        model: str = "llama-3.3-70b-versatile",
         use_search: bool = False,
         temperature: float = 0.2,
         retries: int = 3,
     ) -> Optional[Any]:
         """
-        Analytical query via Google AI Studio with optional Google Search Grounding.
+        Analytical query routed directly to Groq LPU inference.
         """
-        if not self.is_gemini_ready():
-            return None
-
-        tools = []
-        if use_search and types is not None:
-            tools.append(types.Tool(google_search=types.GoogleSearch()))
-
-        full_prompt = prompt
-        if system_prompt:
-            full_prompt = f"System Instructions:\n{system_prompt}\n\nTask:\n{prompt}"
-
-        for attempt in range(retries):
+        if getattr(self, "genai_client", None) is not None:
             try:
-                t0 = time.time()
-                config_kwargs: Dict[str, Any] = {
-                    "temperature": temperature,
-                }
-                if tools:
-                    config_kwargs["tools"] = tools
-                else:
-                    # When not using search tools, strict json mime type guarantees clean json
-                    config_kwargs["response_mime_type"] = "application/json"
-
-                config = types.GenerateContentConfig(**config_kwargs) if types else None
-
                 response = self.genai_client.models.generate_content(
                     model=model,
-                    contents=full_prompt,
-                    config=config,
+                    contents=prompt,
                 )
                 raw_text = response.text or ""
-                cleaned = clean_json_text(raw_text)
-                parsed = json.loads(cleaned)
-                meta_info = {
-                    "_latency_ms": round((time.time() - t0) * 1000, 1),
-                    "_model": model,
-                    "_provider": "google_ai_studio",
-                    "_grounded": bool(tools),
-                }
-                if isinstance(parsed, dict):
-                    parsed.update(meta_info)
-                return parsed
-            except Exception as e:
-                if tools and ("RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)):
-                    # Search tool quota exhausted, retry immediately without search tool
-                    tools = []
-                    continue
-                wait_sec = 2 ** attempt
-                if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < retries - 1:
-                    time.sleep(wait_sec)
-                    continue
-                print(f"[LLM Client] Gemini query error (attempt {attempt + 1}/{retries}): {e}")
-                if attempt == retries - 1:
-                    return None
-        return None
+                return json.loads(clean_json_text(raw_text))
+            except Exception:
+                pass
+
+        return self.query_groq_json(
+            prompt=prompt,
+            system_prompt=system_prompt or "Respond strictly in valid JSON.",
+            temperature=temperature,
+            retries=retries,
+        )

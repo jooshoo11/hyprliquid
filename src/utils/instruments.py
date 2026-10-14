@@ -196,6 +196,7 @@ def get_bar_type(coin: str, timeframe: str) -> BarType:
     tf_map = {
         "4h": f"{instr_id_str}-4-HOUR-LAST-EXTERNAL",
         "30m": f"{instr_id_str}-30-MINUTE-LAST-EXTERNAL",
+        "15m": f"{instr_id_str}-15-MINUTE-LAST-EXTERNAL",
         "5m": f"{instr_id_str}-5-MINUTE-LAST-EXTERNAL",
         "1m": f"{instr_id_str}-1-MINUTE-LAST-EXTERNAL",
     }

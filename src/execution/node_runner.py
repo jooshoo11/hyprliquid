@@ -24,6 +24,7 @@ import os
 import json
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.model.identifiers import ClientOrderId, StrategyId
+from nautilus_trader.core.uuid import UUID4
 import time
 import signal
 import argparse
@@ -270,7 +271,7 @@ class HyperliquidNodeRunner:
         self.info_client = HyperliquidInfoClient(network="mainnet" if paper else "testnet")
         self.wallet_address, self._private_key, self.is_ephemeral = generate_or_load_wallet()
 
-        self.guard = PortfolioGuard(max_strategy_equity_pct=25.0, max_total_open_positions=10, max_daily_drawdown_pct=0.20)
+        self.guard = PortfolioGuard(max_strategy_equity_pct=0.25, max_total_open_positions=10, max_daily_drawdown_pct=0.20)
 
         self.node: Optional[TradingNode] = None
         self.continuation_strat: Optional[TrendContinuationSMC] = None
@@ -285,13 +286,13 @@ class HyperliquidNodeRunner:
 
         # Paper trading state persistence
         self.paper_state_path = os.path.join(os.getcwd(), "bridge", "paper_state.json")
-        self._paper_starting_equity: float = 100.0  # overridden by saved state on startup
+        self._paper_starting_equity: float = 200.0  # overridden by saved state on startup
         self._paper_realized_pnl: float = 0.0
 
     def load_paper_state(self) -> Dict[str, Any]:
         """
         Load persisted paper trading equity from bridge/paper_state.json so that
-        restarts do NOT reset the paper balance back to $100.
+        restarts do NOT reset the paper balance back to $200.
         Returns the saved state dict or {} if no state exists yet.
         """
         if not self.paper:
@@ -300,7 +301,7 @@ class HyperliquidNodeRunner:
             if os.path.exists(self.paper_state_path):
                 with open(self.paper_state_path, "r") as f:
                     state = json.load(f)
-                equity = float(state.get("equity", 100.0))
+                equity = float(state.get("equity", 200.0))
                 realized_pnl = float(state.get("realized_pnl", 0.0))
                 session = state.get("session_start", "Unknown")
                 console.print(
@@ -311,7 +312,7 @@ class HyperliquidNodeRunner:
                 self._paper_realized_pnl = realized_pnl
                 return state
         except Exception as e:
-            console.print(f"[yellow]Could not load paper state ({e}). Starting fresh at $100.[/yellow]")
+            console.print(f"[yellow]Could not load paper state ({e}). Starting fresh at $200.[/yellow]")
         return {}
 
     def save_paper_state(self, equity: float, realized_pnl: float = 0.0,
@@ -341,7 +342,7 @@ class HyperliquidNodeRunner:
                 ),
                 "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "total_trades": existing.get("total_trades", 0),
-                "starting_balance": existing.get("starting_balance", 100.0),
+                "starting_balance": existing.get("starting_balance", 200.0),
             }
             tmp = self.paper_state_path + ".tmp"
             with open(tmp, "w") as f:
@@ -462,7 +463,7 @@ class HyperliquidNodeRunner:
             from nautilus_trader.adapters.sandbox.config import SandboxExecutionClientConfig
             exec_cfg = SandboxExecutionClientConfig(
                 venue="HYPERLIQUID",
-                starting_balances=["100 USD"],
+                starting_balances=["200 USD"],
                 account_type="MARGIN",
                 base_currency="USD",
             )
@@ -593,6 +594,9 @@ class HyperliquidNodeRunner:
                             strategy_id=StrategyId(stale.strategy_id),
                             instrument_id=stale.instrument_id,
                             client_order_id=ClientOrderId(stale.order_id),
+                            venue_order_id=None,
+                            command_id=UUID4(),
+                            ts_init=time.time_ns(),
                         )
                         self.node.trader.execute(cancel_cmd)
                     except Exception as e:

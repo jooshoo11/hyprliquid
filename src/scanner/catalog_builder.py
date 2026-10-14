@@ -85,7 +85,7 @@ class CatalogBuilder:
     def __init__(
         self,
         catalog_path: str = "catalog",
-        top_n: int = 30,
+        top_n: int = 50,
         network: str = "mainnet",
         lookback_days_4h: int = 45,
         lookback_days_30m: int = 45,
@@ -257,56 +257,134 @@ class CatalogBuilder:
 
                 instrument_bars: List[Bar] = []
 
-                # Timeframes to ingest: (interval_str, nautilus_tf, start_ms)
-                timeframe_configs = [
-                    ("4h", "4h", start_4h_ms),
-                    ("30m", "30m", start_30m_ms),
-                    ("5m", "5m", start_5m_ms),
-                ]
-
-                for hl_interval, tf_key, start_ms in timeframe_configs:
-                    bar_type = get_bar_type(coin, tf_key)
-                    try:
-                        candles = self.client.get_historical_klines(
-                            coin=coin,
-                            interval=hl_interval,
-                            start_time_ms=start_ms,
-                            end_time_ms=now_ms,
-                        )
-                        if not candles:
-                            continue
-
-                        # 1. Calculate features and displacement with Polars expressions
-                        df = process_candles_with_polars(candles)
-
-                        # 2. Use df.to_arrow() when interfacing directly with NautilusTrader's Parquet catalog
-                        arrow_table = df.to_arrow()
-                        pydict = arrow_table.to_pydict()
-
-                        ts_events = pydict["ts_event"]
-                        opens = pydict["open"]
-                        highs = pydict["high"]
-                        lows = pydict["low"]
-                        closes = pydict["close"]
-                        volumes = pydict["volume"]
-
-                        for i in range(arrow_table.num_rows):
-                            ts_event = int(ts_events[i])
+                # Ingest 4H bars directly from REST API
+                bar_type_4h = get_bar_type(coin, "4h")
+                try:
+                    candles_4h = self.client.get_historical_klines(
+                        coin=coin,
+                        interval="4h",
+                        start_time_ms=start_4h_ms,
+                        end_time_ms=now_ms,
+                    )
+                    if candles_4h:
+                        df_4h = process_candles_with_polars(candles_4h)
+                        arrow_4h = df_4h.to_arrow()
+                        pydict_4h = arrow_4h.to_pydict()
+                        for i in range(arrow_4h.num_rows):
+                            ts_event = int(pydict_4h["ts_event"][i])
                             bar = Bar(
-                                bar_type=bar_type,
-                                open=instrument.make_price(Decimal(str(opens[i]))),
-                                high=instrument.make_price(Decimal(str(highs[i]))),
-                                low=instrument.make_price(Decimal(str(lows[i]))),
-                                close=instrument.make_price(Decimal(str(closes[i]))),
-                                volume=instrument.make_qty(Decimal(str(volumes[i]))),
+                                bar_type=bar_type_4h,
+                                open=instrument.make_price(Decimal(str(pydict_4h["open"][i]))),
+                                high=instrument.make_price(Decimal(str(pydict_4h["high"][i]))),
+                                low=instrument.make_price(Decimal(str(pydict_4h["low"][i]))),
+                                close=instrument.make_price(Decimal(str(pydict_4h["close"][i]))),
+                                volume=instrument.make_qty(Decimal(str(pydict_4h["volume"][i]))),
                                 ts_event=ts_event,
                                 ts_init=ts_event,
                             )
                             instrument_bars.append(bar)
-                    except Exception as exc:
-                        console.print(
-                            f"[bold red]Warning: Failed fetching {hl_interval} for {coin}: {exc}[/bold red]"
-                        )
+                except Exception as exc:
+                    console.print(f"[bold red]Warning: Failed fetching 4h for {coin}: {exc}[/bold red]")
+
+                # Ingest 5M bars directly from REST API, then resample 15M and 30M locally
+                bar_type_5m = get_bar_type(coin, "5m")
+                bar_type_15m = get_bar_type(coin, "15m")
+                bar_type_30m = get_bar_type(coin, "30m")
+
+                try:
+                    candles_5m = self.client.get_historical_klines(
+                        coin=coin,
+                        interval="5m",
+                        start_time_ms=start_5m_ms,
+                        end_time_ms=now_ms,
+                    )
+                    if candles_5m:
+                        df_5m = process_candles_with_polars(candles_5m)
+                        if not df_5m.is_empty():
+                            # 1. 5M Bars
+                            arrow_5m = df_5m.to_arrow()
+                            pydict_5m = arrow_5m.to_pydict()
+                            for i in range(arrow_5m.num_rows):
+                                ts_event = int(pydict_5m["ts_event"][i])
+                                bar = Bar(
+                                    bar_type=bar_type_5m,
+                                    open=instrument.make_price(Decimal(str(pydict_5m["open"][i]))),
+                                    high=instrument.make_price(Decimal(str(pydict_5m["high"][i]))),
+                                    low=instrument.make_price(Decimal(str(pydict_5m["low"][i]))),
+                                    close=instrument.make_price(Decimal(str(pydict_5m["close"][i]))),
+                                    volume=instrument.make_qty(Decimal(str(pydict_5m["volume"][i]))),
+                                    ts_event=ts_event,
+                                    ts_init=ts_event,
+                                )
+                                instrument_bars.append(bar)
+
+                            # 2. Local Polars Resample: 5m -> 15m
+                            # 15 mins in nanoseconds = 15 * 60 * 1_000_000_000
+                            ns_15m = 15 * 60 * 1_000_000_000
+                            df_15m = (
+                                df_5m.with_columns(
+                                    ((pl.col("ts_event") // ns_15m) * ns_15m).alias("bucket")
+                                )
+                                .group_by("bucket")
+                                .agg([
+                                    pl.first("open").alias("open"),
+                                    pl.max("high").alias("high"),
+                                    pl.min("low").alias("low"),
+                                    pl.last("close").alias("close"),
+                                    pl.sum("volume").alias("volume"),
+                                ])
+                                .sort("bucket")
+                            )
+                            arrow_15m = df_15m.to_arrow()
+                            pydict_15m = arrow_15m.to_pydict()
+                            for i in range(arrow_15m.num_rows):
+                                ts_event = int(pydict_15m["bucket"][i])
+                                bar = Bar(
+                                    bar_type=bar_type_15m,
+                                    open=instrument.make_price(Decimal(str(pydict_15m["open"][i]))),
+                                    high=instrument.make_price(Decimal(str(pydict_15m["high"][i]))),
+                                    low=instrument.make_price(Decimal(str(pydict_15m["low"][i]))),
+                                    close=instrument.make_price(Decimal(str(pydict_15m["close"][i]))),
+                                    volume=instrument.make_qty(Decimal(str(pydict_15m["volume"][i]))),
+                                    ts_event=ts_event,
+                                    ts_init=ts_event,
+                                )
+                                instrument_bars.append(bar)
+
+                            # 3. Local Polars Resample: 5m -> 30m
+                            # 30 mins in nanoseconds = 30 * 60 * 1_000_000_000
+                            ns_30m = 30 * 60 * 1_000_000_000
+                            df_30m = (
+                                df_5m.with_columns(
+                                    ((pl.col("ts_event") // ns_30m) * ns_30m).alias("bucket")
+                                )
+                                .group_by("bucket")
+                                .agg([
+                                    pl.first("open").alias("open"),
+                                    pl.max("high").alias("high"),
+                                    pl.min("low").alias("low"),
+                                    pl.last("close").alias("close"),
+                                    pl.sum("volume").alias("volume"),
+                                ])
+                                .sort("bucket")
+                            )
+                            arrow_30m = df_30m.to_arrow()
+                            pydict_30m = arrow_30m.to_pydict()
+                            for i in range(arrow_30m.num_rows):
+                                ts_event = int(pydict_30m["bucket"][i])
+                                bar = Bar(
+                                    bar_type=bar_type_30m,
+                                    open=instrument.make_price(Decimal(str(pydict_30m["open"][i]))),
+                                    high=instrument.make_price(Decimal(str(pydict_30m["high"][i]))),
+                                    low=instrument.make_price(Decimal(str(pydict_30m["low"][i]))),
+                                    close=instrument.make_price(Decimal(str(pydict_30m["close"][i]))),
+                                    volume=instrument.make_qty(Decimal(str(pydict_30m["volume"][i]))),
+                                    ts_event=ts_event,
+                                    ts_init=ts_event,
+                                )
+                                instrument_bars.append(bar)
+                except Exception as exc:
+                    console.print(f"[bold red]Warning: Failed fetching/resampling 5m for {coin}: {exc}[/bold red]")
 
                 if instrument_bars:
                     catalog.write_data(instrument_bars)
@@ -325,7 +403,7 @@ class CatalogBuilder:
 def main():
     parser = argparse.ArgumentParser(description="Hyperliquid Top-30 Catalog Builder with Polars Engine")
     parser.add_argument("--catalog-dir", type=str, default="catalog", help="Directory path for Parquet catalog")
-    parser.add_argument("--top-n", type=int, default=30, help="Number of top perpetuals to ingest")
+    parser.add_argument("--top-n", type=int, default=50, help="Number of top perpetuals to ingest")
     parser.add_argument("--network", type=str, default="mainnet", choices=["mainnet", "testnet"], help="Hyperliquid network")
     parser.add_argument("--days-4h", type=int, default=45, help="Days lookback for 4H bars")
     parser.add_argument("--days-30m", type=int, default=20, help="Days lookback for 30M bars")

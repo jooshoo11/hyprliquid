@@ -10,8 +10,11 @@ import os
 import sys
 import time
 import math
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 import polars as pl
 
@@ -94,8 +97,32 @@ class HyperliquidInfoClient:
             self.api_url = self.base_url
         import requests
         self._session = requests.Session()
-        from hyperliquid.info import Info
-        self._info = Info(self.base_url, skip_ws=True)
+        try:
+            from hyperliquid.info import Info
+            self._info = Info(self.base_url, skip_ws=True)
+        except Exception as e:
+            logger.debug("Hyperliquid Info initialization exception (offline/rate-limited): %s", e)
+            self._info = None
+
+    def post(self, payload: Dict[str, Any]) -> Any:
+        """Make a raw JSON POST request to the Hyperliquid /info endpoint."""
+        try:
+            resp = self._session.post(self.api_url, json=payload, timeout=5.0)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            logger.debug("HyperliquidInfoClient.post error: %s", e)
+        return None
+
+    def _get_info(self) -> Any:
+        """Lazily initialize or return Info instance."""
+        if self._info is None:
+            try:
+                from hyperliquid.info import Info
+                self._info = Info(self.base_url, skip_ws=True)
+            except Exception:
+                return None
+        return self._info
 
     def _resolve_meta_cache_path(self) -> str:
         """Resolve path to catalog/mcp_meta_cache.json."""
@@ -187,7 +214,11 @@ class HyperliquidInfoClient:
         Fetch real-time L2 order book depth (top bids and asks) for a specified market.
         """
         try:
-            snapshot = self._info.l2_snapshot(coin)
+            info = self._get_info()
+            if info is not None:
+                snapshot = info.l2_snapshot(coin)
+            else:
+                snapshot = self.post({"type": "l2Book", "coin": coin}) or {}
             levels = snapshot.get("levels", [[], []])
             bids = levels[0][:10] if len(levels) > 0 else []
             asks = levels[1][:10] if len(levels) > 1 else []
@@ -217,7 +248,17 @@ class HyperliquidInfoClient:
         if start_time_ms is None:
             start_time_ms = end_time_ms - (24 * 3600 * 1000)
 
-        candles = self._info.candles_snapshot(coin, interval, start_time_ms, end_time_ms)
+        info = self._get_info()
+        if info is not None:
+            try:
+                candles = info.candles_snapshot(coin, interval, start_time_ms, end_time_ms)
+                return candles
+            except Exception:
+                pass
+        candles = self.post({
+            "type": "candleSnapshot",
+            "req": {"coin": coin, "interval": interval, "startTime": start_time_ms, "endTime": end_time_ms},
+        }) or []
         return candles
 
     def get_funding_rates(self, coin: str) -> Dict[str, Any]:
@@ -228,7 +269,15 @@ class HyperliquidInfoClient:
         try:
             now_ms = int(time.time() * 1000)
             start_ms = now_ms - (7 * 24 * 3600 * 1000)
-            history = self._info.funding_history(coin, start_ms, now_ms)
+            info = self._get_info()
+            history = []
+            if info is not None:
+                try:
+                    history = info.funding_history(coin, start_ms, now_ms)
+                except Exception:
+                    pass
+            if not history:
+                history = self.post({"type": "fundingHistory", "coin": coin, "startTime": start_ms, "endTime": now_ms}) or []
             recent_rates = [float(item.get("funding", 0)) for item in history[-24:]]
             avg_rate = sum(recent_rates) / len(recent_rates) if recent_rates else 0.0
 

@@ -68,7 +68,74 @@ def scan_catalog_metadata_lazy(catalog_dir: str = "catalog") -> Dict[str, int]:
             count = lf.select(pl.len()).collect().item()
             summary[series_name] = count
 
-    return summary
+def select_funnel_basket(catalog_path: str = "catalog", basket_size: int = 12) -> List[str]:
+    """
+    Selects a stratified 12-coin representative basket from the 50-coin catalog using Polars:
+    - Top 4 Majors by volume (BTC, ETH, SOL, HYPE)
+    - Top 4 High-Beta Alts by ATR/range
+    - Top 4 Momentum/Breakout leaders
+    """
+    bar_dir = os.path.join(catalog_path, "data", "bar")
+    if not os.path.exists(bar_dir):
+        return ["BTC", "ETH", "SOL", "HYPE"]
+
+    # Identify all available coins in catalog
+    all_series = os.listdir(bar_dir)
+    coin_metrics = []
+
+    majors = ["BTC", "ETH", "SOL", "HYPE"]
+    discovered_coins = set()
+
+    for s in all_series:
+        coin = s.split("-")[0].upper()
+        discovered_coins.add(coin)
+        parquet_files = glob.glob(os.path.join(bar_dir, s, "*.parquet"))
+        if not parquet_files:
+            continue
+        try:
+            lf = pl.scan_parquet(parquet_files)
+            stats = (
+                lf.select([
+                    pl.col("volume").sum().alias("total_vol"),
+                    ((pl.col("high") - pl.col("low")) / pl.col("close")).mean().alias("avg_range"),
+                    ((pl.col("close").last() - pl.col("open").first()) / pl.col("open").first()).abs().alias("momentum"),
+                ])
+                .collect()
+            )
+            if not stats.is_empty():
+                coin_metrics.append({
+                    "coin": coin,
+                    "total_vol": float(stats["total_vol"][0] or 0.0),
+                    "avg_range": float(stats["avg_range"][0] or 0.0),
+                    "momentum": float(stats["momentum"][0] or 0.0),
+                })
+        except Exception:
+            continue
+
+    if not coin_metrics:
+        return [c for c in majors if c in discovered_coins] or ["BTC", "ETH", "SOL"]
+
+    df_metrics = pl.DataFrame(coin_metrics).unique(subset=["coin"])
+
+    selected = []
+    # 1. Majors
+    for m in majors:
+        if m in df_metrics["coin"].to_list():
+            selected.append(m)
+
+    remaining = df_metrics.filter(~pl.col("coin").is_in(selected))
+
+    # 2. Top 4 High-Beta Alts by range
+    high_beta = remaining.sort("avg_range", descending=True).head(4)["coin"].to_list()
+    selected.extend(high_beta)
+
+    remaining = df_metrics.filter(~pl.col("coin").is_in(selected))
+
+    # 3. Top 4 Momentum / Breakout leaders
+    momentum_leaders = remaining.sort("momentum", descending=True).head(4)["coin"].to_list()
+    selected.extend(momentum_leaders)
+
+    return selected[:basket_size]
 
 
 class MultiStrategyOptimizer:
@@ -295,11 +362,17 @@ def main():
     parser.add_argument("--catalog-dir", type=str, default="catalog", help="Path to Parquet data catalog")
     parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials to evaluate")
     parser.add_argument("--jobs", type=int, default=1, help="Number of concurrent worker threads")
-    parser.add_argument("--symbols", type=str, default="SOL,ETH,BTC", help="Comma-separated symbols to optimize on")
+    parser.add_argument("--symbols", type=str, default="FUNNEL_12", help="Symbols or FUNNEL_12 for stratified basket")
     parser.add_argument("--out", type=str, default="config/optimized_params.json", help="Path to write JSON output")
     args = parser.parse_args()
 
-    symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else None
+    if args.symbols and args.symbols.strip().upper() == "FUNNEL_12":
+        symbols = select_funnel_basket(catalog_path=args.catalog_dir, basket_size=12)
+        console.print(f"[bold cyan]🎯 Selected FUNNEL_12 Stratified Basket: {symbols}[/bold cyan]")
+    elif args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",")]
+    else:
+        symbols = None
 
     optimizer = MultiStrategyOptimizer(
         strategy_target=args.strategy,

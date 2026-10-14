@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from src.scanner.mcp_client import HyperliquidInfoClient
 from src.risk.trade_manager import TradeManager
+from src.utils.instruments import get_coin_max_leverage
 
 try:
     from src.risk.performance_analytics import PerformanceAnalytics
@@ -190,6 +191,14 @@ def get_prospects_list() -> List[Dict[str, Any]]:
                     "volume_24h": 0.0,
                     "funding_apr": 0.0,
                 })
+    # Attach each coin's effective leverage: full exchange max if conviction >= 90, else clamped to 15x
+    for pr in prospects_list:
+        try:
+            native_lev = float(get_coin_max_leverage(pr.get("coin", "")))
+            score = float(pr.get("conviction_score", 0) or 0)
+            pr["leverage"] = native_lev if score >= 90 else min(native_lev, 15.0)
+        except Exception:
+            pr["leverage"] = 1.0
     return prospects_list
 
 
@@ -356,6 +365,57 @@ def generate_sentinel_thoughts(current_positions: Optional[List[Dict[str, Any]]]
         except Exception:
             pass
 
+    # 8. Bridge Sentinel Log Live Stream (Subagent Audit & Engine Logs)
+    if os.path.exists(SENTINEL_LOG_PATH):
+        try:
+            with open(SENTINEL_LOG_PATH, "r", errors="replace") as f:
+                log_lines = f.readlines()
+            for line in log_lines[-25:]:
+                s = line.strip()
+                if not s:
+                    continue
+                cat = "[AUDIT]"
+                badge_col = "emerald"
+                status = "ACTIVE"
+                coin = "LIVE"
+                if "[SUBAGENT AUDIT]" in s:
+                    cat = "[SUBAGENT AUDIT]"
+                    badge_col = "purple"
+                    status = "OPTIMAL"
+                    coin = "AUDIT"
+                elif "ERROR" in s or "Traceback" in s or "Exception" in s:
+                    cat = "[RISK]"
+                    badge_col = "rose"
+                    status = "TRIGGER"
+                    coin = "ALERT"
+                elif "WARN" in s:
+                    cat = "[RISK]"
+                    badge_col = "amber"
+                    status = "WARNING"
+                    coin = "WARN"
+                elif "BUY" in s or "SELL" in s or "ORDER" in s or "FILL" in s:
+                    cat = "[ORDER]"
+                    badge_col = "emerald"
+                    status = "OPTIMAL"
+                    coin = "ORDER"
+                elif "PROSPECT" in s or "AI Prospector" in s:
+                    cat = "[AI STUDIO]"
+                    badge_col = "blue"
+                    status = "OPTIMAL"
+                    coin = "SCAN"
+
+                all_thoughts.append({
+                    "timestamp": time_str,
+                    "category": cat,
+                    "badge_color": badge_col,
+                    "status": status,
+                    "coin": coin,
+                    "thought": s,
+                    "text": s,
+                })
+        except Exception:
+            pass
+
     # Deduplicate by thought text while preserving order
     seen = set()
     deduped = []
@@ -365,7 +425,7 @@ def generate_sentinel_thoughts(current_positions: Optional[List[Dict[str, Any]]]
             seen.add(txt)
             deduped.append(t)
 
-    return deduped[-40:]
+    return deduped[-50:]
 
 
 def get_live_state() -> Dict[str, Any]:
@@ -444,6 +504,7 @@ def get_live_state() -> Dict[str, Any]:
                 # Ensure strategy attribution
                 strat = p.get("strategy") or p.get("strategy_name") or p.get("strategy_id") or ""
                 p["strategy"] = normalize_strategy(strat, coin, idx)
+                p["leverage"] = float(p.get("leverage") or get_coin_max_leverage(coin))
 
                 # Track position entry time and anti-churn 90s min hold
                 if coin not in _position_entry_times:
@@ -473,6 +534,7 @@ def get_live_state() -> Dict[str, Any]:
             for idx, p in enumerate(positions):
                 strat = p.get("strategy") or p.get("strategy_name") or p.get("strategy_id") or ""
                 p["strategy"] = normalize_strategy(strat, p.get("coin", ""), idx)
+                p["leverage"] = float(p.get("leverage") or get_coin_max_leverage(p.get("coin", "")))
 
                 coin = p.get("coin", "").upper()
                 if coin not in _position_entry_times:
@@ -565,6 +627,7 @@ def get_live_state() -> Dict[str, Any]:
         "cash_balance": round(cash_balance, 2),
         "net_unrealized": round(net_unrealized, 2),
         "notional_exposure": round(notional_exposure, 2),
+        "effective_leverage": round((notional_exposure / live_equity) if live_equity > 0 else 0.0, 2),
         "roi_pct": round((net_unrealized / cash_balance * 100.0) if cash_balance > 0 else 0.0, 2),
         "total_fees_paid": round(total_fees_paid, 4),
         "net_realized_pnl": round(net_realized_pnl, 2),
@@ -572,6 +635,9 @@ def get_live_state() -> Dict[str, Any]:
         "est_funding_carry": round(est_funding_carry, 2),
         "analytics": performance_analytics.get_metrics(),
         "funding_rates": funding_rates,
+        "trade_manager": tm_summary,
+        "strategy_allocations": _portfolio_guard.get_strategy_performance_status() if '_portfolio_guard' in globals() else {},
+        "performance_metrics": performance_analytics.get_metrics(),
         "positions": positions,
         "prospects": prospects_list,
         "funding_arbitrage": funding_pairs,
@@ -984,7 +1050,36 @@ async def api_reset_circuit_breaker():
         _active_engine.guard.is_circuit_breaker_triggered = False
         _active_engine.guard.daily_high_water_mark = _active_engine.get_account_cash()
         return {"status": "SUCCESS", "message": "Circuit breaker reset to NORMAL"}
-    raise HTTPException(status_code=503, detail="Risk guard not available")
+
+@app.post("/api/scan")
+async def api_scan():
+    """Trigger an immediate 50-coin Prospector scan."""
+    if _active_engine:
+        try:
+            _active_engine._force_prospector_scan = True
+        except Exception:
+            pass
+
+    # Safely append {"action": "TRIGGER_SCAN"} to bridge/ai_commands.json
+    try:
+        cmds = load_json_file(AI_COMMANDS_PATH, [])
+        if not isinstance(cmds, list):
+            cmds = []
+        cmds.append({
+            "action": "TRIGGER_SCAN",
+            "timestamp": time.time(),
+        })
+        tmp_path = f"{AI_COMMANDS_PATH}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(cmds, f, indent=2)
+        os.replace(tmp_path, AI_COMMANDS_PATH)
+    except Exception:
+        pass
+
+    return {
+        "status": "SUCCESS",
+        "message": "Immediate 50-coin Prospector scan triggered",
+    }
 
 
 @app.get("/api/strategy_allocations")
@@ -1072,6 +1167,17 @@ async def get_index():
         with open(index_path, "r", encoding="utf-8") as f:
             return f.read()
     return "<h1>Cockpit loading... index.html not found</h1>"
+
+
+@app.get("/bot", response_class=HTMLResponse)
+async def get_bot_terminal():
+    """Serve the dedicated high-density bot execution terminal."""
+    template_path = os.path.join(os.path.dirname(__file__), "templates", "bot_terminal.html")
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "<h1>Bot Terminal loading... template not found</h1>"
+
 
 
 if __name__ == "__main__":

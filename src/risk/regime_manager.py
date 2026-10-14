@@ -109,32 +109,6 @@ class MarketRegimeManager:
                 "Restricting Long Trend entries (conviction threshold raised to >= 90)",
                 "Tightening trailing stops & MAE hard cuts",
             ]
-        elif negative_funding_count >= 3 or avg_funding_apr < -5.0:
-            regime = "NEGATIVE_FUNDING_SHORT_SQUEEZE"
-            sentiment = (
-                f"Negative Funding Short Crowd ({negative_funding_count} coins < -10% APR). "
-                f"Explosive short-squeeze conditions detected."
-            )
-            tweaks = [
-                "Long bias on negative funding coins to harvest short carry + squeeze momentum",
-                "Completely suppressing short funding fades",
-                "VWAP/OI breakout allocation expanded to 2.5x",
-            ]
-        elif (
-            (breadth_pct >= 60.0 and avg_change_24h > 1.0)
-            or (self.current_regime and self.current_regime.regime == "BULL_MOMENTUM_EXPANSION" and breadth_pct >= 55.0 and avg_change_24h > 0.5)
-        ):
-            regime = "BULL_MOMENTUM_EXPANSION"
-            sentiment = (
-                f"Broad-Based Bull Expansion ({breadth_pct:.0f}% green, avg +{avg_change_24h:.1f}% 24h). "
-                f"Institutional accumulation with healthy carry (+{avg_funding_apr:.1f}% APR)."
-            )
-            tweaks = [
-                "SMC Trend Continuation max positions expanded to 4 (Alloc: 2.5x)",
-                "VWAP/OI Momentum max positions expanded to 3 (Alloc: 2.0x)",
-                "Trend profit target expanded to 3.0 R:R for runners",
-                "Funding Fade entry threshold raised to +80% APR (avoid fighting trend)",
-            ]
         elif breadth_pct <= 35.0 and avg_change_24h < -1.2:
             # Check if major benchmark (BTC/ETH) has stabilized or turned positive
             btc_change = None
@@ -173,6 +147,32 @@ class MarketRegimeManager:
                     "Funding Fade prioritized for oversold bounces",
                     "Tightening position risk to preserve capital",
                 ]
+        elif (negative_funding_count >= 3 or avg_funding_apr < -5.0) and (breadth_pct >= 42.0 or negative_funding_count >= 6):
+            regime = "NEGATIVE_FUNDING_SHORT_SQUEEZE"
+            sentiment = (
+                f"Negative Funding Short Crowd ({negative_funding_count} coins < -10% APR). "
+                f"Explosive short-squeeze conditions detected."
+            )
+            tweaks = [
+                "Long bias on negative funding coins to harvest short carry + squeeze momentum",
+                "Completely suppressing short funding fades",
+                "VWAP/OI breakout allocation expanded to 2.5x",
+            ]
+        elif (
+            (breadth_pct >= 60.0 and avg_change_24h > 1.0)
+            or (self.current_regime and self.current_regime.regime == "BULL_MOMENTUM_EXPANSION" and breadth_pct >= 55.0 and avg_change_24h > 0.5)
+        ):
+            regime = "BULL_MOMENTUM_EXPANSION"
+            sentiment = (
+                f"Broad-Based Bull Expansion ({breadth_pct:.0f}% green, avg +{avg_change_24h:.1f}% 24h). "
+                f"Institutional accumulation with healthy carry (+{avg_funding_apr:.1f}% APR)."
+            )
+            tweaks = [
+                "SMC Trend Continuation max positions expanded to 4 (Alloc: 2.5x)",
+                "VWAP/OI Momentum max positions expanded to 3 (Alloc: 2.0x)",
+                "Trend profit target expanded to 3.0 R:R for runners",
+                "Funding Fade entry threshold raised to +80% APR (avoid fighting trend)",
+            ]
         else:
             regime = "CHOPPY_MEAN_REVERTING_RANGE"
             sentiment = (

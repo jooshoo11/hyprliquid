@@ -97,10 +97,10 @@ class DataProvider:
 
         # 1. Base telemetry defaults
         mode = "PAPER"
-        equity = 10000.0
-        cash = 10000.0
+        equity = 200.0
+        cash = 200.0
         margin_used = 0.0
-        margin_available = 10000.0
+        margin_available = 200.0
         unrealized_pnl = 0.0
         realized_pnl = 0.0
         roi_total = 0.0
@@ -116,8 +116,8 @@ class DataProvider:
             try:
                 mode = "PAPER" if getattr(engine, "paper", True) else "LIVE"
                 eng_state = engine.get_state() if hasattr(engine, "get_state") else {}
-                equity = float(eng_state.get("equity", 10000.0))
-                cash = float(eng_state.get("cash_balance", 10000.0))
+                equity = float(eng_state.get("equity", 200.0))
+                cash = float(eng_state.get("cash_balance", 200.0))
                 unrealized_pnl = float(eng_state.get("net_unrealized", 0.0))
                 realized_pnl = float(eng_state.get("net_realized_pnl", 0.0))
                 roi_total = float(eng_state.get("roi_total", 0.0))
@@ -133,8 +133,8 @@ class DataProvider:
             # Fallback to bridge files
             paper_state = self._read_json(self.paper_state_path, {})
             if isinstance(paper_state, dict):
-                equity = float(paper_state.get("equity", 10000.0))
-                cash = float(paper_state.get("cash_balance", 10000.0))
+                equity = float(paper_state.get("equity", 200.0))
+                cash = float(paper_state.get("cash_balance", 200.0))
                 realized_pnl = float(paper_state.get("realized_pnl", 0.0))
 
             active_trades = self._read_json(self.active_trades_path, [])
@@ -263,11 +263,11 @@ class DataProvider:
                 badge_col = "green" if sentiment == "BULLISH" else ("red" if sentiment == "TOXIC_CATALYST" else "cyan")
                 all_thoughts.append({
                     "timestamp": time_str,
-                    "category": "[AI STUDIO]",
+                    "category": "[GROQ LPU]",
                     "badge_color": badge_col,
                     "status": sentiment,
                     "coin": coin,
-                    "thought": f"AI Studio Prospector: {coin} [{sentiment}] — {verdict} (Score: {score})",
+                    "thought": f"Groq LPU Prospector: {coin} [{sentiment}] — {verdict} (Score: {score})",
                 })
 
         # 3. Market Regime

@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-10-14T01:18:21Z",
+    "coin": "ZEC",
+    "side": "LONG",
+    "size": 0.07,
+    "entry": 1235.2,
+    "exit": 1235.25,
+    "duration": "0h 1m 24s",
+    "gross_pnl": 0.0,
+    "fees": 0.06,
+    "net_pnl": -0.06,
+    "pnl": -0.06,
+    "roi": 0.0,
+    "strategy": "OrderBookImbalance-003",
+    "reason": "Dashboard Microstructure Toxic Risk: Long liquidation cascade triggering against position (4 long liqs)",
+    "is_rotation": false
+  }
+]

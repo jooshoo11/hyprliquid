@@ -1,0 +1,1 @@
+{"timestamp": "2026-10-14T01:27:29Z", "datetime_utc": "2026-10-14 01:27:29", "type": "missed_opportunity", "coin": "SOL", "strategy": "OrderBookImbalance", "reason": "L2 imbalance threshold not met", "metrics": {"bid_ask_ratio": 1.1}, "retrospective_note": "Wait for ratio > 1.5"}

@@ -168,10 +168,11 @@ class LiquidationAbsorber(Strategy):
         if equity <= 0 or entry_price <= 0:
             return
 
-        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
-        margin_allocated = equity / max_positions
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 2) if self.portfolio_guard else 2)
+        # Deploy $100 base margin per position (50% of $200 account base)
+        margin_allocated = (equity / max_positions) if max_positions > 0 else (equity * 0.50)
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = min(float(get_coin_max_leverage(coin)), 5.0)
+        max_lev = float(get_coin_max_leverage(coin))
         target_notional = margin_allocated * max_lev
 
         qty_val = target_notional / entry_price
@@ -211,7 +212,6 @@ class LiquidationAbsorber(Strategy):
                 quantity=quantity,
                 entry_order_type=OrderType.LIMIT,
                 entry_price=entry_obj,
-                entry_post_only=self.absorber_config.post_only,
                 time_in_force=TimeInForce.GTC,
                 tp_order_type=OrderType.LIMIT,
                 tp_price=tp_obj,

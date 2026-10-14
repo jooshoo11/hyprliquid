@@ -196,7 +196,7 @@ class NodeDashboardApp(App):
                 final_equity = self._get_account_equity(cash_balance, total_unrealized)
                 self.runner.save_paper_state(
                     equity=final_equity,
-                    realized_pnl=cash_balance - 100.0,
+                    realized_pnl=cash_balance - 200.0,
                     positions=positions_data,
                 )
                 self.log_view.write_line(f"[bold cyan]💾 Paper state saved: Total Equity=${final_equity:.2f} (Cash=${cash_balance:.2f})[/bold cyan]")
@@ -273,9 +273,12 @@ class NodeDashboardApp(App):
                 try:
                     cancel_cmd = CancelOrder(
                         trader_id=self.runner.node.trader_id,
-                        strategy_id=stale.strategy_id,
+                        strategy_id=StrategyId(stale.strategy_id),
                         instrument_id=stale.instrument_id,
-                        client_order_id=stale.order_id,
+                        client_order_id=ClientOrderId(stale.order_id),
+                        venue_order_id=None,
+                        command_id=UUID4(),
+                        ts_init=time.time_ns(),
                     )
                     self.runner.node.trader.execute(cancel_cmd)
                     self.log_view.write_line(f"[yellow]Cancelled stale order {stale.order_id}[/yellow]")
@@ -322,7 +325,7 @@ class NodeDashboardApp(App):
                         return bal.as_double()
         except Exception:
             pass
-        return getattr(self.runner, "_paper_starting_equity", 100.0)
+        return getattr(self.runner, "_paper_starting_equity", 200.0)
 
     def _get_account_equity(self, cash_balance: Optional[float] = None, total_unrealized: float = 0.0) -> float:
         """Fetch current total equity (cash balance + unrealized PnL)."""
@@ -615,7 +618,7 @@ class NodeDashboardApp(App):
 
             # Persist paper state so restarts don't wipe the balance
             if self.runner.paper:
-                realized_pnl = cash_balance - 100.0  # net gain vs original $100 starting balance
+                realized_pnl = cash_balance - 200.0  # net gain vs original $200 starting balance
                 self.runner.save_paper_state(
                     equity=equity,
                     realized_pnl=realized_pnl,

@@ -51,10 +51,6 @@ class OrderBookImbalance(Strategy):
 
     def on_start(self) -> None:
         """Subscribe to quote ticks and bars across venue instruments."""
-        if getattr(self.cache, "is_backtest", False):
-            self.log.info("LIVE_PAPER_ONLY: OrderBookImbalance logic disabled during historical backtest.")
-            self._disabled = True
-            
         instruments = [i for i in self.cache.instruments() if str(i.id.venue) == self.scalp_config.venue]
         self.log.info(f"OrderBookImbalance active on {len(instruments)} instruments")
 
@@ -203,11 +199,11 @@ class OrderBookImbalance(Strategy):
             return
 
         # When close finishes in the top 10% of high volume bar -> buying wall
-        upper_wick = bar.high.as_double() - bar.close.as_double()
-        lower_wick = bar.close.as_double() - bar.low.as_double()
+        upper_wick = max(0.0, bar.high.as_double() - bar.close.as_double())
+        lower_wick = max(0.0, bar.close.as_double() - bar.low.as_double())
         tick_size = instrument.price_increment.as_double()
 
-        if lower_wick > 0 and upper_wick / lower_wick > 4.0:
+        if upper_wick / max(lower_wick, 1e-6) > 4.0:
             # Rejection from high -> Ask wall
             entry_px = bar.close.as_double()
             min_stop_pct = getattr(self.scalp_config, 'min_stop_pct', 0.012)
@@ -217,7 +213,7 @@ class OrderBookImbalance(Strategy):
             sl_px = entry_px + stop_dist
             tp_px = entry_px - tp_dist
             self._execute_scalp(instrument, OrderSide.SELL, entry_px, sl_px, tp_px, 3.5)
-        elif upper_wick > 0 and lower_wick / upper_wick > 4.0:
+        elif lower_wick / max(upper_wick, 1e-6) > 4.0:
             # Rejection from low -> Bid wall
             entry_px = bar.close.as_double()
             min_stop_pct = getattr(self.scalp_config, 'min_stop_pct', 0.012)
@@ -250,17 +246,29 @@ class OrderBookImbalance(Strategy):
             if open_for_instr:
                 return
 
-        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
-        margin_allocated = equity / max_positions
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 2) if self.portfolio_guard else 2)
+        # Deploy $100 base margin per position (50% of $200 account base)
+        margin_allocated = (equity / max_positions) if max_positions > 0 else (equity * 0.50)
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
         max_lev = float(get_coin_max_leverage(coin))
-        target_notional = margin_allocated * max_lev
+        margin_notional = margin_allocated * max_lev
+
+        # Constrain position size using risk_per_trade_pct
+        risk_per_unit = abs(entry_price - sl_price)
+        if risk_per_unit > 0:
+            risk_pct = getattr(self.scalp_config, "risk_per_trade_pct", 0.0075)
+            dollar_risk = equity * risk_pct
+            risk_notional = (dollar_risk / risk_per_unit) * entry_price
+            target_notional = min(margin_notional, risk_notional)
+        else:
+            target_notional = margin_notional
+
         qty_val = target_notional / entry_price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:
             return
 
-        notional_usd = qty_val * entry_price
+        notional_usd = float(quantity.as_double()) * entry_price
         if self.portfolio_guard is not None:
             self.portfolio_guard.update_equity(equity)
             can_trade, reason = self.portfolio_guard.can_open_position(
@@ -269,7 +277,7 @@ class OrderBookImbalance(Strategy):
                 side=side,
                 proposed_notional_usd=notional_usd,
                 current_open_positions_count=self.cache.positions_open_count(),
-                leverage=min(max_lev, 15.0),
+                leverage=max_lev,
             )
             if not can_trade:
                 if reason != "SILENT_BLOCK":
@@ -305,7 +313,6 @@ class OrderBookImbalance(Strategy):
                 quantity=quantity,
                 entry_order_type=OrderType.LIMIT,
                 entry_price=entry_obj,
-                entry_post_only=True,
                 time_in_force=TimeInForce.GTC,
                 tp_order_type=OrderType.LIMIT,
                 tp_price=tp_obj,

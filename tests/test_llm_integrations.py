@@ -141,8 +141,8 @@ def test_ai_studio_prospector_catalyst_grounding_mock():
     # ENA should be promoted to #1 with boosted conviction, and MEME penalized
     assert enhanced[0]["coin"] == "ENA"
     assert enhanced[0]["conviction_score"] >= 95
-    assert "🌟 [AI Studio Verified]" in enhanced[0]["rationale"]
+    assert any(prefix in enhanced[0]["rationale"] for prefix in ["🌟 [Groq LPU Verified]", "🌟 [AI Studio Verified]"])
 
     assert enhanced[1]["coin"] == "MEME"
     assert enhanced[1]["conviction_score"] <= 40
-    assert "⚠️ [AI Studio VETO]" in enhanced[1]["rationale"]
+    assert any(prefix in enhanced[1]["rationale"] for prefix in ["⚠️ [Groq LPU VETO]", "⚠️ [AI Studio VETO]"])

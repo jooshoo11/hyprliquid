@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hyperliquid Bot Execution Terminal</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- TradingView Lightweight Charts -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Google Fonts: JetBrains Mono & Plus Jakarta Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            bot: {
+              bg: '#060911',
+              card: '#0b1120',
+              border: '#1e293b',
+              accent: '#38bdf8',
+              emerald: '#10b981',
+              crimson: '#f43f5e',
+              amber: '#f59e0b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #060911;
+      color: #f1f5f9;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    /* Sleek institutional scrollbars */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: #060911; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
+    @keyframes pulse-live {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.95); }
+    }
+    .pulse-live { animation: pulse-live 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col bg-[#060911] text-slate-100 selection:bg-cyan-500 selection:text-white">
+
+  <!-- TOP TELEMETRY RIBBON -->
+  <header class="h-14 bg-[#080d1a] border-b border-slate-800/90 px-3.5 flex items-center justify-between gap-3 shrink-0 z-30 select-none">
+    <!-- Left: Brand, Mode & Guard status -->
+    <div class="flex items-center space-x-2.5 shrink-0">
+      <div class="flex items-center space-x-1.5">
+        <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 shadow shadow-cyan-500/50 pulse-live"></div>
+        <span class="font-extrabold text-sm tracking-wider text-white flex items-center">
+          HYPER<span class="text-cyan-400">LIQUID</span>
+          <span class="text-[9px] px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-mono ml-1.5">BOT TERMINAL</span>
+        </span>
+      </div>
+
+      <div class="flex items-center space-x-1 text-[10px] text-amber-400 bg-slate-900/90 px-2 py-0.5 rounded border border-slate-800 font-semibold">
+        <i class="fa-solid fa-robot text-[9px]"></i>
+        <span>AUTONOMOUS</span>
+      </div>
+
+      <div class="hidden xl:flex items-center space-x-1.5 text-[10px] mono">
+        <div class="flex items-center gap-1 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800">
+          <span id="ws-indicator" class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+          <span id="ws-status" class="text-slate-300">LIVE WS</span>
+        </div>
+        <div id="badge-breaker" class="flex items-center gap-1 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 px-2 py-0.5 rounded font-semibold">
+          <i class="fa-solid fa-shield text-[9px]"></i>
+          <span>BREAKER: NORMAL</span>
+        </div>
+        <div id="badge-guard" class="flex items-center gap-1 bg-cyan-950/60 text-cyan-300 border border-cyan-800/60 px-2 py-0.5 rounded font-semibold">
+          <span>🛡️ GUARD ARMED</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center KPIs: High-density institutional metrics ribbon -->
+    <div class="flex items-center space-x-3 text-xs mono overflow-x-auto py-1">
+      <!-- Total Equity -->
+      <div class="flex flex-col text-left pl-2 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Total Equity</span>
+        <div class="flex items-baseline gap-1">
+          <span id="metric-equity" class="font-bold text-white text-xs">$200.00</span>
+          <span id="metric-roi" class="text-[10px] font-semibold text-emerald-400">+0.00%</span>
+        </div>
+      </div>
+
+      <!-- Cash -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Cash</span>
+        <span id="metric-cash" class="font-semibold text-slate-200 text-xs">$200.00</span>
+      </div>
+
+      <!-- Unrealized PnL -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Unrealized P&amp;L</span>
+        <div class="flex items-center gap-1">
+          <span id="metric-unrealized-pnl" class="font-bold text-slate-300 text-xs">$0.00</span>
+          <span id="metric-pos-count" class="text-[9px] text-slate-500 font-normal">(0 Pos)</span>
+        </div>
+      </div>
+
+      <!-- 24h Drawdown -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">24h Drawdown</span>
+        <div class="flex items-baseline gap-1">
+          <span id="metric-drawdown" class="font-semibold text-emerald-400 text-xs">0.00%</span>
+          <span class="text-[9px] text-slate-500">/ 20.0% Max</span>
+        </div>
+      </div>
+
+      <!-- Win Rate -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Win Rate</span>
+        <div class="flex items-baseline gap-1">
+          <span id="metric-winrate" class="font-semibold text-cyan-400 text-xs">0.0%</span>
+          <span id="metric-win-loss" class="text-[9px] text-slate-500">(0W / 0L)</span>
+        </div>
+      </div>
+
+      <!-- Profit Factor -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Profit Factor</span>
+        <span id="metric-profitfactor" class="font-semibold text-slate-200 text-xs">1.00</span>
+      </div>
+
+      <!-- Sharpe Ratio -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Sharpe</span>
+        <span id="metric-sharpe" class="font-semibold text-slate-200 text-xs">0.00</span>
+      </div>
+
+      <!-- Realized Net PnL -->
+      <div class="flex flex-col text-left pl-2.5 border-l border-slate-800/80">
+        <span class="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Net Realized</span>
+        <span id="metric-realized-pnl" class="font-semibold text-slate-300 text-xs">+$0.00</span>
+      </div>
+    </div>
+
+    <!-- Right Controls: Scan, Flatten, Switcher -->
+    <div class="flex items-center space-x-2 shrink-0">
+      <button onclick="triggerImmediateScan()" id="btn-scan" class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-cyan-600/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-600/30 transition-all">
+        <i class="fa-solid fa-bolt text-[10px]"></i>
+        <span>SCAN NOW</span>
+      </button>
+
+      <button onclick="flattenAllPositions()" id="btn-flatten" class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-rose-950/60 text-rose-300 border border-rose-800/60 hover:bg-rose-900/70 transition-all">
+        <i class="fa-solid fa-triangle-exclamation text-[10px]"></i>
+        <span>FLATTEN ALL</span>
+      </button>
+
+      <a href="/" class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
+        <i class="fa-solid fa-sliders text-[10px]"></i>
+        <span>COCKPIT</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- MAIN 2-COLUMN VIEWPORT GRID -->
+  <main class="flex-1 grid grid-cols-12 gap-2.5 p-2.5 overflow-hidden min-h-0">
+
+    <!-- LEFT PANEL: Active 2-Slot Telemetry & Guard State (5 cols) -->
+    <section class="col-span-12 lg:col-span-5 flex flex-col gap-2.5 overflow-hidden min-h-0">
+
+      <!-- ACTIVE 2-SLOT TELEMETRY CONTAINER (Flexible Height) -->
+      <div class="flex-1 flex flex-col bg-[#0b1120] border border-slate-800 rounded-xl p-3 overflow-hidden min-h-0">
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800 shrink-0">
+          <div class="flex items-center space-x-2">
+            <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-white">Active Execution Slots</h2>
+            <span id="active-slots-badge" class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 font-mono">0 / 2 Active</span>
+          </div>
+          <span class="text-[10px] text-slate-400 mono">Max 40% Margin / Slot</span>
+        </div>
+
+        <!-- 2-Slot Grid -->
+        <div class="flex-1 grid grid-rows-2 gap-2.5 overflow-y-auto min-h-0 pr-0.5">
+
+          <!-- SLOT 1 -->
+          <div id="slot-1-card" class="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex flex-col justify-between transition-all">
+            <div class="flex items-center justify-between pb-1.5 border-b border-slate-800/80">
+              <div class="flex items-center space-x-2">
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-cyan-400 font-bold mono">SLOT 1</span>
+                <span id="slot-1-coin" class="font-extrabold text-sm text-white mono">--</span>
+                <span id="slot-1-direction" class="text-[10px] px-1.5 py-0.2 rounded font-bold mono bg-slate-800 text-slate-400">STANDBY</span>
+                <span id="slot-1-strategy" class="text-[10px] text-slate-400 font-mono">--</span>
+              </div>
+              <div class="flex items-center space-x-2">
+                <span id="slot-1-duration" class="text-[10px] text-slate-400 mono"><i class="fa-regular fa-clock mr-1"></i>--</span>
+                <button id="slot-1-close-btn" onclick="closeSlotTrade(1)" class="hidden px-2 py-0.5 text-[10px] font-bold rounded bg-rose-950/80 text-rose-300 border border-rose-800/60 hover:bg-rose-900 transition-colors">
+                  CLOSE
+                </button>
+              </div>
+            </div>
+
+            <!-- Slot 1 Telemetry Body -->
+            <div id="slot-1-active-view" class="hidden grid grid-cols-4 gap-2 my-2 text-xs mono">
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Size / Notional</span>
+                <span id="slot-1-size" class="font-bold text-slate-200">--</span>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Entry &rarr; Mark</span>
+                <div class="flex items-baseline gap-1">
+                  <span id="slot-1-entry" class="text-slate-400">--</span>
+                  <span class="text-slate-600">&rarr;</span>
+                  <span id="slot-1-mark" class="font-bold text-white">--</span>
+                </div>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Current ROI%</span>
+                <div class="flex items-baseline gap-1">
+                  <span id="slot-1-roi" class="font-bold text-emerald-400 text-sm">--</span>
+                  <span id="slot-1-pnl" class="text-[10px] text-slate-400">($0.00)</span>
+                </div>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Peak Watermark</span>
+                <span id="slot-1-peak" class="font-semibold text-cyan-400">Peak: +0.00%</span>
+              </div>
+            </div>
+
+            <!-- Slot 1 Target Distance & Ratchet Strip -->
+            <div id="slot-1-targets-view" class="hidden flex items-center justify-between pt-1.5 border-t border-slate-800/80 text-[10px] mono">
+              <div class="flex items-center space-x-3">
+                <span class="text-slate-400">SL: <span id="slot-1-sl" class="text-rose-400 font-bold">--</span> (<span id="slot-1-dist-sl">--</span>)</span>
+                <span class="text-slate-400">TP: <span id="slot-1-tp" class="text-emerald-400 font-bold">--</span> (<span id="slot-1-dist-tp">--</span>)</span>
+              </div>
+              <div class="flex items-center space-x-1.5">
+                <span id="slot-1-status-pill" class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300">ACTIVE</span>
+              </div>
+            </div>
+
+            <!-- Slot 1 Empty Standby Placeholder -->
+            <div id="slot-1-empty-view" class="flex-1 flex flex-col items-center justify-center py-4 text-center">
+              <i class="fa-solid fa-circle-dot text-slate-700 text-xl mb-1"></i>
+              <span class="text-xs font-semibold text-slate-400">Slot 1 Standby</span>
+              <span class="text-[10px] text-slate-600">Awaiting High-Conviction Prospect (Score &ge; 85)</span>
+            </div>
+          </div>
+
+          <!-- SLOT 2 -->
+          <div id="slot-2-card" class="bg-slate-900/90 border border-slate-800 rounded-lg p-3 flex flex-col justify-between transition-all">
+            <div class="flex items-center justify-between pb-1.5 border-b border-slate-800/80">
+              <div class="flex items-center space-x-2">
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-cyan-400 font-bold mono">SLOT 2</span>
+                <span id="slot-2-coin" class="font-extrabold text-sm text-white mono">--</span>
+                <span id="slot-2-direction" class="text-[10px] px-1.5 py-0.2 rounded font-bold mono bg-slate-800 text-slate-400">STANDBY</span>
+                <span id="slot-2-strategy" class="text-[10px] text-slate-400 font-mono">--</span>
+              </div>
+              <div class="flex items-center space-x-2">
+                <span id="slot-2-duration" class="text-[10px] text-slate-400 mono"><i class="fa-regular fa-clock mr-1"></i>--</span>
+                <button id="slot-2-close-btn" onclick="closeSlotTrade(2)" class="hidden px-2 py-0.5 text-[10px] font-bold rounded bg-rose-950/80 text-rose-300 border border-rose-800/60 hover:bg-rose-900 transition-colors">
+                  CLOSE
+                </button>
+              </div>
+            </div>
+
+            <!-- Slot 2 Telemetry Body -->
+            <div id="slot-2-active-view" class="hidden grid grid-cols-4 gap-2 my-2 text-xs mono">
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Size / Notional</span>
+                <span id="slot-2-size" class="font-bold text-slate-200">--</span>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Entry &rarr; Mark</span>
+                <div class="flex items-baseline gap-1">
+                  <span id="slot-2-entry" class="text-slate-400">--</span>
+                  <span class="text-slate-600">&rarr;</span>
+                  <span id="slot-2-mark" class="font-bold text-white">--</span>
+                </div>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Current ROI%</span>
+                <div class="flex items-baseline gap-1">
+                  <span id="slot-2-roi" class="font-bold text-emerald-400 text-sm">--</span>
+                  <span id="slot-2-pnl" class="text-[10px] text-slate-400">($0.00)</span>
+                </div>
+              </div>
+              <div>
+                <span class="text-[9px] text-slate-500 uppercase block">Peak Watermark</span>
+                <span id="slot-2-peak" class="font-semibold text-cyan-400">Peak: +0.00%</span>
+              </div>
+            </div>
+
+            <!-- Slot 2 Target Distance & Ratchet Strip -->
+            <div id="slot-2-targets-view" class="hidden flex items-center justify-between pt-1.5 border-t border-slate-800/80 text-[10px] mono">
+              <div class="flex items-center space-x-3">
+                <span class="text-slate-400">SL: <span id="slot-2-sl" class="text-rose-400 font-bold">--</span> (<span id="slot-2-dist-sl">--</span>)</span>
+                <span class="text-slate-400">TP: <span id="slot-2-tp" class="text-emerald-400 font-bold">--</span> (<span id="slot-2-dist-tp">--</span>)</span>
+              </div>
+              <div class="flex items-center space-x-1.5">
+                <span id="slot-2-status-pill" class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300">ACTIVE</span>
+              </div>
+            </div>
+
+            <!-- Slot 2 Empty Standby Placeholder -->
+            <div id="slot-2-empty-view" class="flex-1 flex flex-col items-center justify-center py-4 text-center">
+              <i class="fa-solid fa-circle-dot text-slate-700 text-xl mb-1"></i>
+              <span class="text-xs font-semibold text-slate-400">Slot 2 Standby</span>
+              <span class="text-[10px] text-slate-600">Awaiting High-Conviction Prospect (Score &ge; 85)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI SENTINEL & GUARD TELEMETRY (Fixed compact bottom panel) -->
+      <div class="h-[44%] flex flex-col bg-[#0b1120] border border-slate-800 rounded-xl p-3 overflow-hidden min-h-0">
+        <!-- Header -->
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800 shrink-0">
+          <div class="flex items-center space-x-2">
+            <span class="w-2 h-2 rounded-full bg-cyan-400 pulse-live"></span>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-white">AI Sentinel &amp; Guard Telemetry</h3>
+          </div>
+          <!-- Market Regime Badge -->
+          <div id="regime-badge" class="flex items-center space-x-1.5 text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 mono">
+            <span class="text-slate-500">Regime:</span>
+            <span id="regime-name" class="font-bold text-cyan-400">BULLISH_TRENDING</span>
+            <span id="regime-breadth" class="text-slate-400">(62%)</span>
+          </div>
+        </div>
+
+        <!-- Strategy Heat Matrix Grid -->
+        <div class="mb-2 shrink-0">
+          <div class="text-[9px] text-slate-500 uppercase tracking-wider mono mb-1">Strategy Performance &amp; Dynamic Probation</div>
+          <div id="strategy-heat-rows" class="grid grid-cols-2 gap-1.5 text-[11px] mono">
+            <div class="bg-slate-900/80 border border-slate-800 rounded p-1.5 flex items-center justify-between">
+              <span class="text-slate-300 font-semibold">SMC Trend</span>
+              <span class="px-1.5 py-0.2 rounded bg-emerald-950/60 text-emerald-400 text-[9px] font-bold">HOT (1.6x)</span>
+            </div>
+            <div class="bg-slate-900/80 border border-slate-800 rounded p-1.5 flex items-center justify-between">
+              <span class="text-slate-300 font-semibold">Funding Fade</span>
+              <span class="px-1.5 py-0.2 rounded bg-cyan-950/60 text-cyan-400 text-[9px] font-bold">WARM (1.4x)</span>
+            </div>
+            <div class="bg-slate-900/80 border border-slate-800 rounded p-1.5 flex items-center justify-between">
+              <span class="text-slate-300 font-semibold">Book Imbalance</span>
+              <span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[9px]">NORMAL (1.0x)</span>
+            </div>
+            <div class="bg-slate-900/80 border border-slate-800 rounded p-1.5 flex items-center justify-between">
+              <span class="text-slate-300 font-semibold">VWAP/OI</span>
+              <span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[9px]">NORMAL (1.0x)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sentinel Live Thoughts & Audit Stream -->
+        <div class="flex-1 flex flex-col min-h-0">
+          <div class="text-[9px] text-slate-500 uppercase tracking-wider mono mb-1">Live Groq LPU Sentinel Stream</div>
+          <div id="sentinel-stream-container" class="flex-1 overflow-y-auto space-y-1 pr-1 font-mono text-[10px]">
+            <div class="p-1.5 rounded bg-slate-900/60 border border-slate-800/60 text-slate-400 flex items-start space-x-1.5">
+              <span class="text-cyan-400 shrink-0">[GROQ LPU]</span>
+              <span>Sub-second risk guardian active. Evaluating L2 depth walls &amp; toxic orderflow.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: Live Chart & Prospect Radar (7 cols) -->
+    <section class="col-span-12 lg:col-span-7 flex flex-col gap-2.5 overflow-hidden min-h-0">
+
+      <!-- TRADINGVIEW CANDLESTICK CHART (Top 52%) -->
+      <div class="h-[52%] flex flex-col bg-[#0b1120] border border-slate-800 rounded-xl p-3 min-h-0">
+        <!-- Chart Controls Ribbon -->
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800 shrink-0">
+          <!-- Active Symbol Pills & Legend -->
+          <div class="flex items-center space-x-2">
+            <div id="chart-symbol-pills" class="flex items-center space-x-1">
+              <button onclick="selectChartSymbol('BTC')" class="chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-cyan-950/80 text-cyan-300 border border-cyan-800/60">BTC</button>
+              <button onclick="selectChartSymbol('ETH')" class="chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-slate-800 text-slate-400 hover:text-white">ETH</button>
+              <button onclick="selectChartSymbol('SOL')" class="chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-slate-800 text-slate-400 hover:text-white">SOL</button>
+              <button onclick="selectChartSymbol('HYPE')" class="chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-slate-800 text-slate-400 hover:text-white">HYPE</button>
+            </div>
+
+            <!-- Active Price & Legend -->
+            <div class="hidden sm:flex items-center space-x-2 pl-2 border-l border-slate-800 text-xs mono">
+              <span id="chart-active-symbol" class="font-extrabold text-white">BTC</span>
+              <span id="chart-active-price" class="font-bold text-cyan-400">$0.00</span>
+              <span id="legend-ema20" class="text-[10px] text-amber-400 hidden xl:inline">EMA20: --</span>
+              <span id="legend-vwap" class="text-[10px] text-purple-400 hidden xl:inline">VWAP: --</span>
+            </div>
+          </div>
+
+          <!-- Timeframe & Indicator Toggles -->
+          <div class="flex items-center space-x-1 text-[10px] mono">
+            <div class="flex items-center bg-slate-900 rounded p-0.5 border border-slate-800">
+              <button onclick="setTimeframe('1m')" class="tf-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">1m</button>
+              <button onclick="setTimeframe('5m')" class="tf-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">5m</button>
+              <button onclick="setTimeframe('15m')" class="tf-btn px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300 font-bold">15m</button>
+              <button onclick="setTimeframe('1h')" class="tf-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white">1h</button>
+            </div>
+            <button onclick="toggleIndicators()" class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:text-white">
+              <i class="fa-solid fa-chart-line mr-1 text-[9px]"></i>IND
+            </button>
+          </div>
+        </div>
+
+        <!-- Lightweight Chart Canvas Container -->
+        <div id="chart-container" class="flex-1 w-full min-h-0 relative"></div>
+      </div>
+
+      <!-- PROSPECT RADAR & TARGET PROBABILITY (Bottom 48%) -->
+      <div class="h-[48%] flex flex-col bg-[#0b1120] border border-slate-800 rounded-xl p-3 min-h-0 overflow-hidden">
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800 shrink-0">
+          <div class="flex items-center space-x-2">
+            <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
+            <h3 class="text-xs font-bold uppercase tracking-wider text-white">Target Probability &amp; Prospect Radar</h3>
+            <span class="text-[10px] text-slate-400 mono">Top High-Conviction Candidates</span>
+          </div>
+          <span id="prospect-count-badge" class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 mono">0 Prospects</span>
+        </div>
+
+        <!-- Radar Table Container -->
+        <div class="flex-1 overflow-y-auto pr-1">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="text-slate-400 border-b border-slate-800 mono font-semibold sticky top-0 bg-[#0b1120] z-10 text-[10px]">
+                <th class="py-1.5 px-2">RANK / COIN</th>
+                <th class="py-1.5 px-2">BIAS</th>
+                <th class="py-1.5 px-2">SCORE</th>
+                <th class="py-1.5 px-2">ENTRY &rarr; TP / SL</th>
+                <th class="py-1.5 px-2">R:R</th>
+                <th class="py-1.5 px-2">24H VOL / FUNDING</th>
+                <th class="py-1.5 px-2">STRATEGY RATIONALE</th>
+                <th class="py-1.5 px-2 text-right">ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="prospects-table-body" class="divide-y divide-slate-800/60 mono text-[11px]">
+              <tr>
+                <td colspan="8" class="py-8 text-center text-slate-500 italic">Scanning 50 perpetuals for high-conviction setups...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- CLIENT-SIDE JS ENGINE -->
+  <script>
+    // State Variables
+    let currentChartCoin = 'BTC';
+    let currentInterval = '15m';
+    let chart, candleSeries, volumeSeries, ema20Series, vwapSeries;
+    let showIndicators = true;
+    let entryLine = null, slLine = null, tpLine = null;
+    let latestState = null;
+    let slotTrades = [null, null];
+    let ws = null;
+    let isWsConnected = false;
+    let pollTimer = null;
+
+    // Initialize TradingView Lightweight Chart
+    function initChart() {
+      const container = document.getElementById('chart-container');
+      if (!container) return;
+
+      chart = LightweightCharts.createChart(container, {
+        layout: {
+          background: { color: '#0b1120' },
+          textColor: '#94a3b8',
+          fontSize: 10,
+          fontFamily: '"JetBrains Mono", monospace',
+        },
+        grid: {
+          vertLines: { color: 'rgba(30, 41, 59, 0.5)' },
+          horzLines: { color: 'rgba(30, 41, 59, 0.5)' },
+        },
+        crosshair: {
+          mode: LightweightCharts.CrosshairMode.Normal,
+        },
+        rightPriceScale: {
+          borderColor: '#1e293b',
+        },
+        timeScale: {
+          borderColor: '#1e293b',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
+
+      candleSeries = chart.addCandlestickSeries({
+        upColor: '#10b981',
+        downColor: '#f43f5e',
+        borderUpColor: '#10b981',
+        borderDownColor: '#f43f5e',
+        wickUpColor: '#10b981',
+        wickDownColor: '#f43f5e',
+      });
+
+      volumeSeries = chart.addHistogramSeries({
+        color: '#38bdf8',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.82, bottom: 0 },
+      });
+
+      ema20Series = chart.addLineSeries({
+        color: '#f59e0b',
+        lineWidth: 1.5,
+        title: 'EMA20',
+      });
+
+      vwapSeries = chart.addLineSeries({
+        color: '#c084fc',
+        lineWidth: 1.5,
+        title: 'VWAP',
+      });
+
+      // Resize observer
+      const resizeObserver = new ResizeObserver(entries => {
+        if (entries[0] && chart) {
+          chart.applyOptions({
+            width: entries[0].contentRect.width,
+            height: entries[0].contentRect.height,
+          });
+        }
+      });
+      resizeObserver.observe(container);
+
+      loadChartData(currentChartCoin, currentInterval);
+    }
+
+    // Load Candlestick Klines from Backend
+    async function loadChartData(coin, interval) {
+      try {
+        const res = await fetch(`/api/klines?coin=${coin}&interval=${interval}&limit=120`);
+        if (!res.ok) return;
+        const klines = await res.json();
+        if (!Array.isArray(klines) || klines.length === 0) return;
+
+        candleSeries.setData(klines.map(k => ({
+          time: k.time,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+        })));
+
+        volumeSeries.setData(klines.map(k => ({
+          time: k.time,
+          value: k.volume || 0,
+          color: k.close >= k.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)',
+        })));
+
+        // Compute EMA20 and VWAP
+        const ema20 = computeEMA(klines, 20);
+        const vwap = computeVWAP(klines);
+        ema20Series.setData(ema20);
+        vwapSeries.setData(vwap);
+
+        // Update Legend
+        const lastBar = klines[klines.length - 1];
+        document.getElementById('chart-active-symbol').textContent = coin;
+        document.getElementById('chart-active-price').textContent = `$${lastBar.close.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
+        const lastEma = ema20.length ? ema20[ema20.length - 1].value : null;
+        const lastVwap = vwap.length ? vwap[vwap.length - 1].value : null;
+        if (lastEma) document.getElementById('legend-ema20').textContent = `EMA20: $${lastEma.toFixed(2)}`;
+        if (lastVwap) document.getElementById('legend-vwap').textContent = `VWAP: $${lastVwap.toFixed(2)}`;
+
+        updateChartTargetLines(coin);
+      } catch (err) {
+        console.error("Failed to load chart data:", err);
+      }
+    }
+
+    function computeEMA(data, period) {
+      const k = 2 / (period + 1);
+      const res = [];
+      let prev = null;
+      for (let i = 0; i < data.length; i++) {
+        const c = data[i].close;
+        prev = prev === null ? c : (c * k) + (prev * (1 - k));
+        res.push({ time: data[i].time, value: prev });
+      }
+      return res;
+    }
+
+    function computeVWAP(data) {
+      const res = [];
+      let cVol = 0, cTPV = 0;
+      for (let i = 0; i < data.length; i++) {
+        const d = data[i];
+        const tp = (d.high + d.low + d.close) / 3;
+        const v = d.volume || 1;
+        cVol += v;
+        cTPV += tp * v;
+        res.push({ time: d.time, value: cVol > 0 ? (cTPV / cVol) : d.close });
+      }
+      return res;
+    }
+
+    function selectChartSymbol(coin) {
+      currentChartCoin = coin.toUpperCase();
+      document.querySelectorAll('.chart-coin-btn').forEach(btn => {
+        if (btn.textContent.trim() === currentChartCoin) {
+          btn.className = "chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-cyan-950/80 text-cyan-300 border border-cyan-800/60";
+        } else {
+          btn.className = "chart-coin-btn px-2 py-0.5 rounded text-[11px] font-bold mono bg-slate-800 text-slate-400 hover:text-white";
+        }
+      });
+      loadChartData(currentChartCoin, currentInterval);
+    }
+
+    function setTimeframe(tf) {
+      currentInterval = tf;
+      document.querySelectorAll('.tf-btn').forEach(btn => {
+        if (btn.textContent.trim() === tf) {
+          btn.className = "tf-btn px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300 font-bold";
+        } else {
+          btn.className = "tf-btn px-1.5 py-0.5 rounded text-slate-400 hover:text-white";
+        }
+      });
+      loadChartData(currentChartCoin, currentInterval);
+    }
+
+    function toggleIndicators() {
+      showIndicators = !showIndicators;
+      ema20Series.applyOptions({ visible: showIndicators });
+      vwapSeries.applyOptions({ visible: showIndicators });
+    }
+
+    // Draw / Refresh Horizontal Lines for Active Selected Position
+    function updateChartTargetLines(coin) {
+      if (entryLine) { candleSeries.removePriceLine(entryLine); entryLine = null; }
+      if (slLine) { candleSeries.removePriceLine(slLine); slLine = null; }
+      if (tpLine) { candleSeries.removePriceLine(tpLine); tpLine = null; }
+
+      if (!latestState || !latestState.positions) return;
+      const pos = latestState.positions.find(p => p.coin.toUpperCase() === coin.toUpperCase());
+      if (!pos) return;
+
+      const entryPx = parseFloat(pos.entry_price || 0);
+      const isLong = (pos.side || '').toUpperCase() === 'LONG';
+
+      if (entryPx > 0) {
+        const formatPx = (px) => {
+          const n = parseFloat(px || 0);
+          return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+        };
+
+        entryLine = candleSeries.createPriceLine({
+          price: entryPx,
+          color: isLong ? '#10b981' : '#f43f5e',
+          lineWidth: 1.5,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `ENTRY: ${formatPx(entryPx)}`,
+        });
+      }
+
+      // Check trade_manager positions for dynamic stop / TP
+      const tmPositions = (latestState.trade_manager && latestState.trade_manager.positions) || [];
+      const tmPos = tmPositions.find(p => p.coin.toUpperCase() === coin.toUpperCase()) || {};
+
+      const stopPx = parseFloat(tmPos.stop_price || (isLong ? entryPx * 0.99 : entryPx * 1.01));
+      const tpRoi = parseFloat(tmPos.take_profit_roi_pct || 2.80);
+      const tpPx = isLong ? entryPx * (1 + tpRoi / 100) : entryPx * (1 - tpRoi / 100);
+      const posSize = parseFloat(pos.size || 0);
+      const pnlMult = isLong ? 1.0 : -1.0;
+      const tpUsd = (posSize > 0 && entryPx > 0) ? (tpPx - entryPx) * posSize * pnlMult : 0.0;
+      const slUsd = (posSize > 0 && entryPx > 0) ? (stopPx - entryPx) * posSize * pnlMult : 0.0;
+      const tpUsdStr = `${tpUsd >= 0 ? '+' : ''}$${tpUsd.toFixed(2)}`;
+      const slUsdStr = `${slUsd >= 0 ? '+' : ''}$${slUsd.toFixed(2)}`;
+
+      if (stopPx > 0) {
+        const formatPx = (px) => {
+          const n = parseFloat(px || 0);
+          return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+        };
+        slLine = candleSeries.createPriceLine({
+          price: stopPx,
+          color: tmPos.breakeven_triggered ? '#f59e0b' : '#f43f5e',
+          lineWidth: 1.5,
+          lineStyle: LightweightCharts.LineStyle.Solid,
+          axisLabelVisible: true,
+          title: tmPos.breakeven_triggered ? `🛡️ BE STOP: ${formatPx(stopPx)} (${slUsdStr})` : `SL: ${formatPx(stopPx)} (${slUsdStr})`,
+        });
+      }
+
+      if (tpPx > 0) {
+        const formatPx = (px) => {
+          const n = parseFloat(px || 0);
+          return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+        };
+        tpLine = candleSeries.createPriceLine({
+          price: tpPx,
+          color: '#10b981',
+          lineWidth: 1.5,
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `🎯 TP TARGET: ${formatPx(tpPx)} (${tpUsdStr})`,
+        });
+      }
+    }
+
+    // Render Dashboard State
+    function renderDashboard(data) {
+      if (!data) return;
+      latestState = data;
+
+      // 1. Ribbon Telemetry
+      const equity = parseFloat(data.equity || 200.0);
+      const cash = parseFloat(data.cash_balance || 200.0);
+      const unrealized = parseFloat(data.net_unrealized || 0.0);
+      const roiPct = parseFloat(data.roi_pct || 0.0);
+      const positions = data.positions || [];
+      const tmPositions = (data.trade_manager && data.trade_manager.positions) || [];
+
+      document.getElementById('metric-equity').textContent = `$${equity.toFixed(2)}`;
+      const roiEl = document.getElementById('metric-roi');
+      roiEl.textContent = `${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(2)}%`;
+      roiEl.className = `text-[10px] font-semibold ${roiPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+
+      document.getElementById('metric-cash').textContent = `$${cash.toFixed(2)}`;
+      
+      const pnlEl = document.getElementById('metric-unrealized-pnl');
+      pnlEl.textContent = `${unrealized >= 0 ? '+' : ''}$${unrealized.toFixed(2)}`;
+      pnlEl.className = `font-bold text-xs ${unrealized > 0 ? 'text-emerald-400' : (unrealized < 0 ? 'text-rose-400' : 'text-slate-300')}`;
+      document.getElementById('metric-pos-count').textContent = `(${positions.length} Pos)`;
+
+      // Drawdown & Analytics
+      const analytics = data.analytics || data.performance_metrics || {};
+      const maxDd = parseFloat(analytics.max_drawdown_pct || 0.0);
+      document.getElementById('metric-drawdown').textContent = `${maxDd.toFixed(2)}%`;
+      
+      const winRate = parseFloat(analytics.win_rate_pct || 0.0);
+      document.getElementById('metric-winrate').textContent = `${winRate.toFixed(1)}%`;
+      const wins = parseInt(analytics.winning_trades || 0);
+      const losses = parseInt(analytics.losing_trades || 0);
+      document.getElementById('metric-win-loss').textContent = `(${wins}W / ${losses}L)`;
+
+      document.getElementById('metric-profitfactor').textContent = parseFloat(analytics.profit_factor || 1.0).toFixed(2);
+      document.getElementById('metric-sharpe').textContent = parseFloat(analytics.sharpe_ratio || 0.0).toFixed(2);
+      
+      const netRealized = parseFloat(data.net_realized_pnl || 0.0);
+      const realEl = document.getElementById('metric-realized-pnl');
+      realEl.textContent = `${netRealized >= 0 ? '+' : ''}$${netRealized.toFixed(2)}`;
+      realEl.className = `font-semibold text-xs ${netRealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+
+      // Breaker badge
+      const breakerStatus = data.circuit_breaker || 'NORMAL';
+      const breakerEl = document.getElementById('badge-breaker');
+      if (breakerStatus === 'TRIPPED') {
+        breakerEl.className = "flex items-center gap-1 bg-rose-950/80 text-rose-300 border border-rose-800/80 px-2 py-0.5 rounded font-bold";
+        breakerEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-[9px]"></i><span>BREAKER: TRIPPED 🚨</span>`;
+      } else {
+        breakerEl.className = "flex items-center gap-1 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 px-2 py-0.5 rounded font-semibold";
+        breakerEl.innerHTML = `<i class="fa-solid fa-shield text-[9px]"></i><span>BREAKER: NORMAL</span>`;
+      }
+
+      // 2. Active 2-Slot Telemetry Grid
+      document.getElementById('active-slots-badge').textContent = `${positions.length} / 2 Active`;
+      slotTrades[0] = positions[0] || null;
+      slotTrades[1] = positions[1] || null;
+
+      renderSlotCard(1, slotTrades[0], tmPositions);
+      renderSlotCard(2, slotTrades[1], tmPositions);
+
+      // 3. AI Sentinel & Strategy Heat Matrix
+      const regime = data.market_regime || {};
+      if (regime.regime) {
+        document.getElementById('regime-name').textContent = regime.regime;
+        document.getElementById('regime-breadth').textContent = `(${regime.breadth_pct || 50}%)`;
+      }
+
+      // Strategy Allocations
+      const allocs = data.strategy_allocations || {};
+      const stratKeys = Object.keys(allocs);
+      if (stratKeys.length > 0) {
+        const rowsHtml = stratKeys.slice(0, 4).map(k => {
+          const s = allocs[k];
+          const mult = s.multiplier || 1.0;
+          const tier = s.tier || 'NORMAL';
+          const isProbation = s.is_locked || mult < 1.0;
+          const badgeClass = isProbation ? 'bg-amber-950/60 text-amber-400' : (mult > 1.0 ? 'bg-emerald-950/60 text-emerald-400' : 'bg-slate-800 text-slate-300');
+          return `
+            <div class="bg-slate-900/80 border border-slate-800 rounded p-1.5 flex items-center justify-between">
+              <span class="text-slate-300 font-semibold truncate mr-1">${s.strategy || k}</span>
+              <span class="px-1.5 py-0.2 rounded ${badgeClass} text-[9px] font-bold shrink-0">${tier} (${mult}x)</span>
+            </div>
+          `;
+        }).join('');
+        document.getElementById('strategy-heat-rows').innerHTML = rowsHtml;
+      }
+
+      // Sentinel thoughts stream
+      const thoughts = data.sentinel_thoughts || [];
+      if (thoughts.length > 0) {
+        const thoughtsHtml = thoughts.slice(-15).reverse().map(t => {
+          const cat = t.category || '[GROQ LPU]';
+          const text = t.thought || t.text || '';
+          const col = cat.includes('RISK') ? 'text-rose-400' : (cat.includes('AUDIT') ? 'text-purple-400' : 'text-cyan-400');
+          return `
+            <div class="p-1 rounded bg-slate-900/60 border border-slate-800/60 text-slate-300 flex items-start space-x-1.5">
+              <span class="${col} shrink-0 font-bold">${cat}</span>
+              <span class="leading-relaxed">${text}</span>
+            </div>
+          `;
+        }).join('');
+        document.getElementById('sentinel-stream-container').innerHTML = thoughtsHtml;
+      }
+
+      // 4. Prospect Radar Table
+      const prospects = data.prospects || [];
+      document.getElementById('prospect-count-badge').textContent = `${prospects.length} Prospects`;
+      if (prospects.length > 0) {
+        const sortedProspects = [...prospects].sort((a, b) => (b.conviction_score || b.score || 0) - (a.conviction_score || a.score || 0));
+        const tableHtml = sortedProspects.slice(0, 10).map((p, idx) => {
+          const coin = p.coin || 'UNKNOWN';
+          const bias = (p.bias || 'LONG').toUpperCase();
+          const score = Math.round(p.conviction_score || p.score || 80);
+          const entry = parseFloat(p.target_entry || p.mark_price || 0);
+          const sl = parseFloat(p.stop_loss || (bias === 'LONG' ? entry * 0.99 : entry * 1.01));
+          const tp = parseFloat(p.take_profit || (bias === 'LONG' ? entry * 1.018 : entry * 0.982));
+          const rr = (Math.abs(tp - entry) / Math.max(0.0001, Math.abs(entry - sl))).toFixed(1);
+          const vol = (parseFloat(p.volume_24h || 0) / 1_000_000).toFixed(1);
+          const funding = parseFloat(p.funding_apr || 0).toFixed(1);
+          const biasClass = bias === 'LONG' ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800/60' : 'bg-rose-950/80 text-rose-300 border-rose-800/60';
+          const scoreClass = score >= 90 ? 'text-cyan-400 font-extrabold' : (score >= 85 ? 'text-emerald-400 font-bold' : 'text-slate-300');
+
+          const formatPx = (px) => {
+            const n = parseFloat(px || 0);
+            return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+          };
+
+          // Estimate projected profit/loss dollars on standard $100 base margin
+          const estLev = parseFloat(p.leverage || 10.0);
+          const estNotional = 100.0 * estLev;
+          const tpPctMove = entry > 0 ? (Math.abs(tp - entry) / entry) : 0.03;
+          const slPctMove = entry > 0 ? (Math.abs(entry - sl) / entry) : 0.015;
+          const estTpUsd = (estNotional * tpPctMove).toFixed(1);
+          const estSlUsd = (estNotional * slPctMove).toFixed(1);
+
+          return `
+            <tr class="hover:bg-slate-800/50 cursor-pointer transition-colors" onclick="selectChartSymbol('${coin}')">
+              <td class="py-2 px-2 font-bold text-white flex items-center space-x-1.5">
+                <span class="text-slate-500 text-[10px]">#${idx + 1}</span>
+                <span class="text-cyan-400 hover:underline">${coin}</span>
+              </td>
+              <td class="py-2 px-2">
+                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold border ${biasClass}">${bias}</span>
+              </td>
+              <td class="py-2 px-2">
+                <span class="${scoreClass}">${score}</span>
+              </td>
+              <td class="py-2 px-2">
+                <div class="flex flex-col">
+                  <span class="text-slate-300 font-bold">${formatPx(entry)}</span>
+                  <span class="text-slate-400 text-[10px]">
+                    <span class="text-emerald-400">TP: ${formatPx(tp)} (+$${estTpUsd})</span> / 
+                    <span class="text-rose-400">SL: ${formatPx(sl)} (-$${estSlUsd})</span>
+                  </span>
+                </div>
+              </td>
+              <td class="py-2 px-2 font-bold text-slate-300">1:${rr}</td>
+              <td class="py-2 px-2 text-slate-400">$${vol}M / <span class="${funding > 0 ? 'text-emerald-400' : 'text-rose-400'}">${funding}%</span></td>
+              <td class="py-2 px-2 text-slate-400 truncate max-w-[200px]" title="${p.rationale || ''}">
+                ${p.rationale || p.strategy || 'Momentum breakout alignment'}
+              </td>
+              <td class="py-2 px-2 text-right">
+                <button onclick="event.stopPropagation(); selectChartSymbol('${coin}')" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 text-[10px]">
+                  CHART
+                </button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+        document.getElementById('prospects-table-body').innerHTML = tableHtml;
+      }
+    }
+
+    // Render individual slot card
+    function renderSlotCard(slotNum, pos, tmPositions) {
+      const activeView = document.getElementById(`slot-${slotNum}-active-view`);
+      const targetsView = document.getElementById(`slot-${slotNum}-targets-view`);
+      const emptyView = document.getElementById(`slot-${slotNum}-empty-view`);
+      const closeBtn = document.getElementById(`slot-${slotNum}-close-btn`);
+      const coinEl = document.getElementById(`slot-${slotNum}-coin`);
+      const dirEl = document.getElementById(`slot-${slotNum}-direction`);
+      const stratEl = document.getElementById(`slot-${slotNum}-strategy`);
+      const durEl = document.getElementById(`slot-${slotNum}-duration`);
+
+      if (!pos) {
+        activeView.classList.add('hidden');
+        targetsView.classList.add('hidden');
+        closeBtn.classList.add('hidden');
+        emptyView.classList.remove('hidden');
+        coinEl.textContent = '--';
+        dirEl.textContent = 'STANDBY';
+        dirEl.className = 'text-[10px] px-1.5 py-0.2 rounded font-bold mono bg-slate-800 text-slate-400';
+        stratEl.textContent = '--';
+        durEl.textContent = '--';
+        return;
+      }
+
+      emptyView.classList.add('hidden');
+      activeView.classList.remove('hidden');
+      targetsView.classList.remove('hidden');
+      closeBtn.classList.remove('hidden');
+
+      const coin = (pos.coin || '').toUpperCase();
+      const isLong = (pos.side || '').toUpperCase() === 'LONG';
+      const size = parseFloat(pos.size || 0);
+      const entryPx = parseFloat(pos.entry_price || 0);
+      const markPx = parseFloat(pos.mark_price || entryPx);
+      const roi = parseFloat(pos.roi_pct || 0);
+      const pnl = parseFloat(pos.unrealized_pnl || 0);
+      const durSec = parseFloat(pos.duration_seconds || 0);
+
+      coinEl.textContent = coin;
+      dirEl.textContent = `${pos.side} ${pos.leverage || 15}x`;
+      dirEl.className = `text-[10px] px-1.5 py-0.2 rounded font-bold mono border ${isLong ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800/60' : 'bg-rose-950/80 text-rose-300 border-rose-800/60'}`;
+      stratEl.textContent = pos.strategy || 'SMC Trend';
+      
+      const m = Math.floor(durSec / 60);
+      const s = Math.floor(durSec % 60);
+      durEl.innerHTML = `<i class="fa-regular fa-clock mr-1"></i>${m}m ${s}s`;
+
+      const formatPx = (px) => {
+        const n = parseFloat(px || 0);
+        return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+      };
+
+      document.getElementById(`slot-${slotNum}-size`).textContent = `${size} ($${(size * markPx).toFixed(2)})`;
+      document.getElementById(`slot-${slotNum}-entry`).textContent = formatPx(entryPx);
+      document.getElementById(`slot-${slotNum}-mark`).textContent = formatPx(markPx);
+
+      const roiEl = document.getElementById(`slot-${slotNum}-roi`);
+      roiEl.textContent = `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`;
+      roiEl.className = `font-bold text-sm ${roi >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      
+      const pnlEl = document.getElementById(`slot-${slotNum}-pnl`);
+      pnlEl.textContent = `(${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)})`;
+      pnlEl.className = `text-[10px] ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+
+      // Watermark & targets from trade_manager
+      const tmPos = tmPositions.find(p => p.coin.toUpperCase() === coin) || {};
+      const peakRoi = parseFloat(tmPos.peak_roi_pct || roi);
+      document.getElementById(`slot-${slotNum}-peak`).textContent = `Peak: +${peakRoi.toFixed(2)}%`;
+
+      const stopPx = parseFloat(tmPos.stop_price || (isLong ? entryPx * 0.99 : entryPx * 1.01));
+      const tpRoi = parseFloat(tmPos.take_profit_roi_pct || 2.80);
+      const tpPx = isLong ? entryPx * (1 + tpRoi / 100) : entryPx * (1 - tpRoi / 100);
+
+      // Projected dollar amounts for TP and SL based on position size
+      const pnlMult = isLong ? 1.0 : -1.0;
+      const tpUsd = size > 0 && entryPx > 0 ? (tpPx - entryPx) * size * pnlMult : 0.0;
+      const slUsd = size > 0 && entryPx > 0 ? (stopPx - entryPx) * size * pnlMult : 0.0;
+      const tpUsdStr = `${tpUsd >= 0 ? '+' : ''}$${tpUsd.toFixed(2)}`;
+      const slUsdStr = `${slUsd >= 0 ? '+' : ''}$${slUsd.toFixed(2)}`;
+
+      document.getElementById(`slot-${slotNum}-sl`).textContent = `${formatPx(stopPx)} (${slUsdStr})`;
+      document.getElementById(`slot-${slotNum}-tp`).textContent = `${formatPx(tpPx)} (${tpUsdStr})`;
+
+      const distSl = (((markPx - stopPx) / markPx) * 100).toFixed(1);
+      const distTp = (((tpPx - markPx) / markPx) * 100).toFixed(1);
+      document.getElementById(`slot-${slotNum}-dist-sl`).textContent = `${distSl}%`;
+      document.getElementById(`slot-${slotNum}-dist-tp`).textContent = `${distTp}%`;
+
+      const statusPill = document.getElementById(`slot-${slotNum}-status-pill`);
+      if (tmPos.trailing_stop_triggered) {
+        statusPill.textContent = "🎯 TRAILING ACTIVE";
+        statusPill.className = "px-1.5 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 font-bold";
+      } else if (tmPos.breakeven_triggered) {
+        statusPill.textContent = "🛡️ BE LOCKED";
+        statusPill.className = "px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 font-bold";
+      } else if (pos.anti_churn_remaining > 0) {
+        statusPill.textContent = `⏳ ${Math.round(pos.anti_churn_remaining)}s min hold`;
+        statusPill.className = "px-1.5 py-0.2 rounded bg-slate-800 text-amber-400";
+      } else {
+        statusPill.textContent = "ACTIVE";
+        statusPill.className = "px-1.5 py-0.2 rounded bg-slate-800 text-slate-300";
+      }
+    }
+
+    // 1-Click Manual Close for Slot Trade
+    async function closeSlotTrade(slotNum) {
+      const pos = slotTrades[slotNum - 1];
+      if (!pos || !pos.coin) return;
+      if (!confirm(`Confirm immediate market close of ${pos.coin} (${pos.side})?`)) return;
+
+      try {
+        const res = await fetch('/api/trades/close', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ coin: pos.coin, reason: 'Bot Terminal Manual Close' })
+        });
+        const result = await res.json();
+        alert(result.message || 'Close command submitted');
+      } catch (err) {
+        alert(`Failed to close trade: ${err}`);
+      }
+    }
+
+    // 1-Click Emergency Flatten
+    async function flattenAllPositions() {
+      if (!confirm("EMERGENCY FLATTEN: Close ALL active positions immediately?")) return;
+      try {
+        const res = await fetch('/api/trades/close_all', { method: 'POST' });
+        const result = await res.json();
+        alert(result.message || 'Flatten all executed');
+      } catch (err) {
+        alert(`Failed to flatten: ${err}`);
+      }
+    }
+
+    // 1-Click Immediate Scan Trigger
+    async function triggerImmediateScan() {
+      const btn = document.getElementById('btn-scan');
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-[10px]"></i><span>SCANNING...</span>`;
+      try {
+        const res = await fetch('/api/scan', { method: 'POST' });
+        const result = await res.json();
+        setTimeout(() => {
+          btn.innerHTML = `<i class="fa-solid fa-bolt text-[10px]"></i><span>SCAN NOW</span>`;
+        }, 1500);
+      } catch (err) {
+        btn.innerHTML = `<i class="fa-solid fa-bolt text-[10px]"></i><span>SCAN NOW</span>`;
+      }
+    }
+
+    // WebSocket & Polling Fallback Management
+    function initWebSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${location.host}/ws`;
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        isWsConnected = true;
+        document.getElementById('ws-indicator').className = "w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block";
+        document.getElementById('ws-status').textContent = "LIVE WS";
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const state = JSON.parse(event.data);
+          renderDashboard(state);
+        } catch (err) {
+          console.error("Error parsing WS state:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        isWsConnected = false;
+        document.getElementById('ws-indicator').className = "w-1.5 h-1.5 rounded-full bg-amber-400 inline-block";
+        document.getElementById('ws-status').textContent = "FALLBACK REST";
+        // Start polling fallback every 2 seconds
+        if (!pollTimer) {
+          pollTimer = setInterval(pollState, 2000);
+        }
+        // Try reconnecting in 3 seconds
+        setTimeout(initWebSocket, 3000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    async function pollState() {
+      try {
+        const res = await fetch('/api/state');
+        if (res.ok) {
+          const state = await res.json();
+          renderDashboard(state);
+        }
+      } catch (err) {
+        console.error("REST state poll error:", err);
+      }
+    }
+
+    // Boot
+    window.addEventListener('DOMContentLoaded', () => {
+      initChart();
+      initWebSocket();
+      pollState();
+    });
+  </script>
+</body>
+</html>

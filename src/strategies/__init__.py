@@ -13,6 +13,7 @@ from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanc
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
 from src.strategies.funding_arbitrage import DeltaNeutralCarryStrategy, DeltaNeutralCarryConfig
 from src.strategies.liquidation_absorber import LiquidationAbsorber, LiquidationAbsorberConfig
+from src.strategies.high_conviction_momentum import HighConvictionMomentumStrategy, HighConvictionMomentumConfig
 
 __all__ = [
     "TrendContinuationSMC",
@@ -27,5 +28,7 @@ __all__ = [
     "DeltaNeutralCarryConfig",
     "LiquidationAbsorber",
     "LiquidationAbsorberConfig",
+    "HighConvictionMomentumStrategy",
+    "HighConvictionMomentumConfig",
 ]
 

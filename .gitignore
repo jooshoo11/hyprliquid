@@ -30,7 +30,6 @@ venv/
 venv
 env/
 env
-hyperliquid_nautilus/
 hyperliquid_nautilus/.venv/
 
 # ==============================================================================
@@ -46,6 +45,7 @@ hyperliquid_nautilus/.venv/
 catalog/data/
 catalog/funding/
 hyperliquid_nautilus/data/*.csv
+archive/**/data/*.csv
 *.parquet
 catalog/mcp_meta_cache.json
 
@@ -63,4 +63,9 @@ Thumbs.db
 .aider*
 logs/
 *.log
+bridge/engine.pid
+bridge/analytics_microstructure.json
+codebase_context*.txt
+full_system_audit*.txt
+post_burnin_audit*.txt
 reports/codebase_context.txt

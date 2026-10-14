@@ -216,17 +216,33 @@ class VwapOiMomentum(Strategy):
         if equity <= 0 or price <= 0:
             return
 
-        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 3) if self.portfolio_guard else 3)
-        margin_allocated = equity / max_positions
+        # Stop loss anchored behind VWAP with minimum 1% buffer
+        sl_distance = max(abs(price - vwap) * 1.5, price * 0.01)
+        sl_price = (price - sl_distance) if side == OrderSide.BUY else (price + sl_distance)
+        risk_per_unit = abs(price - sl_price)
+
+        if risk_per_unit <= 0:
+            return
+
+        max_positions = float(getattr(self.portfolio_guard, "max_total_open_positions", 2) if self.portfolio_guard else 2)
+        # Deploy $100 base margin per position (50% of $200 account base)
+        margin_allocated = (equity / max_positions) if max_positions > 0 else (equity * 0.50)
         coin = str(instrument.id).split("-")[0].split(".")[0].upper()
-        max_lev = min(float(get_coin_max_leverage(coin)), 15.0)  # Max 15x safe scalping ceiling
-        target_notional = margin_allocated * max_lev
+        max_lev = float(get_coin_max_leverage(coin))
+        margin_notional = margin_allocated * max_lev
+
+        # Constrain position size using risk_per_trade_pct
+        risk_pct = getattr(self.vwap_config, "risk_per_trade_pct", 0.01)
+        dollar_risk = equity * risk_pct
+        risk_notional = (dollar_risk / risk_per_unit) * price
+        target_notional = min(margin_notional, risk_notional)
+
         qty_val = target_notional / price
         quantity = instrument.make_qty(Decimal(str(round(qty_val, instrument.size_precision))))
         if quantity.as_double() <= 0:
             return
 
-        notional_usd = qty_val * price
+        notional_usd = float(quantity.as_double()) * price
         if self.portfolio_guard is not None:
             self.portfolio_guard.update_equity(equity)
             can_trade, reason = self.portfolio_guard.can_open_position(
@@ -247,14 +263,6 @@ class VwapOiMomentum(Strategy):
             p_bias = self.portfolio_guard.prospect_biases.get(coin)
             if (side == OrderSide.BUY and p_bias == "LONG") or (side == OrderSide.SELL and p_bias == "SHORT"):
                 self.log.info(f"🎯 AI Prospect confirmed {p_bias} bias on {instrument.id}")
-
-        # Stop loss anchored behind VWAP with minimum 1% buffer
-        sl_distance = max(abs(price - vwap) * 1.5, price * 0.01)
-        sl_price = (price - sl_distance) if side == OrderSide.BUY else (price + sl_distance)
-        risk_per_unit = abs(price - sl_price)
-
-        if risk_per_unit <= 0:
-            return
 
         tp_rr = getattr(self.portfolio_guard, "dynamic_take_profit_rr", 2.5) if self.portfolio_guard else 2.5
         tp_price = (price + tp_rr * risk_per_unit) if side == OrderSide.BUY else (price - tp_rr * risk_per_unit)

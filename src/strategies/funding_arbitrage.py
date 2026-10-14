@@ -76,6 +76,7 @@ class DeltaNeutralCarryConfig(StrategyConfig, kw_only=True):
     """Configuration for DeltaNeutralCarryStrategy."""
     min_net_carry_apr: float = 80.0         # Minimum combined APR to enter pair (80.0%)
     exit_net_carry_apr: float = 30.0        # Exit when net carry compresses below 30.0%
+    min_carry_apr_exit: Optional[float] = None  # Alias for exit_net_carry_apr
     max_spread_pct: float = 0.10            # Max allowed bid-ask spread per leg (0.10%)
     min_top5_depth_usd: float = 10000.0     # Minimum top-5 book depth ($10,000 USD)
     leg_capital_usd: float = 10.0           # Size per leg in USD ($10 USD)
@@ -410,10 +411,19 @@ class DeltaNeutralCarryStrategy(Strategy):
             short_apr = self._get_coin_funding_apr(paired_pos.short_coin)
 
             # Net Carry APR = short_apr - long_apr
-            cur_net_carry_apr_pct = (short_apr - long_apr) * 100.0
+            raw_net_carry = short_apr - long_apr
+            if max(abs(short_apr), abs(long_apr)) > 5.0:
+                # Rates are already expressed in percentage (e.g. 60.0 for 60% APR)
+                cur_net_carry_apr_pct = raw_net_carry
+            else:
+                # Rates are raw float ratios (e.g. 0.60 for 60% APR)
+                cur_net_carry_apr_pct = raw_net_carry * 100.0
+
             paired_pos.current_net_carry_apr = cur_net_carry_apr_pct
 
-            exit_thresh = self.carry_config.exit_net_carry_apr
+            exit_thresh = getattr(self.carry_config, "min_carry_apr_exit", None)
+            if exit_thresh is None:
+                exit_thresh = getattr(self.carry_config, "exit_net_carry_apr", 30.0)
             exit_thresh_pct = exit_thresh if exit_thresh > 1.0 else exit_thresh * 100.0
 
             if cur_net_carry_apr_pct < exit_thresh_pct:

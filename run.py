@@ -53,23 +53,54 @@ def find_wezterm_bin() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Hyperliquid Autonomous Multi-Strategy System & WezTerm Cockpit")
-    parser.add_argument("--top-n", type=int, default=15, help="Number of perpetual markets to monitor (default 15)")
+    parser.add_argument("--top-n", type=int, default=50, help="Number of perpetual markets to monitor (default 50)")
+    parser.add_argument("--paper", action="store_true", default=True, help="Run in Paper Trading mode (default: True)")
     parser.add_argument("--live", action="store_true", help="Run in Live Testnet mode with burner wallet instead of local Paper emulator")
     parser.add_argument("--risk-pct", type=float, default=0.01, help="Risk percentage per trade (default 0.01 = 1%%)")
     parser.add_argument("--rr-ratio", type=float, default=2.5, help="Reward-to-risk ratio (default 2.5)")
     parser.add_argument("--watchdog-interval", type=float, default=10.0, help="Active trade watchdog audit interval in seconds (default 10.0)")
-    parser.add_argument("--prospector-interval", type=float, default=45.0, help="Market prospector scan interval in seconds (default 45.0s)")
+    parser.add_argument("--prospector-interval", type=float, default=900.0, help="Market prospector scan interval in seconds (default 900.0s = 15m)")
 
     # UI mode options
     parser.add_argument("--wezterm", action="store_true", help="Launch dedicated WezTerm Cockpit window")
     parser.add_argument("--tui", action="store_true", help="Force interactive terminal cockpit in current session")
     parser.add_argument("--headless", action="store_true", help="Run engine in headless background daemon mode")
-    parser.add_argument("--web", action="store_true", help="Optionally start legacy web server at http://localhost:8000")
+    parser.add_argument("--web", action="store_true", default=True, help="Start web server at http://localhost:8000 (default: True)")
+    parser.add_argument("--no-web", action="store_false", dest="web", help="Disable web server")
     parser.add_argument("--port", type=int, default=8000, help="Web Cockpit port if --web is enabled (default 8000)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Web Cockpit bind host if --web is enabled")
     args = parser.parse_args()
 
-    paper_mode = not args.live
+    paper_mode = args.paper and not args.live
+
+    # Single-Instance PID Guard: Kill any existing engine process recorded in bridge/engine.pid
+    pid_file = os.path.join(REPO_ROOT, "bridge", "engine.pid")
+    try:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file, "r") as pf:
+                    old_pid_str = pf.read().strip()
+                if old_pid_str and old_pid_str.isdigit():
+                    old_pid = int(old_pid_str)
+                    if old_pid != os.getpid():
+                        try:
+                            os.kill(old_pid, signal.SIGTERM)
+                            time.sleep(0.5)
+                            try:
+                                os.kill(old_pid, signal.SIGKILL)
+                            except OSError:
+                                pass
+                        except ProcessLookupError:
+                            pass
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+        with open(pid_file, "w") as pf:
+            pf.write(str(os.getpid()))
+    except Exception as pid_err:
+        console.print(f"[yellow]Warning initializing PID guard: {pid_err}[/yellow]")
 
     # 1. Initialize Autonomous Engine
     engine = UnifiedEngine(
@@ -112,6 +143,13 @@ def main():
     # 5. Handle Graceful Shutdown
     def handle_sig(sig, frame):
         console.print("\n[bold yellow]🛑 Shutdown signal received. Stopping all systems cleanly...[/bold yellow]")
+        try:
+            if os.path.exists(pid_file):
+                with open(pid_file, "r") as pf:
+                    if pf.read().strip() == str(os.getpid()):
+                        os.remove(pid_file)
+        except Exception:
+            pass
         engine.stop()
         sys.exit(0)
 

@@ -1,6 +1,31 @@
 {
-  "timestamp": 1791124719.9978857,
-  "equity": 111.59,
-  "cash_balance": 111.59,
-  "positions": []
+  "timestamp": 1791968572.232559,
+  "equity": 200.1,
+  "cash_balance": 200.0,
+  "positions": [
+    {
+      "coin": "CASHCAT",
+      "instrument_id": "CASHCAT-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 1000.0,
+      "entry_price": 0.11839,
+      "mark_price": 0.118465,
+      "unrealized_pnl": 0.08,
+      "roi_pct": 0.06,
+      "strategy": "High-Conviction Momentum",
+      "leverage": 3.0
+    },
+    {
+      "coin": "PONS",
+      "instrument_id": "PONS-USD-PERP.HYPERLIQUID",
+      "side": "LONG",
+      "size": 911.0,
+      "entry_price": 0.32951,
+      "mark_price": 0.329535,
+      "unrealized_pnl": 0.02,
+      "roi_pct": 0.01,
+      "strategy": "High-Conviction Momentum",
+      "leverage": 3.0
+    }
+  ]
 }

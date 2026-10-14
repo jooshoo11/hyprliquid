@@ -52,12 +52,15 @@ class PositionTracker:
     # Ratchet stops
     breakeven_triggered: bool = False
     trailing_stop_triggered: bool = False
+    partial_tp_triggered: bool = False
     stop_price: Optional[float] = None
     atr_pct: float = 0.0  # Coin-specific volatility / ATR percentage
     dynamic_trailing_distance_pct: Optional[float] = None
     take_profit_roi_pct: Optional[float] = None  # Profit target %
+    has_explicit_take_profit: bool = False
     breakeven_roi_pct: Optional[float] = None    # Dynamic breakeven threshold %
     tiered_lock_roi_pct: Optional[float] = None  # Guaranteed locked stop ROI %
+    initial_stop_pct: Optional[float] = None     # Distance (%) from entry to the ORIGINAL stop; single source of truth for risk
 
     # Current snapshot
     current_price: float = 0.0
@@ -70,6 +73,8 @@ class PositionTracker:
         self.coin = self._normalize_coin(self.coin)
         self.size = abs(float(self.size))
         self.entry_price = float(self.entry_price)
+        if self.initial_stop_pct is None:
+            self.initial_stop_pct = self.compute_stop_pct(self.side, self.entry_price, self.stop_price)
         if self.peak_price == 0.0:
             self.peak_price = self.entry_price
         if self.highest_mark_price == 0.0:
@@ -78,6 +83,18 @@ class PositionTracker:
             self.lowest_mark_price = self.entry_price
         if self.current_price == 0.0:
             self.current_price = self.entry_price
+
+    @staticmethod
+    def compute_stop_pct(side: str, entry_price: float, stop_price: Optional[float]) -> Optional[float]:
+        """Distance (%) from entry to a stop on the losing side; None if no valid stop."""
+        if not stop_price or entry_price <= 0:
+            return None
+        stop = float(stop_price)
+        if side == "LONG" and stop < entry_price:
+            return round((entry_price - stop) / entry_price * 100.0, 4)
+        if side == "SHORT" and stop > entry_price:
+            return round((stop - entry_price) / entry_price * 100.0, 4)
+        return None
 
     @staticmethod
     def _normalize_side(side: str) -> str:
@@ -96,7 +113,7 @@ class PositionTracker:
 @dataclass
 class TradeAction:
     """Evaluation result for a managed position."""
-    action: str  # "HOLD", "CLOSE"
+    action: str  # "HOLD", "CLOSE", "PARTIAL_CLOSE"
     should_close: bool
     reason: str
     coin: str
@@ -106,6 +123,8 @@ class TradeAction:
     current_price: float
     peak_price: float
     stop_price: Optional[float] = None
+    should_partial_close: bool = False
+    partial_close_pct: float = 0.5
 
 
 class TradeManager:
@@ -138,6 +157,7 @@ class TradeManager:
         extended_hold_hours: float = 2.0,       # Extended hold duration: > 2.0 hours
         extended_hold_roi_pct: float = 1.5,     # Extended hold profit lock: >= +1.5% ROI
         tiered_profit_lock: bool = False,       # Tiered profit locking
+        enable_partial_tp: bool = False,        # 2-Tranche 50% partial scale-out (enabled by UnifiedEngine)
         fast_dud_minutes: float = 30.0,         # Base Fast dud cut: after 30 mins
         fast_dud_roi_pct: float = -0.40,        # If ROI <= -0.40%
         fast_dud_max_peak_roi: float = 0.20,    # And peak ROI never exceeded +0.20%
@@ -166,6 +186,7 @@ class TradeManager:
         self.extended_hold_hours = extended_hold_hours
         self.extended_hold_roi_pct = extended_hold_roi_pct
         self.tiered_profit_lock = tiered_profit_lock
+        self.enable_partial_tp = enable_partial_tp
         self.fast_dud_minutes = fast_dud_minutes
         self.fast_dud_roi_pct = fast_dud_roi_pct
         self.fast_dud_max_peak_roi = fast_dud_max_peak_roi
@@ -177,6 +198,7 @@ class TradeManager:
         self.cumulative_fees: float = 0.0
         self.cooldown_tracker: Dict[str, float] = {}
         self._recently_closed_times: Dict[str, float] = {}
+        self._last_missed_log_ts: Dict[str, float] = {}
         self._lock = threading.RLock()
 
 
@@ -214,6 +236,7 @@ class TradeManager:
                 strategy=strategy,
                 last_update_time=now,
                 take_profit_roi_pct=take_profit_roi_pct if take_profit_roi_pct is not None else self.take_profit_roi_pct,
+                has_explicit_take_profit=(take_profit_roi_pct is not None and take_profit_roi_pct > 0),
                 stop_price=float(stop_price) if stop_price is not None and float(stop_price) > 0 else None,
             )
             if atr_pct is not None and atr_pct > 0:
@@ -298,16 +321,44 @@ class TradeManager:
                     tracker.entry_time = entry_time
                 if tracker.stop_price is None and stop_price is not None and float(stop_price) > 0:
                     tracker.stop_price = float(stop_price)
+                    if tracker.initial_stop_pct is None:
+                        tracker.initial_stop_pct = PositionTracker.compute_stop_pct(tracker.side, tracker.entry_price, tracker.stop_price)
+
+            effective_mae_roi = self.mae_roi_pct
 
             if atr_pct is not None and atr_pct > 0:
                 tracker.atr_pct = float(atr_pct)
                 tracker.dynamic_trailing_distance_pct = round(max(0.5, min(2.5, 1.5 * tracker.atr_pct)), 2)
-
-            if take_profit_roi_pct is not None and take_profit_roi_pct > 0:
-                tracker.take_profit_roi_pct = float(take_profit_roi_pct)
-
-            if breakeven_roi_pct is not None and breakeven_roi_pct > 0:
-                if not tracker.breakeven_triggered:
+                # If take_profit_roi_pct was explicitly specified (or tight scalp), keep explicit target
+                has_explicit_tp = (take_profit_roi_pct is not None and take_profit_roi_pct > 0) or getattr(tracker, "has_explicit_take_profit", False)
+                is_tight_scalp = (
+                    (take_profit_roi_pct is not None and take_profit_roi_pct < 1.0)
+                    or "OrderBook" in (strategy or tracker.strategy)
+                )
+                if not is_tight_scalp and not has_explicit_tp and tracker.take_profit_roi_pct is not None:
+                    dynamic_tp = round(max(1.10, min(2.80, 1.8 * tracker.atr_pct)), 2)
+                    dynamic_be = round(max(0.45, min(1.10, 0.70 * tracker.atr_pct)), 2)
+                    dynamic_mae = -round(max(0.85, min(1.80, 1.15 * tracker.atr_pct)), 2)
+                    tracker.take_profit_roi_pct = dynamic_tp
+                    if not tracker.breakeven_triggered:
+                        tracker.breakeven_roi_pct = dynamic_be
+                    effective_mae_roi = dynamic_mae
+                elif not is_tight_scalp and not has_explicit_tp and tracker.take_profit_roi_pct is None:
+                    # Trailing stop strategy with no TP target: scale breakeven and MAE by ATR
+                    dynamic_be = round(max(0.45, min(1.10, 0.70 * tracker.atr_pct)), 2)
+                    dynamic_mae = -round(max(0.85, min(1.80, 1.15 * tracker.atr_pct)), 2)
+                    if not tracker.breakeven_triggered:
+                        tracker.breakeven_roi_pct = dynamic_be
+                    effective_mae_roi = dynamic_mae
+                else:
+                    if take_profit_roi_pct is not None and take_profit_roi_pct > 0:
+                        tracker.take_profit_roi_pct = float(take_profit_roi_pct)
+                    if breakeven_roi_pct is not None and breakeven_roi_pct > 0 and not tracker.breakeven_triggered:
+                        tracker.breakeven_roi_pct = float(breakeven_roi_pct)
+            else:
+                if take_profit_roi_pct is not None and take_profit_roi_pct > 0:
+                    tracker.take_profit_roi_pct = float(take_profit_roi_pct)
+                if breakeven_roi_pct is not None and breakeven_roi_pct > 0 and not tracker.breakeven_triggered:
                     tracker.breakeven_roi_pct = float(breakeven_roi_pct)
 
             # Update current price and timestamp
@@ -342,13 +393,27 @@ class TradeManager:
 
             # --- RISK RULE EVALUATION ---
 
-            # Rule 1: Max Adverse Excursion (MAE) hard cut
-            # Closes immediately if ROI <= -2.5% or loss <= -$2.00 regardless of holding time
-            if roi <= self.mae_roi_pct or pnl <= self.mae_loss_usd:
-                reason = (
-                    f"MAE hard cut: ROI {roi:+.2f}% <= {self.mae_roi_pct:.1f}% "
-                    f"or loss ${pnl:+.2f} <= ${self.mae_loss_usd:.2f}"
-                )
+            # Rule 1: Max Adverse Excursion (MAE) emergency hard cut
+            # Unified risk: when the position carries its own initial stop, the emergency cut is derived from THAT stop
+            # (1.25x its distance, a gap guard that only matters inside the min-hold window where Rule 4 is suppressed).
+            # The fixed ROI / dollar thresholds apply only to positions that have no stop of their own.
+            has_own_stop = bool(tracker.initial_stop_pct)
+            if has_own_stop:
+                effective_mae_roi = -(tracker.initial_stop_pct * 1.25)
+                usd_cut_hit = False
+            else:
+                usd_cut_hit = pnl <= self.mae_loss_usd
+            if roi <= effective_mae_roi or usd_cut_hit:
+                if has_own_stop:
+                    reason = (
+                        f"MAE hard cut: ROI {roi:+.2f}% <= {effective_mae_roi:.2f}% "
+                        f"(1.25x initial stop {tracker.initial_stop_pct:.2f}%, loss ${pnl:+.2f})"
+                    )
+                else:
+                    reason = (
+                        f"MAE hard cut: ROI {roi:+.2f}% <= {effective_mae_roi:.1f}% "
+                        f"or loss ${pnl:+.2f} <= ${self.mae_loss_usd:.2f}"
+                    )
                 return TradeAction(
                     action="CLOSE",
                     should_close=True,
@@ -449,6 +514,46 @@ class TradeManager:
                     if mark_price < lock_stop:
                         if tracker.stop_price is None or lock_stop < tracker.stop_price:
                             tracker.stop_price = lock_stop
+
+            # Check if stop price is breached (trailing stop or ratchet stop) BEFORE partial take profit
+            is_stop_breached = False
+            if tracker.stop_price is not None:
+                if tracker.side == "LONG" and mark_price <= tracker.stop_price:
+                    is_stop_breached = True
+                elif tracker.side == "SHORT" and mark_price >= tracker.stop_price:
+                    is_stop_breached = True
+
+            # Rule 2.3: 2-Tranche Scale-Out (TP1 at +0.85% / 0.60x TP)
+            # Banks 50% partial profits and locks runner stop to guaranteed +0.20% ROI (only if not pulling back into stop)
+            tp1_target = max(0.80, (tracker.take_profit_roi_pct or 1.40) * 0.60)
+            if self.enable_partial_tp and not is_stop_breached and not tracker.partial_tp_triggered and duration_seconds >= self.min_holding_seconds and roi >= tp1_target:
+                tracker.partial_tp_triggered = True
+                tracker.breakeven_triggered = True
+                if tracker.side == "LONG":
+                    lock_stop = tracker.entry_price * 1.002
+                    if tracker.stop_price is None or lock_stop > tracker.stop_price:
+                        tracker.stop_price = lock_stop
+                else:  # SHORT
+                    lock_stop = tracker.entry_price * 0.998
+                    if tracker.stop_price is None or lock_stop < tracker.stop_price:
+                        tracker.stop_price = lock_stop
+                if tracker.tiered_lock_roi_pct is None or tracker.tiered_lock_roi_pct < 0.20:
+                    tracker.tiered_lock_roi_pct = 0.20
+                reason = f"TP1 Scale-Out: banking 50% at {roi:+.2f}% ROI & locking runner stop at +0.20%"
+                return TradeAction(
+                    action="PARTIAL_CLOSE",
+                    should_close=False,
+                    should_partial_close=True,
+                    partial_close_pct=0.50,
+                    reason=reason,
+                    coin=tracker.coin,
+                    side=tracker.side,
+                    roi=roi,
+                    pnl=pnl,
+                    current_price=mark_price,
+                    peak_price=tracker.peak_price,
+                    stop_price=tracker.stop_price,
+                )
 
             # Rule 3: Trailing stop
             # When ROI >= +2.0%, trails behind peak mark price (dynamic ATR or configured default)
@@ -563,7 +668,7 @@ class TradeManager:
                                 peak_price=tracker.peak_price,
                                 stop_price=tracker.stop_price,
                             )
-                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct:
+                        if tracker.tiered_lock_roi_pct and tracker.tiered_lock_roi_pct > self.breakeven_stop_roi_pct and roi >= 0.0:
                             reason = (
                                 f"Tiered profit lock triggered: ROI {roi:+.2f}% <= locked stop {tracker.tiered_lock_roi_pct:.2f}% "
                                 f"(Peak ROI {tracker.peak_roi:+.2f}%)"
@@ -825,7 +930,10 @@ class TradeManager:
 
         with self._lock:
             tracker = self.active_positions.pop(key, None)
-            self.cooldown_tracker[key] = now
+            if "Take Profit" in reason or "take profit" in reason.lower():
+                self.cooldown_tracker[key] = now + 480.0
+            else:
+                self.cooldown_tracker[key] = now
             last_closed_ts = self._recently_closed_times.get(key)
             was_recently_closed = (last_closed_ts is not None)
             is_stale_reentry = was_recently_closed and tracker is not None and (tracker.entry_time <= last_closed_ts)
@@ -1183,6 +1291,7 @@ class TradeManager:
                     "current_price": tracker.current_price,
                     "peak_price": tracker.peak_price,
                     "stop_price": tracker.stop_price,
+                    "initial_stop_pct": getattr(tracker, "initial_stop_pct", None),
                     "roi_pct": round(tracker.current_roi, 2),
                     "peak_roi_pct": round(tracker.peak_roi, 2),
                     "pnl": round(tracker.current_pnl, 2),
@@ -1328,6 +1437,13 @@ class TradeManager:
         }
 
         with self._lock:
+            now_ts = time.time()
+            dedup_key = f"{coin_clean}_{strategy_clean}"
+            last_ts = self._last_missed_log_ts.get(dedup_key, 0.0)
+            if (now_ts - last_ts) < 600.0:
+                return record
+
+            self._last_missed_log_ts[dedup_key] = now_ts
             self._missed_opportunities_cache.append(record)
             self._append_to_missed_opportunities_md(ts_str, record, metrics_str)
             self._append_to_decision_journal(record)

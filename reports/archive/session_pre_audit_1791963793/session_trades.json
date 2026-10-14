@@ -1,0 +1,53 @@
+[
+  {
+    "timestamp": "2026-10-14T07:20:05Z",
+    "coin": "W",
+    "side": "SHORT",
+    "size": 1000.0,
+    "entry": 0.0162,
+    "exit": 0.0163,
+    "duration": "0h 5m 4s",
+    "gross_pnl": -0.15,
+    "fees": 0.01,
+    "net_pnl": -0.17,
+    "pnl": -0.17,
+    "roi": -0.96,
+    "strategy": "TrendContinuationSMC-001",
+    "reason": "MAE hard cut: ROI -0.96% <= -0.9% or loss $-0.15 <= $-2.50",
+    "is_rotation": false
+  },
+  {
+    "timestamp": "2026-10-14T07:39:55Z",
+    "coin": "PONS",
+    "side": "LONG",
+    "size": 273.0,
+    "entry": 0.3304,
+    "exit": 0.3304,
+    "duration": "0h 18m 45s",
+    "gross_pnl": 0.0,
+    "fees": 0.06,
+    "net_pnl": -0.06,
+    "pnl": -0.06,
+    "roi": 0.0,
+    "strategy": "VwapOiMomentum-004",
+    "reason": "Tiered profit lock triggered: ROI +0.00% <= locked stop 0.20% (Peak ROI +1.06%)",
+    "is_rotation": false
+  },
+  {
+    "timestamp": "2026-10-14T07:40:05Z",
+    "coin": "SYRUP",
+    "side": "SHORT",
+    "size": 783.0,
+    "entry": 0.2301,
+    "exit": 0.2308,
+    "duration": "0h 25m 2s",
+    "gross_pnl": -0.58,
+    "fees": 0.13,
+    "net_pnl": -0.7,
+    "pnl": -0.7,
+    "roi": -0.32,
+    "strategy": "TrendContinuationSMC-001",
+    "reason": "Fast dud cut: open 25m with zero momentum (Peak ROI: +0.04%, current: -0.32%)",
+    "is_rotation": false
+  }
+]

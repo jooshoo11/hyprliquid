@@ -18,6 +18,11 @@ rich>=13.7.0
 # AI Intelligence & Strategy Advisor (Optional)
 google-genai>=0.1.0
 
+# Machine Learning & Alpha Generation
+xgboost>=2.0.0
+pandas-ta>=0.3.14b0
+scikit-learn>=1.4.0
+
 # Testing & Verification
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

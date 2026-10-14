@@ -43,10 +43,12 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
+import json
 from src.strategies.continuation import TrendContinuationSMC, TrendContinuationConfig
 from src.strategies.funding_fade import HourlyFundingFade, HourlyFundingFadeConfig
 from src.strategies.orderbook_scalp import OrderBookImbalance, OrderBookImbalanceConfig
 from src.strategies.vwap_momentum import VwapOiMomentum, VwapOiMomentumConfig
+from src.strategies.high_conviction_momentum import HighConvictionMomentumStrategy, HighConvictionMomentumConfig
 from src.risk.portfolio_guard import PortfolioGuard
 
 console = Console()
@@ -204,20 +206,36 @@ def create_strategy_instances(
     rr_ratio: float = 2.5,
 ) -> List[Any]:
     """Instantiate requested strategies with configured risk and portfolio guard."""
+    # Load optimized parameters if available
+    opt_params = {}
+    opt_path = os.path.join(REPO_ROOT, "config", "optimized_params.json")
+    if os.path.exists(opt_path):
+        try:
+            with open(opt_path, "r") as f:
+                payload = json.load(f)
+                opt_params = payload.get("parameters", {})
+        except Exception:
+            opt_params = {}
+
     instances = []
     for name in strategy_names:
         if name == "continuation":
             c = TrendContinuationConfig(
                 venue="HYPERLIQUID",
-                risk_per_trade_pct=risk_pct,
-                reward_to_risk_ratio=rr_ratio,
+                risk_per_trade_pct=opt_params.get("continuation_risk_pct", risk_pct),
+                reward_to_risk_ratio=opt_params.get("continuation_rr_ratio", rr_ratio),
+                ema_fast_period=opt_params.get("continuation_ema_fast", 9),
+                ema_slow_period=opt_params.get("continuation_ema_slow", 21),
+                displacement_multiplier=opt_params.get("continuation_displacement", opt_params.get("continuation_displacement_multiplier", 1.5)),
                 max_active_positions=4,
             )
             instances.append(TrendContinuationSMC(config=c, portfolio_guard=portfolio_guard))
         elif name == "funding_fade":
             f = HourlyFundingFadeConfig(
                 venue="HYPERLIQUID",
-                risk_per_trade_pct=min(risk_pct, 0.0075),
+                risk_per_trade_pct=opt_params.get("funding_risk_pct", opt_params.get("funding_fade_risk_pct", min(risk_pct, 0.0075))),
+                min_funding_apr_threshold=opt_params.get("funding_apr_threshold", opt_params.get("min_funding_apr_threshold", 0.30)),
+                trailing_stop_pct=opt_params.get("funding_trailing_stop", opt_params.get("funding_fade_trailing_stop", 0.015)),
                 max_active_positions=3,
             )
             instances.append(HourlyFundingFade(config=f, portfolio_guard=portfolio_guard))
@@ -235,6 +253,13 @@ def create_strategy_instances(
                 max_active_positions=4,
             )
             instances.append(VwapOiMomentum(config=v, portfolio_guard=portfolio_guard))
+        elif name == "momentum":
+            m = HighConvictionMomentumConfig(
+                venue="HYPERLIQUID",
+                risk_per_trade_pct=risk_pct,
+                max_active_positions=4,
+            )
+            instances.append(HighConvictionMomentumStrategy(config=m, portfolio_guard=portfolio_guard))
     return instances
 
 
@@ -388,7 +413,7 @@ def run_portfolio_backtest(
     results: Dict[str, Dict[str, Any]] = {}
     guard = PortfolioGuard()
 
-    valid_strategies = ["continuation", "funding_fade", "orderbook", "vwap"]
+    valid_strategies = ["continuation", "funding_fade", "orderbook", "vwap", "momentum"]
 
     if strategy_mode in valid_strategies:
         console.print(f"[bold yellow]⚡ Running isolated backtest for: {strategy_mode.upper()}...[/bold yellow]")
@@ -425,8 +450,8 @@ def run_portfolio_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Hyperliquid Multi-Strategy Portfolio Backtest")
-    parser.add_argument("--strategy", type=str, default="all", choices=["continuation", "funding_fade", "orderbook", "vwap", "all"],
-                        help="Strategy to run (continuation, funding_fade, orderbook, vwap, or all)")
+    parser.add_argument("--strategy", type=str, default="all", choices=["continuation", "funding_fade", "orderbook", "vwap", "momentum", "all"],
+                        help="Strategy to run (continuation, funding_fade, orderbook, vwap, momentum, or all)")
     parser.add_argument("--catalog-dir", type=str, default="catalog", help="Path to Parquet catalog")
     parser.add_argument("--capital", type=float, default=10000.0, help="Initial USD margin equity")
     parser.add_argument("--symbols", type=str, default=None, help="Comma-separated symbols filter e.g. BTC,ETH,SOL")
