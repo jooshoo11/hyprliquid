@@ -3,20 +3,20 @@
   "is_fallback_active": false,
   "last_error": null,
   "fallback_count": 0,
-  "updated_at": "2026-10-14 09:02:38 UTC",
+  "updated_at": "2026-10-14 09:34:28 UTC",
   "prospector": {
     "status": "ACTIVE",
     "interval_seconds": 900.0,
     "interval_minutes": 15,
-    "scan_count": 1,
-    "last_scan": "2026-10-14T08:59:21.316239+00:00",
-    "next_scan": "2026-10-14T09:14:21.316239+00:00"
+    "scan_count": 3,
+    "last_scan": "2026-10-14T09:29:26.553926+00:00",
+    "next_scan": "2026-10-14T09:44:26.553926+00:00"
   },
   "watchdog": {
     "status": "ACTIVE",
     "interval_seconds": 10.0,
     "target": "ACTIVE_TRADES",
     "active_positions_monitored": 2,
-    "last_audit": "2026-10-14T09:02:38.806988+00:00"
+    "last_audit": "2026-10-14T09:34:28.832428+00:00"
   }
 }

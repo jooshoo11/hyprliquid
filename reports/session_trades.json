@@ -1,1 +1,53 @@
-[]
+[
+  {
+    "timestamp": "2026-10-14T09:02:57Z",
+    "coin": "CASHCAT",
+    "side": "LONG",
+    "size": 1000.0,
+    "entry": 0.1184,
+    "exit": 0.1185,
+    "duration": "0h 3m 33s",
+    "gross_pnl": 0.11,
+    "fees": 0.08,
+    "net_pnl": 0.03,
+    "pnl": 0.03,
+    "roi": 0.09,
+    "strategy": "HighConvictionMomentumStrategy-000",
+    "reason": "Bot Terminal Manual Close",
+    "is_rotation": false
+  },
+  {
+    "timestamp": "2026-10-14T09:03:04Z",
+    "coin": "PONS",
+    "side": "LONG",
+    "size": 911.0,
+    "entry": 0.3295,
+    "exit": 0.3295,
+    "duration": "0h 3m 41s",
+    "gross_pnl": 0.0,
+    "fees": 0.21,
+    "net_pnl": -0.21,
+    "pnl": -0.21,
+    "roi": 0.0,
+    "strategy": "HighConvictionMomentumStrategy-000",
+    "reason": "Bot Terminal Manual Close",
+    "is_rotation": false
+  },
+  {
+    "timestamp": "2026-10-14T09:14:59Z",
+    "coin": "STRK",
+    "side": "SHORT",
+    "size": 769.1,
+    "entry": 0.0813,
+    "exit": 0.0813,
+    "duration": "0h 11m 58s",
+    "gross_pnl": 0.0,
+    "fees": 0.04,
+    "net_pnl": -0.04,
+    "pnl": -0.04,
+    "roi": 0.0,
+    "strategy": "OrderBookImbalance-003",
+    "reason": "Tiered profit lock triggered: ROI +0.00% >= locked stop 1.40% (Peak ROI +2.29%)",
+    "is_rotation": false
+  }
+]
